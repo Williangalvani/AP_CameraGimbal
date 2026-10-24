@@ -66,6 +66,9 @@
 #define APCAM_LENS1_HEIGHT 2160
 #define APCAM_ZOOM_MAX 1.0f
 #define APCAM_HAVE_VIDEO_BITRATE 1
+/* 0 = automatic: 12 Mbit/s at 2160p, 4 Mbit/s at 1080p, 2 Mbit/s below. */
+#define APCAM_DEFAULT_MAIN_BITRATE_KBPS 0
+#define APCAM_MAIN_BITRATE_MIN_KBPS 0
 #define APCAM_HAVE_VIDEO_FRAME_RATE 1
 /* IMX678 4K@30 (10/12-bit); 60 fps mode exists but 30 is the qualified default. */
 #define APCAM_FRAME_RATE 30
@@ -77,7 +80,7 @@
     APCAM_RES_MASK_540P | APCAM_RES_MASK_480P)
 #define APCAM_SUB_RESOLUTIONS (APCAM_RES_MASK_1080P | APCAM_RES_MASK_720P | APCAM_RES_MASK_480P)
 #define APCAM_RECORDING_RESOLUTIONS APCAM_RES_MASK_2160P
-#define APCAM_STREAM_CODECS 2
+#define APCAM_STREAM_CODECS 3
 #define APCAM_DEFAULT_MAIN_RESOLUTION APCAM_RES_2160P
 #define APCAM_DEFAULT_SUB_RESOLUTION APCAM_RES_720P
 #define APCAM_DEFAULT_RECORDING_RESOLUTION APCAM_RES_2160P
@@ -113,20 +116,35 @@
 #define APCAM_GIMBAL_RATE_COMMAND_UPRIGHT_OFFSET {0, 0, 0}
 #define APCAM_GIMBAL_RATE_COMMAND_INVERTED_MATRIX {1, 0, 0, 0, 1, 0, 0, 0, 1}
 #define APCAM_GIMBAL_RATE_COMMAND_INVERTED_OFFSET {0, 0, 0}
-#define APCAM_LOG_ROOT "/date/logs"
-
+/* /appfs is a read-only squashfs (UBI volume on mtd4). /date (UBIFS, mtd6)
+ * keeps settings across appfs updates; recordings and logs go to the microSD
+ * card on /mnt, which the launcher mounts in place of xipc. */
 #ifdef APCAM_WEB_BUILD
 #define WEB_HAVE_FIRMWARE_UPLOAD 0
 #define FIRMWARE_PREFIX "HISI_"
+#ifndef APP_INSTALL_DIR
+#define APP_INSTALL_DIR "/appfs/ap_cameragimbal"
+#endif
 #ifndef APP_DIR
-#define APP_DIR "/appfs/ap_cameragimbal"
+#define APP_DIR "/date/ap_cameragimbal"
 #endif
 #ifndef MEDIA_ROOT
-#define MEDIA_ROOT "/date"
+#define MEDIA_ROOT "/mnt"
 #endif
-#define WEB_MEDIA_IS_MOUNT 0
-#ifndef CAPTURE_ROOT
-#define CAPTURE_ROOT MEDIA_ROOT "/capture"
+#ifndef REPLACEMENT_CAMERA_PATH
+#define REPLACEMENT_CAMERA_PATH APP_INSTALL_DIR "/bin/camera-app"
+#endif
+#ifndef WEB_PATH
+#define WEB_PATH APP_INSTALL_DIR "/bin/hisi-web"
+#endif
+#ifndef APP_REQUEST_PATH
+#define APP_REQUEST_PATH "/run/camera-app.request"
+#endif
+#ifndef APP_REQUEST_LOCK_PATH
+#define APP_REQUEST_LOCK_PATH "/run/camera-app.request.lock"
+#endif
+#ifndef APP_STARTED_PATH
+#define APP_STARTED_PATH "/run/camera-app.started"
 #endif
 #ifndef REPLACEMENT_CONFIG_PATH
 #define REPLACEMENT_CONFIG_PATH APP_DIR "/camera.ini"
@@ -137,7 +155,7 @@
 #ifndef PASSWORD_PATH
 #define PASSWORD_PATH APP_DIR "/web.pass"
 #endif
-#define APP_STORAGE_PATH APP_DIR
+#define APP_STORAGE_PATH APP_INSTALL_DIR
 #define SETTINGS_STORAGE_PATH APP_DIR
 #ifndef REBOOT_COMMAND
 #define REBOOT_COMMAND "reboot"

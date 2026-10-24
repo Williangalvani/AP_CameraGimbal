@@ -4,75 +4,73 @@ Fixed 4K IP camera on a HiSilicon **Hi3516DV500** (aarch64, Linux 5.10) with a
 Sony **IMX678** CSI sensor. Camera (image pipeline) only — no gimbal, thermal,
 optical zoom or focus.
 
-## Why this is mostly an mt11 derivative
-`src/backends/mt11` already drives the HiSilicon **"ot" MPP** SDK (`ss_mpi_*`,
-`sample_comm`, `scene_auto`) for the `ss928v100` (Hi3519DV500), the direct
-sibling of our Hi3516DV500 (the unified SDK ships "Hi3519DV500 & Hi3516DV500").
-The SDK already includes our sensor libs (`libsns_imx678_2l.a`,
-`libsns_imx662*.a`) and the full ISP suite, so we skip mt11's hand-rolled
-sensor-register path (its `imx586.cpp` / `*_registers.inc`) and let the stock
-`sns_imx678_2l` lib drive the sensor. We derive from mt11's pipeline rather than
-writing MPP from scratch. (Note: `src/backends/zt30` is SigmaStar MI, not
-HiSilicon — not our template.)
+## An mt11 derivative on the Hi3519DV500 SDK
+`src/backends/mt11` drives the HiSilicon **"ot" MPP** SDK (`ss_mpi_*`,
+`sample_comm`) on the SS928. The Hi3516DV500 uses the unified
+**Hi3519DV500** SDK: same API family, chip define `-Dhi3519dv500` (there is no
+separate 3516DV500 define). `hisi` is mt11's pipeline cut down to one RGB
+sensor: no thermal, dual lens, e5739 lens MCU, side-by-side or survey. The
+SDK's stock `libsns_imx678.a` drives the sensor, so mt11's hand-rolled
+`imx586.cpp` register path is not used. (`src/backends/zt30` is SigmaStar MI,
+not a template for this.)
 
-mt11 is dual-sensor (zoom+wide) + thermal + e5739 lens MCU; `hisi` keeps only
-the single RGB sensor path.
+## Build
+`make hisi` at the repository root fetches the pinned Hi3519DV500 MPP sample
+tree (`tools/bootstrap_hisi_mpp.sh`, a sparse checkout of a public Gitee mirror
+into `build/deps/hi3516dv500-mpp`, never committed) and links static aarch64
+`camera_app/build/hisi/camera-app` and `web/hisi-web`. The cross prefix defaults to mt11's
+`aarch64-linux-gnu-`; override with `HISI_CROSS_COMPILE=<prefix>`. The vendor
+firmware itself was built with GCC 10.3 / glibc 2.34, which Bootlin's
+`aarch64--glibc--stable-2021.11-1` toolchain matches.
 
-## What's wired so far (this branch)
-- `include/apcam/target_hisi.h` — target properties (single RGB lens, 2 streams,
-  photo, MAVLink-only, no gimbal/thermal).
-- `include/apcam/target_ids.h`, `target.h`, `targets.mk` — register `APCAM_TARGET_HISI`.
-- `camera_app/Makefile` — `hisi` in `SUPPORTED_BACKENDS`; aarch64 + `-static`;
-  `HISI_MPP_ROOT` points the existing SS928 media machinery at the Hi3516DV500
-  SDK. **The SDK is supplied by the builder and never committed** (license-clean,
-  same as zt30/rpi). Default: `../build/deps/hi3516dv500-mpp`.
-- `control.cpp` — reuses the optional-gimbal CADDX control (no gimbal unless a
-  UART gimbal is configured).
-- `media.cpp` — `APC_Media_Backend::create()` + full backend surface, but the
-  MPP pipeline is a **TODO** (`ready()` is false; no video yet).
+## Pipeline
+- **VI/ISP**: `sample_comm_vi_get_default_vi_cfg(SONY_IMX678_MIPI_8M_30FPS_12BIT)`,
+  4-lane on MIPI dev 0 / VI dev 0 / pipe 0. The vendor app has a 4K60 10-bit mode,
+  so the board wires all 4 lanes. ISP runs on `libsns_imx678` defaults: the
+  factory firmware has no IQ/scene files (its tuning is compiled into `xipc`),
+  so `scene_auto` is not linked.
+- **VB**: sized like the SDK's own 4K venc sample (one 4K 4:2:2 VI pool plus one
+  pool per VPSS channel, JPEG and BNR-motion supplements), about 210 MB with
+  the defaults. Every pool is logged at startup.
+- **VPSS group 0**: channel 0 main (user queue depth 2 for photos), channel 1
+  sub, and channel 2 record (only when needed, enabled only while recording).
+- **VENC**: 0 = main (`/video1`), 1 = sub (`/video2`), 2 = dedicated H.264
+  recorder, 3 = on-demand JPEG still. With the defaults (4K H.264 main, 4K
+  recording) recording reuses the main encoder and VENC 2 is not created.
+  Recordings then carry the main stream's overlay regardless of `osd_recording`.
+- **Rate control**: CBR. The sensor runs at 30 fps; `stream.main` `frame_rate`
+  (5-30) sets the main encoder's output rate, and the sub stream and a
+  dedicated recorder stay at 30. `bitrate_kbps` / `VIDEO_MAIN_KBPS` applies
+  live to the main encoder (so to shared recordings too); 0 (the default) picks
+  12 Mbit/s at 2160p, 4 Mbit/s at 1080p and 2 Mbit/s below.
+- Overlay reuses `mt11/overlay.cpp` (generic `ss_mpi_rgn`); exposure and image
+  controls are mt11's ISP calls on pipe 0.
 
-## Remaining work to produce video (needs the SDK present to compile/iterate)
-1. **Media objects/libs in the Makefile.** `hisi` falls into the mt11-style link
-   arm (the final `else`: aarch64, `-static`, links `MEDIA_LIBS` in
-   `--start-group`). The `OBJECTS` list is currently mt11-specific
-   (`build/mt11_media.o`, `mt11_isp.o`, `mt11_imx586.o`, …). Gate it so for
-   `hisi` it builds `hisi_media.o / hisi_pipeline.o / hisi_isp.o / hisi_overlay.o`
-   instead, keeps `sample_comm_*` + `scene_*` + xop RTSP + minimp4, and **drops
-   the thermal objects/codecs** (`mt11_thermal`, `e5739`, `THERMAL_*`). Link the
-   `sns_imx678_2l` sensor lib (already in `OTHER_SENSOR_LIB_NAMES`).
-2. **Chip define.** mt11 compiles with `-Dss928v100`. Confirm the correct macro
-   for Hi3516DV500 in the SDK (the unified SDK selects the chip variant) and
-   adjust `MEDIA_DEFINES` for `hisi`.
-3. **Pipeline (`pipeline.cpp` + `isp.cpp`, ported from mt11, single sensor).**
-   Mirror `ca_mt11_system_init / configure_vi / vpss_start / scene_start /
-   video_attributes` but for ONE sensor: VI (IMX678 via `sns_imx678_2l`) -> ISP
-   (+ `scene_auto` with an IMX678 IQ file) -> VPSS (main + sub) -> VENC
-   (H.265 main / H.264 sub / JPEG snap). Board specifics to confirm from the
-   device / `libusrplatform.so`: MIPI lane map + data rate, I²C bus
-   (`/dev/i2c-2|7`), and the IMX678 IQ file path (kept on-device, not in repo).
-4. **media.cpp**: port mt11/media.cpp's APC_Media_Backend, dropping thermal and
-   dual-lens. **Photo**: JPEG via a dedicated VENC channel. **Exposure**: via ISP.
+## Bring-up overrides (environment)
+- `CA_HISI_SENSOR_BUS=<0-7>`: sensor I²C bus. The default 3 is the SDK's DMEB
+  reference board value; the vendor loads `sys_config.ko ... board=dmeb`. The
+  `/dev/i2c-2` and `/dev/i2c-7` strings in `xipc` belong to its GM7122 CVBS
+  encoder, not the sensor.
+- `CA_HISI_SENSOR_2LANE=1`: use the 2-lane IMX678 mode
+  (`SONY_IMX678_2L_MIPI_8M_30FPS_10BIT`).
 
-## Firmware update / deployment (fixed camera, safe-by-default)
-The device is UBI-on-SPI-NAND; partitions: U-Boot, env, kernel, DTB,
-UBI(appfs+rootfs), and a writable `/date`. Keep our footprint to the **appfs
-application partition** — the vendor's own update model, which is why their
-`.img` was appfs-only.
+## Status
+Builds, links and starts under `qemu-aarch64`, where it fails cleanly at
+SYS/VB init because there are no MPP drivers. It has not run on the camera yet.
+On first boot check `/proc/media-mem` against the VB plan, the sensor bus, and
+that VENC channels 0 and 1 log their first encoded frames.
 
-- **Build output = an appfs image.** Our `camera-app` + web + assets are packaged
-  as the appfs UBI volume payload, replacing the vendor `xipc`. Kernel / rootfs /
-  U-Boot are left untouched by normal updates.
-- **Flashing** uses the base rootfs's MTD/UBI tools (`ubiupdatevol` / `ubiformat`
-  / `flashcp`) — already on the device; we don't reinvent flashing.
-- **Upload orchestration** is provided by AP_CameraGimbal's own web firmware
-  upload (`WEB_HAVE_FIRMWARE_UPLOAD`, apbundle-style), wired to write the appfs
-  volume. We can also keep accepting the vendor's image format (magic
-  `cbbccaab`, CRC32 at +0xC0, mtd target string) if we want the stock web
-  uploader to accept our images during bring-up.
-- **Validation before flashing**: verify magic + size + CRC32 (and ideally a
-  signature) and that the payload mounts as a valid squashfs; refuse otherwise.
-- **If an image is invalid / appfs is bad**: because only appfs is rewritten, the
-  device still boots its intact kernel + base rootfs and shell (UART/telnet); the
-  app simply doesn't start. Recovery = reflash appfs. Low brick risk. Never let
-  the normal update path rewrite U-Boot/kernel without an A/B scheme + a verified
-  U-Boot recovery (TFTP/Ymodem) fallback.
+## Storage and updates (designed, not implemented)
+- `/appfs` is a read-only squashfs (UBI volume on mtd4). Settings (`camera.ini`,
+  `web.pass`) live on the writable UBIFS `/date/ap_cameragimbal`; recordings,
+  captures and logs go to the microSD card on `/mnt`.
+- Replacing `xipc` means our launcher must load the MPP kernel modules and MMZ,
+  mount the card and serve the web server's restart requests
+  (`/run/camera-app.request` / `.started`). None of it exists yet.
+- Updates: zt30-style application slots on `/date` with trial and automatic
+  rollback, plus a golden copy in appfs. appfs itself is written only for the
+  first install and launcher changes, in the vendor image format, through the
+  stock uploader or the rootfs recovery updater (`/usr/hiface/update`, HTTP
+  `:9091/fwUpgrade`), which survives our appfs. Recovery, in order: slot
+  rollback, the golden copy, telnet (always started by the rootfs), the
+  recovery updater, U-Boot serial.

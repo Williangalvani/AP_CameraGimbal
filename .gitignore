@@ -29,6 +29,7 @@ __pycache__/
 
 /web/z1mini-web
 /web/rpi_libcam_caddx-web
+/web/hisi-web
 
 /camera_app/tests/test_system_stats
 /camera_app/tests/test_binlog_sys

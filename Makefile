@@ -458,6 +458,18 @@ zr10_sitl: generated $(ZR10_SITL_BUILD)/main.h264 $(ZR10_SITL_BUILD)/sub.h264 $(
 zr10_sitl-run: zr10_sitl
 	CAMERA_GIMBAL_SITL_BACKEND=zr10 \
 		CAMERA_GIMBAL_SITL_BUILD=$(abspath $(ZR10_SITL_BUILD)) sh sitl/run.sh
+
+# HiSilicon Hi3516DV500 (IMX678) camera-only build against the pinned
+# Hi3519DV500 MPP sample tree. Build only: nothing here contacts a camera.
+HISI_CROSS_COMPILE ?= aarch64-linux-gnu-
+HISI_MPP_ROOT ?= $(abspath $(DEPS_ROOT)/hi3516dv500-mpp)
+export HISI_MPP_ROOT
+.PHONY: hisi hisi_dependencies
+hisi_dependencies: build-dependencies
+	tools/bootstrap_hisi_mpp.sh '$(HISI_MPP_ROOT)'
+hisi: hisi_dependencies generated
+	$(MAKE) -C camera_app CAMERA_BACKEND=hisi CROSS_COMPILE='$(HISI_CROSS_COMPILE)'
+	$(MAKE) -C web CAMERA_BACKEND=hisi HISI_CROSS_COMPILE='$(HISI_CROSS_COMPILE)' hisi-web
 .PHONY: zr10_sitl-test
 zr10_sitl-test: zr10_sitl
 	python3 sitl/test_unigcs.py $(ZR10_SITL_BUILD)/camera-app --backend zr10 --video-codec h265
