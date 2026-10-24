@@ -168,7 +168,7 @@ test: zt30-parameters-test tests/test_zt30_process $(HOST_TEST) $(A8_HOST_CHECK)
 	node tests/test_video_uri.js webroot/parameters.js
 
 clean:
-	rm -f tests/test_zt30_process tests/test_string_buffer tests/test_webroot mt11-web a8-web zr10-web z1mini-web rpi_libcam_caddx-web zt30-web zt30-dev-web $(HOST_TEST) $(A8_HOST_CHECK) $(RPI_HOST_CHECK)
+	rm -f tests/test_zt30_process tests/test_string_buffer tests/test_webroot mt11-web a8-web zr10-web z1mini-web rpi_libcam_caddx-web hisi-web zt30-web zt30-dev-web $(HOST_TEST) $(A8_HOST_CHECK) $(RPI_HOST_CHECK)
 	rm -rf tests/runtime tests/rpi-runtime build
 
 ZR10_CROSS_COMPILE ?= $(abspath ../build/zr10-deps/armv7-eabihf--uclibc--stable-2018.11-1/bin/arm-linux-)
@@ -211,6 +211,13 @@ $(RPI_HOST_CHECK): mt11-web.cpp gcu_manifest.h z1mini_mavlink.h $(VERSION_HEADER
 		-DAPP_STARTED_PATH='"$(RPI_TEST_ROOT)/camera-app.started"' \
 		-DSOC_TEMPERATURE_PATH='"$(RPI_TEST_ROOT)/soc-temperature"' \
 		-o $@ $< -lm
+
+# HiSilicon Hi3516DV500: static like camera-app, so it carries no runtime pins
+# against the camera's /lib64. MAVLink headers come from the camera_app build.
+HISI_CROSS_COMPILE ?= aarch64-linux-gnu-
+hisi-web: mt11-web.cpp gcu_manifest.h z1mini_mavlink.h $(VERSION_HEADER) $(ICON_HEADER) $(WEBROOT_HEADER) $(APCAM_HEADERS) $(wildcard APC_*.h) $(RPI_MAVLINK)/all/mavlink.h Makefile
+	$(call progress,Linking $@)
+	$(HISI_CROSS_COMPILE)g++ -static $(WEB_CXXFLAGS) -Wno-unused-function -Wno-address-of-packed-member -DAPCAM_TARGET=APCAM_TARGET_HISI -isystem $(RPI_MAVLINK) -o $@ $< -lm
 
 Z1MINI_CROSS_COMPILE ?= arm-none-linux-gnueabihf-
 Z1MINI_MAVLINK := ../camera_app/build/mavlink/all/include

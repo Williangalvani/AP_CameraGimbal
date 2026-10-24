@@ -1,6 +1,10 @@
 #include "camera_app/overlay.h"
 #include "camera_app/log.h"
 #include "ss_mpi_region.h"
+#ifdef hi3519dv500
+// The Hi3519DV500 SDK (hisi backend) renamed the per-channel display call.
+#define ss_mpi_rgn_set_display_attr ss_mpi_rgn_set_chn_display_attr
+#endif
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
