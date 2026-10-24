@@ -16,6 +16,8 @@
 #include "target_z1mini.h"
 #elif APCAM_TARGET == APCAM_TARGET_RPI_LIBCAM_CADDX
 #include "target_rpi_libcam_caddx.h"
+#elif APCAM_TARGET == APCAM_TARGET_HISI
+#include "target_hisi.h"
 #else
 #error "Unsupported APCAM_TARGET"
 #endif
