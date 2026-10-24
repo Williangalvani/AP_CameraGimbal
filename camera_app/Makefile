@@ -3,7 +3,7 @@ include ../tools/build.mk
 
 CAMERA_BACKEND ?= mt11
 include ../include/apcam/targets.mk
-SUPPORTED_BACKENDS := mt11 a8 zr10 zt30 z1mini rpi_libcam_caddx
+SUPPORTED_BACKENDS := mt11 a8 zr10 zt30 z1mini rpi_libcam_caddx hisi
 ifeq ($(filter $(CAMERA_BACKEND),$(SUPPORTED_BACKENDS)),)
 $(error Unsupported CAMERA_BACKEND '$(CAMERA_BACKEND)'; supported backends: $(SUPPORTED_BACKENDS))
 endif
@@ -25,6 +25,13 @@ else ifneq ($(filter $(CAMERA_BACKEND),a8 zr10 zt30 z1mini),)
 CROSS_COMPILE ?= arm-linux-
 LDFLAGS ?=
 TARGET := build/$(CAMERA_BACKEND)/camera-app
+else ifeq ($(CAMERA_BACKEND),hisi)
+# HiSilicon Hi3516DV500: aarch64 glibc, static link against the "ot" MPP SDK
+# (same ss_mpi SDK family as the mt11 backend / ss928v100). The SDK is supplied
+# externally via HISI_MPP_ROOT and never committed to the tree.
+CROSS_COMPILE ?= aarch64-linux-gnu-
+LDFLAGS ?= -static
+TARGET := build/hisi/camera-app
 else
 TARGET := camera-app
 CROSS_COMPILE ?= aarch64-linux-gnu-
@@ -93,6 +100,13 @@ endif
 DEPFLAGS := -MMD -MP
 
 SS928_MPP_ROOT ?= $(abspath ../build/deps/ss928-mpp)
+# HiSilicon Hi3516DV500 MPP SDK, supplied by the builder (headers + static libs),
+# never committed. The Hi3516DV500 shares the "ot" MPP SDK family with ss928v100,
+# so the hisi backend reuses the media machinery below against this root.
+HISI_MPP_ROOT ?= $(abspath ../build/deps/hi3516dv500-mpp)
+ifeq ($(CAMERA_BACKEND),hisi)
+SS928_MPP_ROOT := $(HISI_MPP_ROOT)
+endif
 MINIMP4_ROOT ?= $(abspath ../build/deps/minimp4)
 MINIMP4_HEADER := build/minimp4.h
 SAMPLE_COMMON := $(SS928_MPP_ROOT)/src/common
