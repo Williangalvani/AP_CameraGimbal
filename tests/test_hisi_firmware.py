@@ -89,18 +89,22 @@ class Ubi(unittest.TestCase):
             fw.ubinize(b'\0' * (fw.APPFS_PEBS - 1) * fw.LEB_SIZE)
 
 
+def build_appfs(directory, *extra):
+    staging = Path(directory) / 'stage'
+    (staging / 'sh').mkdir(parents=True)
+    (staging / 'fconfigs').mkdir()
+    (staging / 'sh/start.sh').write_text('#!/bin/sh\n')
+    output = Path(directory) / 'appfs.img'
+    subprocess.run([sys.executable, str(ROOT / 'tools/hisi_firmware.py'), 'appfs', str(staging),
+                    str(output), '--mksquashfs', MKSQUASHFS, *extra],
+                   check=True, stdout=subprocess.DEVNULL)
+    return output
+
+
 @unittest.skipUnless(os.access(MKSQUASHFS, os.X_OK), 'mksquashfs not built (tools/bootstrap_squashfs_tools.sh)')
 class Appfs(unittest.TestCase):
     def build(self, directory, *extra):
-        staging = Path(directory) / 'stage'
-        (staging / 'sh').mkdir(parents=True)
-        (staging / 'fconfigs').mkdir()
-        (staging / 'sh/start.sh').write_text('#!/bin/sh\n')
-        output = Path(directory) / 'appfs.img'
-        subprocess.run([sys.executable, str(ROOT / 'tools/hisi_firmware.py'), 'appfs', str(staging),
-                        str(output), '--mksquashfs', MKSQUASHFS, *extra],
-                       check=True, stdout=subprocess.DEVNULL)
-        return output
+        return build_appfs(directory, *extra)
 
     def test_appfs_squashfs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -152,6 +156,67 @@ class Appfs(unittest.TestCase):
             self.assertIn('Version Code : 0x13020033', text)
             self.assertIn('dest_path=/dev/mtd4', text)
             self.assertNotIn('CRC32 Chack Failed', text)
+
+
+CXX = os.environ.get('CXX', 'c++')
+VENDOR_APPFS = ROOT.parents[1] / 'restore/vendor_appfs_restore.bin'
+
+
+@unittest.skipUnless(shutil.which(CXX), 'no host C++ compiler')
+@unittest.skipUnless(os.access(MKSQUASHFS, os.X_OK), 'mksquashfs not built (tools/bootstrap_squashfs_tools.sh)')
+class WebCheck(unittest.TestCase):
+    """include/apcam/hisi_firmware.h, which hisi-web runs before forwarding to :9091."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        cls.path = Path(cls.directory.name)
+        cls.checker = cls.path / 'check'
+        subprocess.run([CXX, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'include'),
+                        str(ROOT / 'tests/hisi_firmware_check.cpp'), '-o', str(cls.checker)], check=True)
+        cls.good = build_appfs(cls.path).read_bytes()
+        cls.ubi = fw.unpack(cls.good)[1][0][1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def check(self, image, *extra):
+        path = self.path / 'candidate.bin'
+        path.write_bytes(image)
+        result = subprocess.run([str(self.checker), str(path), *extra], capture_output=True, text=True)
+        self.assertEqual(result.returncode == 0, result.stdout.strip() == 'ok', result.stdout)
+        return result.stdout.strip()
+
+    def test_accepts_built_appfs(self):
+        self.assertEqual(self.check(self.good), 'ok')
+
+    @unittest.skipUnless(VENDOR_APPFS.is_file(), 'no vendor appfs restore image')
+    def test_accepts_vendor_restore(self):
+        self.assertEqual(self.check(VENDOR_APPFS.read_bytes()), 'ok')
+
+    def test_device_code_from_updatetype(self):
+        ini = self.path / 'updatetype.ini'
+        ini.write_text('[UPDATE_SET]\nVER = 1\nDEV_TYPE = 19\nSDK_TYPE = 2\nPLATFORM_TYPE = 52\n')
+        self.assertIn('Device code 19/2/51', self.check(self.good, str(ini)))
+        self.assertIn('Device code', self.check(fw.pack([(fw.APPFS_MTD, self.ubi)], device_code=(19, 2, 52))))
+
+    def test_rejects_container(self):
+        self.assertIn('reboot', self.check(fw.pack([(fw.APPFS_MTD, self.ubi)], reboot=False)))
+        self.assertIn('/dev/mtd4', self.check(fw.pack([('/dev/mtd2', self.ubi)])))
+        self.assertIn('exactly one', self.check(fw.pack([(fw.APPFS_MTD, self.ubi), ('/dev/mtd5', b'x')])))
+        self.assertIn('magic', self.check(self.good[:-1]))
+        self.assertIn('too short', self.check(b''))
+        corrupt = bytearray(self.good)
+        corrupt[fw.HEADER_SIZE + fw.ENTRY_SIZE + 2 * fw.PEB_SIZE + fw.DATA_OFFSET + 77] ^= 1
+        self.assertIn('CRC mismatch', self.check(bytes(corrupt)))
+
+    def test_rejects_ubi(self):
+        ubi = bytearray(self.ubi)
+        ubi[fw.PEB_SIZE + 8] ^= 1
+        self.assertIn('EC header', self.check(fw.pack([(fw.APPFS_MTD, bytes(ubi))])))
+        self.assertIn('squashfs', self.check(fw.pack([(fw.APPFS_MTD, sample_ubi())])))
+        self.assertIn('whole number', self.check(fw.pack([(fw.APPFS_MTD, self.ubi[:-1])])))
 
 
 if __name__ == '__main__':
