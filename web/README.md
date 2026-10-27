@@ -101,12 +101,16 @@ bound only to `127.0.0.1:8555` by default. For Z1-Mini, setting
 the private service to that port plus one. It is neither an additional public camera port
 nor an RTSP proxy. `mt11-web` authenticates `/live/video1.mp4` and
 `/live/video2.mp4`, selects the corresponding private stream, and relays the
-bytes without decoding or transcoding. The native `<video>` element consumes
-that URL directly; JavaScript handles status, reconnect, controls and keeping
-playback near the live edge. While playing, a backlog exceeding 1.5 seconds
-reopens the feed at a fresh IDR instead of seeking through stale buffered
-video. Pausing still holds the picture; resuming returns to live automatically.
-Each connection gets five seconds to settle before checking for a backlog.
+bytes without decoding or transcoding. Where Media Source Extensions are
+available, `live.js` fetches that URL and appends the fragments to a
+SourceBuffer as they arrive, holding about 0.1 s: it plays 10% fast above
+0.15 s and seeks to the live edge beyond 0.6 s (`MSE_TARGET`, `MSE_SEEK`).
+The page's policy allows `blob:` media for this. Lower targets stall on the
+4K IDR frames. Without MSE the native `<video>` element plays the URL directly
+and Chrome holds ~0.7 s of it; there a backlog exceeding 1.5 seconds reopens
+the feed at a fresh IDR instead of seeking through stale buffered video, and
+each connection gets five seconds to settle first. Pausing still holds the
+picture; resuming returns to live automatically.
 Each fragment carries a `tfdt` decode timestamp and uses moof-relative
 addressing, matching Chromium's fragmented-MP4 requirements. Stream geometry
 changes close the private feed so the page reconnects with a new MP4

@@ -22,12 +22,81 @@
   if (!script || !video || !stream || !status || !enable || !controlStatus || !rate || !rateValue || !zoom || !zoomValue || !attitudeDial || !attitudeWorld || !attitudeHeading || !attitudeRoll || !attitudePitch || !attitudeYaw || !attitudeRollRate || !attitudePitchRate || !attitudeYawRate || !attitudeStatus) return;
   let retry = null;
   let startedAt = 0;
+  let session = null;
+  const streamUrl = () => '/live/video' + (Number(stream.value) + 1) + '.mp4?start=' + Date.now();
+  // The stream is one fragment per frame, so MSE can play it as it arrives.
+  // A plain <video src> buffers ~0.7 s of it before Chrome starts playing.
+  const useMse = !!(window.MediaSource && window.ReadableStream && MediaSource.isTypeSupported('video/mp4; codecs="avc1.640033"'));
+  const MSE_TARGET = 0.1, MSE_SEEK = 0.6, MSE_KEEP = 10;
+  const boxEnd = (bytes, type) => {
+    for (let at = 0; at + 8 <= bytes.length;) {
+      const size = ((bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3]) >>> 0;
+      if (size < 8) return -1;
+      if (String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]) === type)
+        return at + size <= bytes.length ? at + size : 0;
+      at += size;
+    }
+    return 0;
+  };
+  const avcCodec = bytes => {
+    for (let at = 0; at + 8 <= bytes.length; at++) {
+      if (bytes[at] === 0x61 && bytes[at + 1] === 0x76 && bytes[at + 2] === 0x63 && bytes[at + 3] === 0x43)
+        return 'avc1.' + [bytes[at + 5], bytes[at + 6], bytes[at + 7]].map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    return 'avc1.640033';
+  };
+  const join = (a, b) => { const out = new Uint8Array(a.length + b.length); out.set(a); out.set(b, a.length); return out; };
+  const playMse = async current => {
+    const response = await fetch(streamUrl(), {cache: 'no-store', signal: current.abort.signal});
+    if (!response.ok || !response.body) throw new Error('HTTP ' + response.status);
+    const reader = response.body.getReader();
+    let head = new Uint8Array(0), end = 0;
+    while (!(end = boxEnd(head, 'moov'))) {
+      const {value, done} = await reader.read();
+      if (done) throw new Error(L.streamEnded);
+      head = join(head, value);
+    }
+    if (end < 0) throw new Error(L.errorDecode);
+    const source = new MediaSource();
+    video.src = URL.createObjectURL(source);
+    await new Promise(resolve => source.addEventListener('sourceopen', resolve, {once: true}));
+    URL.revokeObjectURL(video.src);
+    if (session !== current) return;
+    const buffer = source.addSourceBuffer('video/mp4; codecs="' + avcCodec(head.subarray(0, end)) + '"');
+    const queue = [head];
+    let ended = false;
+    const buffered = () => buffer.buffered.length > 0;
+    const pump = () => {
+      if (buffer.updating || session !== current || source.readyState !== 'open') return;
+      if (buffered() && video.currentTime - buffer.buffered.start(0) > 2 * MSE_KEEP) {
+        buffer.remove(0, video.currentTime - MSE_KEEP); return;
+      }
+      if (!queue.length) { if (ended) source.endOfStream(); return; }
+      const chunk = queue.length === 1 ? queue[0] : queue.reduce(join);
+      queue.length = 0;
+      buffer.appendBuffer(chunk);
+    };
+    buffer.addEventListener('updateend', () => { chase(); pump(); });
+    buffer.addEventListener('error', () => reconnect(L.liveUnavailable + L.errorDecode));
+    video.play().catch(() => {});
+    pump();
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (session !== current) return;
+      if (done) { ended = true; pump(); return; }
+      queue.push(value); pump();
+    }
+  };
   const start = () => {
     if (retry !== null) { window.clearTimeout(retry); retry = null; }
+    if (session) session.abort.abort();
     startedAt = performance.now();
     status.textContent = L.connecting;
-    video.src = '/live/video' + (Number(stream.value) + 1) + '.mp4?start=' + Date.now();
-    video.load(); video.play().catch(() => {});
+    if (!useMse) { session = null; video.src = streamUrl(); video.load(); video.play().catch(() => {}); return; }
+    const current = session = {abort: new AbortController()};
+    playMse(current).catch(error => {
+      if (session === current && error.name !== 'AbortError') reconnect(L.liveUnavailable + (error.message || L.unknownError));
+    });
   };
   const reconnect = message => {
     status.textContent = message + L.retrying;
@@ -41,10 +110,21 @@
     const detail = video.error ? (names[video.error.code] || (L.errorCode + video.error.code)) + (video.error.message ? ': ' + video.error.message : '') : L.unknownError;
     reconnect(L.liveUnavailable + detail);
   });
+  // MSE holds only what has arrived, so it can seek forward to the live edge.
+  // Leave an intentional pause alone.
+  const chase = () => {
+    if (video.paused || video.seeking || !video.buffered.length) return;
+    const last = video.buffered.length - 1, from = video.buffered.start(last), end = video.buffered.end(last);
+    if (video.currentTime < from || end - video.currentTime > MSE_SEEK) {
+      video.currentTime = Math.max(from, end - MSE_TARGET); return;
+    }
+    video.playbackRate = end - video.currentTime > MSE_TARGET + 0.05 ? 1.1 : 1.0;
+  };
   // Native players can keep playing an old buffer after an underrun.
   // Reopen at a fresh IDR: seeking a growing HTTP MP4 can fail or decode
-  // the old backlog again. Leave an intentional pause alone.
+  // the old backlog again.
   const catchUp = () => {
+    if (useMse) { chase(); return; }
     if (video.paused || video.seeking || video.readyState < 2 || !video.buffered.length) return;
     if (performance.now() - startedAt < 5000) return; // let a new decoder settle
     const last = video.buffered.length - 1;

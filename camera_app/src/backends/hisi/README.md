@@ -61,6 +61,9 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   dedicated recorder stay at 30. `bitrate_kbps` / `VIDEO_MAIN_KBPS` applies
   live to the main encoder (so to shared recordings too); 0 (the default) picks
   12 Mbit/s at 2160p, 4 Mbit/s at 1080p and 2 Mbit/s below.
+- **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
+  `max_num_reorder_frames = 0`. Without it Chrome's decoder holds the level's
+  whole DPB (5 frames at 4K) before showing the first one.
 - Overlay reuses `mt11/overlay.cpp` (generic `ss_mpi_rgn`); exposure and image
   controls are mt11's ISP calls on pipe 0.
 
