@@ -14,19 +14,37 @@ SDK's stock `libsns_imx678.a` drives the sensor, so mt11's hand-rolled
 `imx586.cpp` register path is not used. (`src/backends/zt30` is SigmaStar MI,
 not a template for this.)
 
+## SDK release
+The camera's `ot_*.ko` are `HI3519DV500_MPP_V2.0.1.0 B040`. The public
+V2.0.2.0 sample tree is B050, and its ioctl structs differ (VENC stream 0x218
+against B040's 0x1d8, channel attributes 0x80 against 0x74, region attach,
+ISP sync), so a B050 build fails at its first encoder call. The B040 user
+side is public as SDK V1.0.1.1 B040, whose ioctls all match the camera's
+drivers. camera-app therefore keeps the camera's kernel modules and builds
+against:
+- headers from OpenIPC `openhisilicon`;
+- the MPP shared libraries from OpenIPC `firmware` (musl builds);
+- a B040-era IMX678 driver (`open-source-toolkit/c0e5d`, 4-lane only), which
+  ships the IMX515 IQ tables.
+
+`sample_comm` and xop still come from the V2.0.2.0 tree. `sdk_compat.h`
+covers what they need that B040 lacks, and `sensor_stubs.c` defines the
+sensors that `sample_comm_isp.c` can name but which are not linked.
+
 ## Build
-`make hisi` at the repository root fetches the pinned Hi3519DV500 MPP sample
-tree (`tools/bootstrap_hisi_mpp.sh`, a sparse checkout of a public Gitee mirror
-into `build/deps/hi3516dv500-mpp`, never committed) and links static aarch64
-`camera_app/build/hisi/camera-app` and `web/hisi-web`. The cross prefix defaults to mt11's
-`aarch64-linux-gnu-`; override with `HISI_CROSS_COMPILE=<prefix>`. The vendor
-firmware itself was built with GCC 10.3 / glibc 2.34, which Bootlin's
-`aarch64--glibc--stable-2021.11-1` toolchain matches.
+`make hisi` at the repository root fetches, pinned and never committed: the
+Bootlin musl toolchain (`tools/bootstrap_hisi_toolchain.sh`), the V2.0.2.0
+sample tree (`tools/bootstrap_hisi_mpp.sh`) and the B040 tree
+(`tools/bootstrap_hisi_b040.sh`). It links `camera_app/build/hisi/camera-app`
+against the B040 libraries, with musl's loader at
+`/appfs/ap_cameragimbal/lib/ld-musl-aarch64.so.1` (the rootfs has only
+glibc), and a static musl `web/hisi-web`. Override the prefix with
+`HISI_CROSS_COMPILE=<prefix>`.
 
 ## Pipeline
 - **VI/ISP**: `sample_comm_vi_get_default_vi_cfg(SONY_IMX678_MIPI_8M_30FPS_12BIT)`,
   4-lane on MIPI dev 0 / VI dev 0 / pipe 0. The vendor app has a 4K60 10-bit mode,
-  so the board wires all 4 lanes. ISP runs on `libsns_imx678` defaults: the
+  so the board wires all 4 lanes. ISP runs on the IMX678 driver's defaults: the
   factory firmware has no IQ/scene files (its tuning is compiled into `xipc`),
   so `scene_auto` is not linked.
 - **VB**: sized like the SDK's own 4K venc sample (one 4K 4:2:2 VI pool plus one
@@ -51,26 +69,53 @@ firmware itself was built with GCC 10.3 / glibc 2.34, which Bootlin's
   reference board value; the vendor loads `sys_config.ko ... board=dmeb`. The
   `/dev/i2c-2` and `/dev/i2c-7` strings in `xipc` belong to its GM7122 CVBS
   encoder, not the sensor.
-- `CA_HISI_SENSOR_2LANE=1`: use the 2-lane IMX678 mode
-  (`SONY_IMX678_2L_MIPI_8M_30FPS_10BIT`).
 
 ## Status
-Builds, links and starts under `qemu-aarch64`, where it fails cleanly at
-SYS/VB init because there are no MPP drivers. It has not run on the camera yet.
-On first boot check `/proc/media-mem` against the VB plan, the sensor bus, and
-that VENC channels 0 and 1 log their first encoded frames.
+Builds, links and starts under `qemu-aarch64` from the unpacked appfs image
+(every B040 symbol resolves through the musl loader), then fails cleanly at
+SYS/VB init because there are no MPP drivers. The supervisor and web UI pass
+`make hisi-test` on the host. Nothing has run on the camera yet. On first boot
+check `/proc/media-mem` against the VB plan, the sensor bus, and that VENC
+channels 0 and 1 log their first encoded frames.
 
-## Storage and updates (designed, not implemented)
-- `/appfs` is a read-only squashfs (UBI volume on mtd4). Settings (`camera.ini`,
-  `web.pass`) live on the writable UBIFS `/date/ap_cameragimbal`; recordings,
-  captures and logs go to the microSD card on `/mnt`.
-- Replacing `xipc` means our launcher must load the MPP kernel modules and MMZ,
-  mount the card and serve the web server's restart requests
-  (`/run/camera-app.request` / `.started`). None of it exists yet.
-- Updates: zt30-style application slots on `/date` with trial and automatic
-  rollback, plus a golden copy in appfs. appfs itself is written only for the
-  first install and launcher changes, in the vendor image format, through the
-  stock uploader or the rootfs recovery updater (`/usr/hiface/update`, HTTP
-  `:9091/fwUpgrade`), which survives our appfs. Recovery, in order: slot
-  rollback, the golden copy, telnet (always started by the rootfs), the
-  recovery updater, U-Boot serial.
+## Storage
+`/appfs` is a read-only squashfs (UBI volume on mtd4). Settings (`camera.ini`,
+`web.pass`) live on the writable UBIFS `/date/ap_cameragimbal`; recordings,
+captures and logs go to the microSD card on `/mnt`.
+
+## Boot (`packaging/hisi`)
+rcS starts the rootfs recovery updater, then `/appfs/sh/start.sh`, then
+telnetd. Our `start.sh` replaces the vendor one and never starts `xipc`:
+it mounts the tmpfs `/tmp` and `/var` that `xipc` used to, then runs
+`ap_cameragimbal/service.sh`. The supervisor:
+- loads the MPP modules with `xipc`'s list, order and parameters
+  (`sys_config.ko sensors=sns0=imx515 board=dmeb`, and MMZ from `mem=` on a
+  1 GiB DDR: the stock `mem=384M` gives `mmz=anonymous,0,0x58200000,638M`), except
+  `ot_wdt`, which nothing feeds yet;
+- mounts the card's first partition on `/mnt` and creates `DCIM/record`,
+  `DCIM/capture` and `logs` only on a mounted card;
+- seeds `camera.ini` and `web.pass` (`ardupilot`) on first boot;
+- runs `hisi-web` on port 80 and camera-app with the web's restart protocol
+  (`/run/camera-app.request` / `.started`). A driver or startup failure leaves
+  the web UI up and waits for a restart from it.
+
+`/date/ap_cameragimbal/mpp.conf` may set `MPP_SENSOR`, `MPP_BOARD`,
+`MPP_DDR_MB`, `MPP_MMZ_START` or `MPP_MMZ_SIZE` for bring-up. The address
+needs no setup: the recovery updater applies the saved `eth0` MAC, IP and
+gateway from `/appfs/fconfigs/param/updatetype.ini` at boot, independently
+of `xipc`. Logs are in `/run` (`camera_app.log`, `hisi-web.log`,
+`hisi-service.log`).
+
+## Updates
+`make hisi_appfs` writes `build/HISI_AP_<version>_<hash>_appfs.bin`, a whole
+appfs (mtd4) image in the vendor update format: a squashfs in a UBI image in
+the vendor container. The stock uploader takes it, and so does the rootfs
+recovery updater (`/usr/hiface/update`, HTTP `POST :9091/fwUpgrade`, raw
+body), which survives our appfs. The camera erases mtd4, writes the image
+and reboots. `tests/test_hisi_firmware.py` checks the format, and with
+`HISI_VENDOR_ROOTFS` set it runs the vendor updater under qemu against it.
+
+Planned: zt30-style application slots on `/date` with trial and automatic
+rollback, with the appfs copy as the golden fallback, so routine updates do
+not rewrite appfs. Recovery, in order: slot rollback, the golden copy, telnet
+(always started by the rootfs), the recovery updater, U-Boot serial.
