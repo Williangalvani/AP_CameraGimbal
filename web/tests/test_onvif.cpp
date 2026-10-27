@@ -1,5 +1,8 @@
 #include "../APC_ONVIF.h"
 #include <cassert>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <string>
 
 static std::string fixture(const char *name)
@@ -31,6 +34,9 @@ static void test_sha1_base64()
     // 56 bytes: the length no longer fits the first padding block
     assert(sha1_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
            "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+    // 112 bytes: one whole block before the padding
+    assert(sha1_hex("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu") ==
+           "a49b2446a02c645bf419f995b67091253a04a259");
 
     char text[16];
     assert(apc_onvif::base64_encode((const unsigned char *)"Man", 3, text, sizeof(text)) == 4 && !strcmp(text, "TWFu"));
@@ -77,6 +83,9 @@ static void test_username_token()
     assert(apc_onvif::check_username_token(guide, "admin", "userpassword") == apc_onvif::Auth::ok);
     assert(apc_onvif::check_username_token(guide, "admin", "userpassworD") == apc_onvif::Auth::bad);
     assert(apc_onvif::check_username_token(guide, "operator", "userpassword") == apc_onvif::Auth::bad);
+    const std::string stamped =
+        std::string("<wsu:Timestamp><wsu:Created>2010-09-16T07:50:44Z</wsu:Created></wsu:Timestamp>") + guide;
+    assert(apc_onvif::check_username_token(stamped.c_str(), "admin", "userpassword") == apc_onvif::Auth::ok);
 
     const std::string mcm = fixture("GetDeviceInformation.xml");
     assert(apc_onvif::check_username_token(mcm.c_str(), "admin", "blue") == apc_onvif::Auth::ok);
@@ -96,12 +105,24 @@ static void test_probe()
         id, sizeof(id)));
 }
 
+static void test_hostile()
+{
+    // Requests are parsed before authentication, so the scan must stay linear.
+    const std::string angles(256 * 1024, '<');
+    char text[64];
+    const auto start = std::chrono::steady_clock::now();
+    assert(!apc_onvif::body_operation(angles.c_str(), text, sizeof(text)));
+    assert(apc_onvif::check_username_token(angles.c_str(), "admin", "blue") == apc_onvif::Auth::missing);
+    assert(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(200));
+}
+
 int main()
 {
     test_sha1_base64();
     test_xml();
     test_username_token();
     test_probe();
+    test_hostile();
     puts("test_onvif: ok");
     return 0;
 }

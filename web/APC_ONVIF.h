@@ -122,7 +122,7 @@ inline const char *next_start_tag(const char *p, const char **local, size_t *loc
     for (p = strchr(p, '<'); p != NULL; p = strchr(p + 1, '<')) {
         const char *name = p + 1;
         if (*name == '/' || *name == '?' || *name == '!') continue;
-        const char *end = name + strcspn(name, " \t\r\n/>");
+        const char *end = name + strcspn(name, " \t\r\n/><");
         const char *colon = (const char *)memchr(name, ':', (size_t)(end - name));
         *local = colon != NULL ? colon + 1 : name;
         *local_length = (size_t)(end - *local);
@@ -184,14 +184,22 @@ inline bool body_operation(const char *xml, char *out, size_t capacity)
 enum class Auth { ok, missing, bad };
 
 /* WS-Security UsernameToken, PasswordDigest = Base64(SHA-1(nonce + created +
- * password)). Created isn't compared with the clock, which may not be set. */
+ * password)). Created isn't compared with the clock, which may not be set.
+ * The fields are read from the token on, so a wsu:Timestamp's Created before
+ * it can't stand in for the token's. */
 inline Auth check_username_token(const char *xml, const char *user, const char *password)
 {
+    const char *local;
+    size_t length;
+    const char *token = next_start_tag(xml, &local, &length);
+    while (token != NULL && !local_name_is(local, length, "UsernameToken")) {
+        token = next_start_tag(token + 1, &local, &length);
+    }
     char username[64], digest[64], nonce[96], created[64];
-    if (!element_text(xml, "Username", username, sizeof(username))) return Auth::missing;
-    if (!element_text(xml, "Password", digest, sizeof(digest)) ||
-        !element_text(xml, "Nonce", nonce, sizeof(nonce)) ||
-        !element_text(xml, "Created", created, sizeof(created)) ||
+    if (token == NULL || !element_text(token, "Username", username, sizeof(username))) return Auth::missing;
+    if (!element_text(token, "Password", digest, sizeof(digest)) ||
+        !element_text(token, "Nonce", nonce, sizeof(nonce)) ||
+        !element_text(token, "Created", created, sizeof(created)) ||
         strcmp(username, user) != 0) return Auth::bad;
     unsigned char material[64 + sizeof(created) + 128];
     size_t used = 0;
@@ -205,8 +213,11 @@ inline Auth check_username_token(const char *xml, const char *user, const char *
     unsigned char hash[20];
     char expected[32];
     sha1(material, used, hash);
-    base64_encode(hash, sizeof(hash), expected, sizeof(expected));
-    return strcmp(expected, digest) == 0 ? Auth::ok : Auth::bad;
+    const size_t expected_length = base64_encode(hash, sizeof(hash), expected, sizeof(expected));
+    if (expected_length == 0U || strlen(digest) != expected_length) return Auth::bad;
+    unsigned char difference = 0;
+    for (size_t i = 0; i < expected_length; i++) difference |= (unsigned char)(expected[i] ^ digest[i]);
+    return difference == 0U ? Auth::ok : Auth::bad;
 }
 
 /* The MessageID of a WS-Discovery Probe; false for any other message. */

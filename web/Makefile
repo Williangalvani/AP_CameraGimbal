@@ -173,7 +173,7 @@ test: zt30-parameters-test tests/test_zt30_process $(HOST_TEST) $(A8_HOST_CHECK)
 	node tests/test_video_uri.js webroot/parameters.js
 
 clean:
-	rm -f tests/test_zt30_process tests/test_string_buffer tests/test_webroot mt11-web a8-web zr10-web z1mini-web rpi_libcam_caddx-web hisi-web zt30-web zt30-dev-web $(HOST_TEST) $(A8_HOST_CHECK) $(RPI_HOST_CHECK)
+	rm -f tests/test_zt30_process tests/test_string_buffer tests/test_onvif tests/test_webroot mt11-web a8-web zr10-web z1mini-web rpi_libcam_caddx-web hisi-web zt30-web zt30-dev-web $(HOST_TEST) $(A8_HOST_CHECK) $(RPI_HOST_CHECK)
 	rm -rf tests/runtime tests/rpi-runtime build
 
 ZR10_CROSS_COMPILE ?= $(abspath ../build/zr10-deps/armv7-eabihf--uclibc--stable-2018.11-1/bin/arm-linux-)
