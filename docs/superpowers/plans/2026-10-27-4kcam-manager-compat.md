@@ -26,7 +26,7 @@
 - Worktree: `/Users/will/git/4kcamera_works/tools/AP_CameraGimbal/.worktrees/hisi-next` (branch `hisi-next`). All paths below are relative to it.
 - Cross-build hisi-web: `PATH=/opt/homebrew/opt/llvm/bin:$PATH make -C web CAMERA_BACKEND=hisi HISI_CROSS_COMPILE=/Users/will/git/4kcamera_works/tools/hisi-clang/bin/aarch64-linux- hisi-web`
 - Camera `192.168.2.10` (telnet through `/Users/will/git/4kcamera_works/tools/camsh.py`); the Mac is `192.168.2.15` on that LAN. `camera.ini` is `/date/ap_cameragimbal/camera.ini`.
-- willpc: `will@192.168.15.108`, Linux with `g++`, `make`, `python3`, `rsync`, `cargo`. It is not on the camera's LAN.
+- willpc: `will@192.168.15.108`, Linux with `g++`, `make`, `python3`, `rsync`, and `cargo` in `~/.cargo/bin` (not on the non-interactive ssh `PATH`). It is not on the camera's LAN.
 
 **RAM deploy of hisi-web** (used by Tasks 6–8; a reboot undoes it):
 
@@ -250,7 +250,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 host=$1
 mode=$2
 rsync -a --delete --exclude target --exclude replies --exclude requests "$here/" "$host:onvif-check/"
-ssh "$host" 'cd onvif-check && cargo build --release -q'
+ssh "$host" 'cd onvif-check && PATH="$HOME/.cargo/bin:$PATH" cargo build --release -q'
 rsync -a "$host:onvif-check/Cargo.lock" "$here/Cargo.lock"
 case "$mode" in
 requests)
