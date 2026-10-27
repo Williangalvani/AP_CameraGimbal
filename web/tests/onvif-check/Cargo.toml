@@ -1,0 +1,12 @@
+[package]
+name = "onvif-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+async-trait = "0.1"
+onvif = { git = "https://github.com/lumeohq/onvif-rs", rev = "8e2408db" }
+onvif-schema = { git = "https://github.com/lumeohq/onvif-rs", rev = "8e2408db", package = "schema", features = ["devicemgmt", "media"] }
+tokio = { version = "1", features = ["macros", "rt"] }
+yaserde = "0.7.1"

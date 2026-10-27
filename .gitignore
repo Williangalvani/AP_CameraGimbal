@@ -35,6 +35,10 @@ __pycache__/
 /camera_app/tests/test_binlog_sys
 
 /web/tests/test_string_buffer
+/web/tests/test_onvif
+/web/tests/test_fourkcam
+/web/tests/onvif-check/target/
+/web/tests/onvif-check/replies/
 
 /web/tests/test_webroot
 
