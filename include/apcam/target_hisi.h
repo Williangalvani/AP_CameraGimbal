@@ -37,6 +37,8 @@
 #define APCAM_HAVE_GIMBAL_RATES 0
 /* Fixed camera: no gimbal advertised. */
 #define APCAM_GIMBAL_OPTIONAL 1
+/* No external UART is exposed, so no gimbal can be attached either. */
+#define APCAM_HAVE_GIMBAL 0
 #define APCAM_SUPPRESS_DUPLICATE_ANGLES 0
 #define APCAM_WEB_CENTER_COMMAND 3
 #define APCAM_HAVE_OPTICAL_ZOOM 0
@@ -49,8 +51,10 @@
 #define APCAM_HAVE_SITL 0
 /* The device's own network service owns the interfaces for now. */
 #define APCAM_HAVE_NETWORK_CONFIG 0
+/* No thermal zone; ot_pm reports the die temperature in its status table. */
 #ifndef SOC_TEMPERATURE_PATH
-#define SOC_TEMPERATURE_PATH "/sys/class/thermal/thermal_zone0/temp"
+#define SOC_TEMPERATURE_PATH "/proc/umap/pm"
+#define SOC_TEMPERATURE_FIELD "cur_temp:"
 #endif
 #define APCAM_VENDOR_PORT 0
 #define APCAM_WEB_PORT 80

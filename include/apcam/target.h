@@ -31,6 +31,11 @@
 #ifndef APCAM_GIMBAL_OPTIONAL
 #define APCAM_GIMBAL_OPTIONAL 0
 #endif
+/* Targets that can never have a gimbal set this to 0; the web UI then omits
+ * pan/tilt controls, attitude, survey and gimbal-pointing settings. */
+#ifndef APCAM_HAVE_GIMBAL
+#define APCAM_HAVE_GIMBAL 1
+#endif
 /* Targets with selectable photo sizes (needing a sensor mode switch) set this
  * to 1 and define APCAM_PHOTO_{BINNED,FULL}_{WIDTH,HEIGHT,NAME}. */
 #ifndef APCAM_HAVE_PHOTO_RESOLUTION

@@ -48,8 +48,12 @@
     if (video.paused || video.seeking || video.readyState < 2 || !video.buffered.length) return;
     if (performance.now() - startedAt < 5000) return; // let a new decoder settle
     const last = video.buffered.length - 1;
-    const end = video.buffered.end(last);
-    if (end - video.currentTime > 1.5) start();
+    const lag = video.buffered.end(last) - video.currentTime;
+    if (lag > 1.5) { start(); return; }
+    // Native players hold ~0.7 s of a live MP4; play slightly fast to drain it.
+    // Below ~0.25 s Chrome underruns and stutters, so stop well short of that.
+    if (lag > 0.45) video.playbackRate = 1.1;
+    else if (lag < 0.3) video.playbackRate = 1.0;
   };
   window.setInterval(catchUp, 250);
   stream.addEventListener('change', start); start();
@@ -155,5 +159,5 @@
     } catch (error) { attitudeUnavailable(L.attitudeFailed + (error && error.message ? error.message : L.unknownError)); }
     finally { attitudePending = false; }
   };
-  refreshAttitude(); window.setInterval(refreshAttitude, 250);
+  if (script.dataset.gimbal !== '0') { refreshAttitude(); window.setInterval(refreshAttitude, 250); }
 })();

@@ -31,3 +31,22 @@ inline bool apcam_read_soc_temperature(const char *path,bool labelled_celsius,in
     std::fclose(file);
     return complete && apcam_parse_soc_temperature(text,labelled_celsius,millidegrees);
 }
+// HiSilicon /proc/umap/pm is a table; the value follows "cur_temp:" in Celsius.
+inline bool apcam_read_soc_temperature_field(const char *path,const char *field,int *millidegrees)
+{
+    FILE *file=std::fopen(path,"r");if(!file)return false;
+    char line[256];bool ok=false;
+    const size_t field_length=std::strlen(field);
+    while(!ok && std::fgets(line,sizeof(line),file)) {
+        const char *at=std::strstr(line,field);
+        if(!at)continue;
+        at+=field_length;
+        while(*at==' ' || *at=='\t')++at;
+        errno=0;char *end=nullptr;const long value=std::strtol(at,&end,10);
+        if(errno==ERANGE || end==at || (*end && !std::isspace(static_cast<unsigned char>(*end))))break;
+        if(value<-40 || value>150)break;
+        *millidegrees=int(value)*1000;ok=true;
+    }
+    std::fclose(file);
+    return ok;
+}
