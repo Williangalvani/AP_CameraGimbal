@@ -16,6 +16,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -60,9 +61,11 @@ def camsh(args, command, timeout=30):
     return result.stdout
 
 
-def post(url, body, content_type):
-    request = urllib.request.Request(url, data=body.encode(), method='POST',
-                                     headers={'Content-Type': content_type})
+def post(url, body, content_type, origin=None):
+    headers = {'Content-Type': content_type}
+    if origin is not None:
+        headers['Origin'] = origin
+    request = urllib.request.Request(url, data=body.encode(), method='POST', headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=30) as reply:
             return reply.status, reply.read().decode()
@@ -85,9 +88,9 @@ def is_action_reply(text):
         return False
 
 
-def action(args, name, fields=None):
+def action(args, name, fields=None, origin=None):
     body = json.dumps(fields) if fields is not None else ''
-    status, text = post(f'http://{args.camera}/action/{name}', body, 'application/json')
+    status, text = post(f'http://{args.camera}/action/{name}', body, 'application/json', origin)
     return status, (json.loads(text) if status == 200 else None)
 
 
@@ -110,12 +113,12 @@ def username_token(password, user='admin'):
             '</wsse:UsernameToken></wsse:Security></s:Header>')
 
 
-def soap(args, operation, password):
+def soap(args, operation, password, origin=None):
     header = username_token(password) if password is not None else ''
     envelope = ('<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
                 'xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
                 f'xmlns:tt="http://www.onvif.org/ver10/schema">{header}<s:Body>{operation}</s:Body></s:Envelope>')
-    return post(f'http://{args.camera}/onvif/device_service', envelope, 'application/soap+xml; charset=utf-8')
+    return post(f'http://{args.camera}/onvif/device_service', envelope, 'application/soap+xml; charset=utf-8', origin)
 
 
 def save(args, kind, text):
@@ -126,6 +129,8 @@ def save(args, kind, text):
 def check_onvif(args, check):
     status, text = soap(args, '<tds:GetSystemDateAndTime/>', None)
     check(status == 200 and 'UTCDateTime' in text, 'GetSystemDateAndTime without a login')
+    status, text = soap(args, '<tds:GetSystemDateAndTime/>', None, origin='http://example.com')
+    check(status == 403 and 'UTCDateTime' not in text, f'GetSystemDateAndTime from a browser (Origin) is 403 ({status})')
     status, text = soap(args, '<tds:GetDeviceInformation/>', None)
     check(status == 400 and 'ter:NotAuthorized' in text, 'GetDeviceInformation without a login is NotAuthorized')
     save(args, 'not-authorized', text)
@@ -170,6 +175,8 @@ def check_actions(args, check):
           f"getSysConfig MAC {reply and reply['device_mac']} and ID {reply and reply['device_id']} are set")
     status, text = get(f'http://{args.camera}/action/getSysConfig')
     check(not (status == 200 and is_action_reply(text)), f'GET /action needs a login ({status})')
+    status, text = post(f'http://{args.camera}/action/getSysConfig', '', 'application/json', 'http://example.com')
+    check(status == 403 and not is_action_reply(text), f'/action/getSysConfig from a browser (Origin) is 403 ({status})')
     status, reply = action(args, 'noSuchAction', {})
     check(status == 200 and reply['code'] == -1, 'an unknown action is code -1')
     status, image = action(args, 'getImageAdjustment')
@@ -183,6 +190,10 @@ def check_actions(args, check):
               f'getVencConf channel {channel} types')
 
     level = 204 if image['brightness'] != 204 else 128
+    status, _ = action(args, 'setImageAdjustment', {'brightness': level}, origin='http://example.com')
+    _, after = action(args, 'getImageAdjustment')
+    check(status == 403 and after['brightness'] == image['brightness'],
+          f"setImageAdjustment from a browser (Origin) is 403 and changes nothing ({status}, {after['brightness']})")
     round_trip(args, check, 'setImageAdjustment', {'brightness': level}, 'getImageAdjustment', None, {'brightness': level})
     round_trip(args, check, 'setImageAdjustment', {'auto_awb': 1, 'awb_red': 40, 'awb_blue': 60},
                'getImageAdjustment', None, {'auto_awb': 1, 'awb_red': 40, 'awb_blue': 60})
@@ -195,6 +206,15 @@ def check_actions(args, check):
                {'mirror': 1, 'flip': 1})
     round_trip(args, check, 'setImageAdjustmentEx', {'mirror': 0, 'flip': 0}, 'getImageAdjustmentEx', None,
                {'mirror': 0, 'flip': 0})
+    # the extension's ImageTab sends mirror or flip alone
+    round_trip(args, check, 'setImageAdjustmentEx', {'mirror': 1}, 'getImageAdjustmentEx', None,
+               {'mirror': 1, 'flip': 1})
+    round_trip(args, check, 'setImageAdjustmentEx', {'flip': 0}, 'getImageAdjustmentEx', None,
+               {'mirror': 0, 'flip': 0})
+    round_trip(args, check, 'setImageAdjustmentEx', {'flip': 1}, 'getImageAdjustmentEx', None,
+               {'mirror': 1, 'flip': 1})
+    round_trip(args, check, 'setImageAdjustmentEx', {'mirror': 0}, 'getImageAdjustmentEx', None,
+               {'mirror': 0, 'flip': 0})
     round_trip(args, check, 'setVencConf', {'channel': 0, 'bitrate': 8000}, 'getVencConf', {'channel': 0},
                {'bitrate': 8000})
     status, reply = action(args, 'setVencConf', {'channel': 2, 'bitrate': 32})
@@ -204,10 +224,20 @@ def check_actions(args, check):
     round_trip(args, check, 'setVencConf', {'channel': 1, 'bitrate': sub['bitrate'] // 2 + 1, 'frame_rate': 15, 'gop': 15},
                'getVencConf', {'channel': 1}, sub_settings)
 
+    # set_default restores the web's defaults (50 %, auto) and ignores the other fields
+    round_trip(args, check, 'setImageAdjustment', {'brightness': 204, 'contrast': 51, 'auto_awb': 1, 'awb_red': 40,
+                                                   'awb_auto_mode': 1, 'auto_exposureEx': 1, 'exposure_time': 400},
+               'getImageAdjustment', None, {'brightness': 204, 'contrast': 51, 'auto_awb': 1, 'awb_auto_mode': 1,
+                                            'auto_exposureEx': 1})
+    round_trip(args, check, 'setImageAdjustment', {'set_default': 1, 'brightness': 10}, 'getImageAdjustment', None,
+               {'brightness': 128, 'contrast': 128, 'saturation': 128, 'auto_awb': 0, 'awb_auto_mode': 0,
+                'auto_exposureEx': 0})
+
     round_trip(args, check, 'setImageAdjustment', {'auto_awb': 0}, 'getImageAdjustment', None, {'auto_awb': 0})
     started = time.time()
     status, reply = action(args, 'setImageAdjustmentEx', {'onceAWB': 1})
     check(status == 200 and reply['code'] == 0 and time.time() - started < 2, 'onceAWB replies at once')
+    args.one_push_pending = True
     deadline = time.time() + 10
     image = None
     while time.time() < deadline:
@@ -215,13 +245,30 @@ def check_actions(args, check):
         if image and image['auto_awb'] == 1:
             break
         time.sleep(0.5)
-    check(image is not None and image['auto_awb'] == 1, f'onceAWB leaves manual gains within 10 s: {image}')
+    if check(image is not None and image['auto_awb'] == 1, f'onceAWB leaves manual gains within 10 s: {image}'):
+        args.one_push_pending = False
 
 
-def probe(args, message_id=None, timeout=3.0):
+def wait_one_push(args, timeout=20):
+    """Waits until camera-app has taken the one-push request and written its
+    outcome, so a late measurement can't save its gains over the restore."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if 'finished' in camsh(args, f'[ ! -e {args.ini}.wb.command ] && [ -e {args.ini}.wb.status ] && '
+                                     'echo finished || true'):
+            return True
+        time.sleep(1)
+    return False
+
+
+def probe(args, message_id=None, timeout=3.0, types=''):
     message_id = message_id or f'uuid:{uuid.uuid4()}'
     with open(os.path.join(HERE, 'fixtures', 'onvif', 'Probe.xml')) as file:
         message = file.read().replace(FIXTURE_MESSAGE_ID, message_id)
+    if types:
+        message = message.replace('<d:Types></d:Types>',
+                                  '<d:Types xmlns:dn="http://www.onvif.org/ver10/network/wsdl" '
+                                  f'xmlns:wsdp="http://schemas.xmlsoap.org/ws/2006/02/devprof">{types}</d:Types>')
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.local, 0))
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(args.local))
@@ -249,15 +296,27 @@ def check_discovery(args, check):
     check('onvif://www.onvif.org/name/hd' in reply and 'onvif://www.onvif.org/hardware/HW0100302' in reply,
           'ProbeMatch scopes name/hd and hardware/HW0100302')
     check(f'<d:XAddrs>http://{args.camera}/onvif/device_service</d:XAddrs>' in reply, 'ProbeMatch XAddrs')
+    _, replies = probe(args, types='dn:NetworkVideoTransmitter')
+    check(len(replies) == 1, f'one ProbeMatch for Types dn:NetworkVideoTransmitter ({len(replies)} replies)')
+    _, replies = probe(args, types='wsdp:Printer')
+    check(not replies, f'no ProbeMatch for Types wsdp:Printer ({len(replies)} replies)')
     # onvif-check accepts only a reply to the fixture's MessageID
+    path = os.path.join(args.out, 'probe.xml')
+    if os.path.exists(path):
+        os.remove(path)
     _, replies = probe(args, FIXTURE_MESSAGE_ID)
-    if len(replies) == 1:
+    if check(len(replies) == 1, f"one ProbeMatch for the fixture's MessageID ({len(replies)} replies)"):
         save(args, 'probe', replies[0])
 
 
 def check_disabled(args, check):
-    camsh(args, f"if grep -q '^\\[compat\\]' {args.ini}; then sed -i '/^\\[compat\\]/a fourkcam_manager = false' {args.ini};"
+    compat_key = "sed -n '/^\\[compat\\]/,/^\\[/p' {0} | grep -q '^[[:space:]]*fourkcam_manager[[:space:]]*='"
+    camsh(args, f"if {compat_key.format(args.ini)}; then sed -i '/^\\[compat\\]/,/^\\[/"
+                f" s/^[[:space:]]*fourkcam_manager[[:space:]]*=.*/fourkcam_manager = false/' {args.ini};"
+                f" elif grep -q '^\\[compat\\]' {args.ini}; then sed -i '/^\\[compat\\]/a fourkcam_manager = false' {args.ini};"
                 f" else printf '\\n[compat]\\nfourkcam_manager = false\\n' >> {args.ini}; fi")
+    count = camsh(args, f"sed -n '/^\\[compat\\]/,/^\\[/p' {args.ini} | grep -c '^[[:space:]]*fourkcam_manager' || true")
+    check(count.strip() == '1', f'one fourkcam_manager key under [compat] ({count.strip()})')
     status, _ = post(f'http://{args.camera}/action/getSysConfig', '', 'application/json')
     check(status == 404, f'/action is 404 with Allow 4K Cam Manager off ({status})')
     status, _ = soap(args, '<tds:GetSystemDateAndTime/>', None)
@@ -290,11 +349,22 @@ def main():
             check_disabled(args, check)
     finally:
         # a pending one-push would save its gains over the restored file
+        if getattr(args, 'one_push_pending', False):
+            check(wait_one_push(args), 'a late one-push finished before the restore')
         camsh(args, f'rm -f {args.ini}.wb.command {args.ini}.wb.status && '
                     f'cp -p {BACKUP} {args.ini}.restore && mv {args.ini}.restore {args.ini} && '
                     f'if [ -e {BACKUP_WEB_BAK} ]; then cp -p {BACKUP_WEB_BAK} {web_bak}.restore && '
                     f'mv {web_bak}.restore {web_bak}; else rm -f {web_bak}; fi')
+    first = []
+    restarting = threading.Thread(target=lambda: first.append(action(args, 'restart', {})))
+    restarting.start()
+    time.sleep(1)
+    started = time.time()
     status, reply = action(args, 'restart', {})
+    check(status == 200 and reply['code'] == -1 and reply['log'] == 'restart in progress' and time.time() - started < 2,
+          f"a restart during a restart is refused at once: {reply and reply['log']}")
+    restarting.join()
+    status, reply = first[0] if first else (None, None)
     check(status == 200 and reply['code'] == 0, 'restart restarts camera-app')
     status, reply = action(args, 'getSysConfig')
     check(status == 200 and reply['code'] == 0, 'getSysConfig after restart')
