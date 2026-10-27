@@ -87,6 +87,8 @@ enum string_id {
     S_OPT_WB_CLOUDY,
     S_OPT_WB_FLUORESCENT,
     S_OPT_WB_INCANDESCENT,
+    S_OPT_WB_MANUAL,
+    S_OPT_WB_TEMPERATURE,
     S_OPT_SCOPE_THERMAL,
     S_OPT_SCOPE_ALL,
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -129,6 +131,10 @@ enum string_id {
     S_P_ISO,
     S_P_METERING,
     S_P_WHITE_BALANCE,
+    S_P_WB_RED,
+    S_P_WB_GREEN,
+    S_P_WB_BLUE,
+    S_P_WB_TEMP,
     S_H_CARDV_BRIGHTNESS,
     S_H_CARDV_SATURATION,
     S_H_CARDV_CONTRAST,
@@ -248,6 +254,9 @@ enum string_id {
     S_H_SHUTTER_APP,
     S_H_METERING_APP,
     S_H_WB_APP,
+    S_H_WB_TUNING,
+    S_H_WB_GAIN,
+    S_H_WB_TEMP,
     S_E_CONFIG_SIZE,
     S_E_INI_UNTERMINATED_SECTION,
     S_E_INI_TEXT_AFTER_SECTION,
@@ -442,6 +451,12 @@ enum string_id {
     S_SENSORS_SHUTTER,
     S_SENSORS_SHUTTER_TEXT,
     S_SENSORS_CAPTURE,
+    S_SENSORS_WB,
+    S_SENSORS_WB_TEXT,
+    S_SENSORS_WB_GREEN,
+    S_SENSORS_WB_BLUE,
+    S_E_WB_REQUEST,
+    S_E_WB_UNCONFIRMED,
     S_SENSORS_SCOPE_NOTE,
     S_SENSORS_RECENT,
     S_SENSORS_NO_PHOTOS,
@@ -722,6 +737,8 @@ static constexpr Translations translations = [] {
     result[S_OPT_WB_CLOUDY] = {"Cloudy", "阴天", "曇天"};
     result[S_OPT_WB_FLUORESCENT] = {"Fluorescent", "荧光灯", "蛍光灯"};
     result[S_OPT_WB_INCANDESCENT] = {"Incandescent", "白炽灯", "白熱灯"};
+    result[S_OPT_WB_MANUAL] = {"Manual gains", "手动增益", "手動ゲイン"};
+    result[S_OPT_WB_TEMPERATURE] = {"Colour temperature", "色温", "色温度"};
     result[S_OPT_SCOPE_THERMAL] = {"Thermal only", "仅热成像", "サーマルのみ"};
     result[S_OPT_SCOPE_ALL] = {"All lenses", "全部镜头", "すべてのレンズ"};
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -764,6 +781,10 @@ static constexpr Translations translations = [] {
     result[S_P_ISO] = {"ISO", "ISO", "ISO"};
     result[S_P_METERING] = {"Metering mode", "测光模式", "測光モード"};
     result[S_P_WHITE_BALANCE] = {"White balance", "白平衡", "ホワイトバランス"};
+    result[S_P_WB_RED] = {"Manual red gain", "手动红色增益", "手動の赤ゲイン"};
+    result[S_P_WB_GREEN] = {"Manual green gain", "手动绿色增益", "手動の緑ゲイン"};
+    result[S_P_WB_BLUE] = {"Manual blue gain", "手动蓝色增益", "手動の青ゲイン"};
+    result[S_P_WB_TEMP] = {"Colour temperature (K)", "色温（K）", "色温度（K）"};
     result[S_H_CARDV_BRIGHTNESS] = {"ISP brightness.", "ISP 亮度。", "ISP の明るさ。"};
     result[S_H_CARDV_SATURATION] = {"ISP saturation.", "ISP 饱和度。", "ISP の彩度。"};
     result[S_H_CARDV_CONTRAST] = {"ISP contrast.", "ISP 对比度。", "ISP のコントラスト。"};
@@ -914,6 +935,9 @@ static constexpr Translations translations = [] {
     result[S_H_SHUTTER_APP] = {"Automatic exposure time or a fixed visible-camera shutter speed.", "自动曝光时间或可见光相机的固定快门速度。", "自動で調整する露光時間、または可視光カメラの固定シャッター速度。"};
     result[S_H_METERING_APP] = {"Spot metering uses the center of the frame.", "点测光以画面中央为基准。", "スポット測光は画面中央を使用します。"};
     result[S_H_WB_APP] = {"Automatic white balance or a fixed RGB-gain preset.", "自动白平衡或固定的 RGB 增益预设。", "オートホワイトバランス、または固定の RGB ゲインプリセット。"};
+    result[S_H_WB_TUNING] = {"Automatic, a light-source preset, the manual gains below, or the colour temperature below. One-push white balance on the Photos page sets manual gains.", "自动、光源预设、下方的手动增益或下方的色温。照片页面的一键白平衡会设置手动增益。", "オート、光源プリセット、下の手動ゲイン、または下の色温度。写真ページのワンプッシュホワイトバランスは手動ゲインを設定します。"};
+    result[S_H_WB_GAIN] = {"Used when white balance is Manual gains. 256 is 1x.", "白平衡为手动增益时使用。256 表示 1 倍。", "ホワイトバランスが手動ゲインのときに使用します。256 が 1 倍です。"};
+    result[S_H_WB_TEMP] = {"Used when white balance is Colour temperature: the light source's temperature in kelvin.", "白平衡为色温时使用：光源的色温，单位为开尔文。", "ホワイトバランスが色温度のときに使用します。光源の色温度（ケルビン）。"};
     result[S_E_CONFIG_SIZE] = {"Config size must be between 1 and %u bytes", "配置大小必须在 1 至 %u 字节之间", "設定のサイズは 1〜%u バイトである必要があります"};
     result[S_E_INI_UNTERMINATED_SECTION] = {"Line %u has an unterminated section", "第 %u 行的节名未闭合", "%u 行目のセクションが閉じられていません"};
     result[S_E_INI_TEXT_AFTER_SECTION] = {"Line %u has text after its section", "第 %u 行的节名之后有多余文本", "%u 行目のセクションの後に余分な文字があります"};
@@ -1114,6 +1138,12 @@ static constexpr Translations translations = [] {
     result[S_SENSORS_SHUTTER] = {"Shutter", "快门", "シャッター"};
     result[S_SENSORS_SHUTTER_TEXT] = {"Capture a still using the running camera application and save it to the microSD card.", "使用当前运行的相机应用拍摄一张照片并保存到 microSD 卡。", "動作中のカメラアプリで静止画を撮影し、microSD カードに保存します。"};
     result[S_SENSORS_CAPTURE] = {"Capture photo", "拍照", "撮影"};
+    result[S_SENSORS_WB] = {"One-push white balance", "一键白平衡", "ワンプッシュホワイトバランス"};
+    result[S_SENSORS_WB_TEXT] = {"Point the camera at the scene, then measure. Green water makes the centre of the picture neutral grey; blue water leaves green and blue alone and sets red a little above blue. The result is saved as manual gains.", "将相机对准场景后测量。绿水模式使画面中央呈中性灰；蓝水模式保持绿色和蓝色不变，并将红色设为略高于蓝色。结果保存为手动增益。", "カメラをシーンに向けてから測定します。グリーンウォーターは画面中央をニュートラルグレーにします。ブルーウォーターは緑と青をそのままにし、赤を青より少し高くします。結果は手動ゲインとして保存されます。"};
+    result[S_SENSORS_WB_GREEN] = {"Measure (green water)", "测量（绿水）", "測定（グリーンウォーター）"};
+    result[S_SENSORS_WB_BLUE] = {"Measure (blue water)", "测量（蓝水）", "測定（ブルーウォーター）"};
+    result[S_E_WB_REQUEST] = {"Cannot request white balance: %s", "无法请求白平衡：%s", "ホワイトバランスを要求できません: %s"};
+    result[S_E_WB_UNCONFIRMED] = {"Camera did not report a white balance result", "相机未报告白平衡结果", "カメラがホワイトバランスの結果を報告しませんでした"};
     result[S_SENSORS_SCOPE_NOTE] = {"The ArduPilot camera app's <strong>Photo capture scope</strong> parameter controls which lenses are saved. New packages default to All lenses.", "ArduPilot 相机应用的<strong>拍照范围</strong>参数决定保存哪些镜头的图像。新版升级包默认为“全部镜头”。", "ArduPilot カメラアプリの<strong>静止画の撮影範囲</strong>パラメータで、どのレンズの画像を保存するかが決まります。新しいパッケージの既定値は「すべてのレンズ」です。"};
     result[S_SENSORS_RECENT] = {"Recent photos", "最近的照片", "最近の写真"};
     result[S_SENSORS_NO_PHOTOS] = {"No JPEG photos were found beneath <code>%s</code>.", "在 <code>%s</code> 下未找到 JPEG 照片。", "<code>%s</code> 配下に JPEG 写真が見つかりませんでした。"};

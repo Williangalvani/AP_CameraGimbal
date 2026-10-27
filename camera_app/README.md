@@ -598,7 +598,14 @@ through the web UI/INI. The additional proxy parameters are listed in
 | `IMG_ISO` | `image.iso` | 0 auto, 1 ISO 100, 2 ISO 200, 3 ISO 400, 4 ISO 800, 5 ISO 1600, 6 ISO 3200 |
 | `IMG_SHUTTER` | `image.shutter` | 0 auto; 1–8: 1/30, 1/50, 1/100, 1/250, 1/500, 1/750, 1/1000, 1/2000 s |
 | `IMG_METERING` | `image.metering` | 0 average, 1 center, 2 spot |
-| `IMG_WHITE_BAL` | `image.white_balance` | 0 auto, 1 daylight, 2 cloudy, 3 fluorescent, 4 incandescent |
+| `IMG_WHITE_BAL` | `image.white_balance` | 0 auto, 1 daylight, 2 cloudy, 3 fluorescent, 4 incandescent; Hi3516DV500 also 5 manual, 6 colour temperature |
+| `IMG_WB_RED`, `IMG_WB_GREEN`, `IMG_WB_BLUE` | `image.wb_red`, `wb_green`, `wb_blue` | Hi3516DV500: manual gains, 128–4095 in 1/256 (256 is 1×) |
+| `IMG_WB_TEMP` | `image.wb_temp` | Hi3516DV500: colour temperature mode's light source, 1500–15000 K |
+
+On Hi3516DV500 the camera-definition setting `CAM_WB_ONEPUSH` (also the Photos
+page's one-push white balance) measures the centre of the picture and saves the
+result as manual gains: 1 "green water" makes it neutral grey, 2 "blue water"
+keeps green and blue at 1× and sets red to 1.2× blue. It always reads 0.
 
 For the resolution parameters, MT11 and A8 support values 0, 1 and 2;
 ZR10 supports 0, 1 and 3. Z1-Mini supports only 1 for streaming and 1 or 2

@@ -632,6 +632,9 @@ static const struct option replacement_metering_options[] = {
 static const struct option replacement_wb_options[] = {
     {"auto", S_OPT_AUTO}, {"daylight", S_OPT_WB_DAYLIGHT}, {"cloudy", S_OPT_WB_CLOUDY},
     {"fluorescent", S_OPT_WB_FLUORESCENT}, {"incandescent", S_OPT_WB_INCANDESCENT},
+#if APCAM_HAVE_WB_TUNING
+    {"manual", S_OPT_WB_MANUAL}, {"temperature", S_OPT_WB_TEMPERATURE},
+#endif
 };
 
 
@@ -747,8 +750,15 @@ static const struct parameter replacement_parameters[] = {
      PARAM_ENUM, 0, 0, 0, replacement_shutter_options, 9},
     {"metering", "image", "metering", S_P_METERING, S_H_METERING_APP,
      PARAM_ENUM, 0, 0, 0, replacement_metering_options, 3},
-    {"white_balance", "image", "white_balance", S_P_WHITE_BALANCE, S_H_WB_APP,
-     PARAM_ENUM, 0, 0, 0, replacement_wb_options, 5},
+    {"white_balance", "image", "white_balance", S_P_WHITE_BALANCE,
+     APCAM_HAVE_WB_TUNING ? S_H_WB_TUNING : S_H_WB_APP, PARAM_ENUM, 0, 0, 0,
+     replacement_wb_options, sizeof(replacement_wb_options) / sizeof(replacement_wb_options[0])},
+#if APCAM_HAVE_WB_TUNING
+    {"wb_red", "image", "wb_red", S_P_WB_RED, S_H_WB_GAIN, PARAM_INTEGER, 128, 4095, 1, NULL, 0},
+    {"wb_green", "image", "wb_green", S_P_WB_GREEN, S_H_WB_GAIN, PARAM_INTEGER, 128, 4095, 1, NULL, 0},
+    {"wb_blue", "image", "wb_blue", S_P_WB_BLUE, S_H_WB_GAIN, PARAM_INTEGER, 128, 4095, 1, NULL, 0},
+    {"wb_temp", "image", "wb_temp", S_P_WB_TEMP, S_H_WB_TEMP, PARAM_INTEGER, 1500, 15000, 1, NULL, 0},
+#endif
     {"proxy_enabled", "support_proxy", "enabled", S_P_PROXY_ENABLED, S_H_PROXY_ENABLED,
      PARAM_ENUM, 0, 0, 1, replacement_boolean_options, 2},
     {"proxy_host", "support_proxy", "host", S_P_PROXY_HOST, S_H_PROXY_HOST,
@@ -866,6 +876,9 @@ static const char *replacement_defaults[] = {
 #endif
     "50", "50", "50", "0",
     "auto", "auto", "average", "auto",
+#if APCAM_HAVE_WB_TUNING
+    "500", "256", "504", "5000",
+#endif
     "false", "", "10001", "false", "", "1", "0", "video1", "0", "video2",
 #if APCAM_HAVE_RAW_THERMAL
     "0", "Raw Thermal (16-bit)",
@@ -3708,6 +3721,57 @@ static bool set_lidar_enabled(bool enabled, char *error, size_t error_size)
 }
 #endif
 
+#if APCAM_HAVE_WB_TUNING
+/* camera-app polls <config>.wb.command every 500 ms, measures, and answers in
+ * <config>.wb.status: "ok" or "error", then its message. */
+static bool request_white_balance(char water, char *message, size_t message_size)
+{
+    char command[sizeof(REPLACEMENT_CONFIG_PATH) + sizeof(".wb.command")];
+    char temporary[sizeof(command) + sizeof(".tmp")];
+    char status[sizeof(REPLACEMENT_CONFIG_PATH) + sizeof(".wb.status")];
+
+#ifndef MT11_WEB_TEST
+    if (current_camera_kind() == CAMERA_NONE) {
+        snprintf(message, message_size, "%s", T(S_E_CAMERA_NOT_RUNNING));
+        return false;
+    }
+#endif
+    snprintf(command, sizeof(command), "%s.wb.command", REPLACEMENT_CONFIG_PATH);
+    snprintf(temporary, sizeof(temporary), "%s.tmp", command);
+    snprintf(status, sizeof(status), "%s.wb.status", REPLACEMENT_CONFIG_PATH);
+    (void)unlink(status);
+    FILE *output = fopen(temporary, "w");
+    bool written = output != NULL && fprintf(output, "%c\n", water) == 2;
+    if (output != NULL && fclose(output) != 0) written = false;
+    if (!written || rename(temporary, command) != 0) {
+        snprintf(message, message_size, T(S_E_WB_REQUEST), strerror(errno));
+        (void)unlink(temporary);
+        return false;
+    }
+    for (unsigned attempt = 0; attempt < 100U; attempt++) {
+        const struct timespec delay = {.tv_sec = 0, .tv_nsec = 100000000L};
+        (void)nanosleep(&delay, NULL);
+        size_t length = 0;
+        char *reply = read_file(status, 512, &length);
+        if (reply == NULL) continue;
+        (void)unlink(status);
+        char *text = strchr(reply, '\n');
+        bool ok = text != NULL && text - reply == 2 && memcmp(reply, "ok", 2) == 0;
+        if (text != NULL) {
+            text++;
+            text[strcspn(text, "\n")] = '\0';
+        }
+        snprintf(message, message_size, "%s", text != NULL && *text ? text : T(S_E_WB_UNCONFIRMED));
+        free(reply);
+        return ok;
+    }
+    // a late camera-app must not act on a request the user saw fail
+    (void)unlink(command);
+    snprintf(message, message_size, "%s", T(S_E_WB_UNCONFIRMED));
+    return false;
+}
+#endif
+
 #if APCAM_WEB_CONTROL_MAVLINK && APCAM_HAVE_PHOTO
 /* MAVLink-controlled cameras: send the command a GCS would, and report
  * the camera's COMMAND_ACK, which follows the saved photo. */
@@ -5093,6 +5157,11 @@ static char *render_sensors_page(const char *message, bool message_is_error,
     webroot.render(page, "sensors-capture.html", {T(S_SENSORS_SHUTTER), T(S_SENSORS_SHUTTER_TEXT), csrf_token, T(S_SENSORS_CAPTURE)});
 #if APCAM_HAVE_THERMAL_VIDEO
     page.appendf("<p class=muted>%s</p>", T(S_SENSORS_SCOPE_NOTE));
+#endif
+#if APCAM_HAVE_WB_TUNING
+    // like the capture card, left open for the closing tags below
+    page.append("</section>");
+    webroot.render(page, "sensors-white-balance.html", {T(S_SENSORS_WB), T(S_SENSORS_WB_TEXT), csrf_token, T(S_SENSORS_WB_GREEN), T(S_SENSORS_WB_BLUE)});
 #endif
     page.appendf("</section></div><section class=card><h2>%s</h2>", T(S_SENSORS_RECENT));
     if (photos.count == 0U) {
@@ -7637,7 +7706,8 @@ static void handle_request(int fd, const char *peer)
             if (strcmp(request.path, "/live/control") == 0 ||
                 strcmp(request.path, "/sensors/lidar") == 0) {
                 send_text_errorf(fd, 403, "Forbidden", S_CSRF_INVALID);
-            } else if (strcmp(request.path, "/sensors/capture") == 0) {
+            } else if (strcmp(request.path, "/sensors/capture") == 0 ||
+                       strcmp(request.path, "/sensors/white_balance") == 0) {
                 send_sensors_page(fd, T(S_CSRF_RELOAD), true);
             } else {
                 send_page(fd, T(S_CSRF_RELOAD), true);
@@ -7728,6 +7798,22 @@ static void handle_request(int fd, const char *peer)
                 log_message("Sensors-page photo capture failed for %s: %s", peer, error);
                 send_sensors_page(fd, error, true);
             }
+#if APCAM_HAVE_WB_TUNING
+        } else if (strcmp(request.path, "/sensors/white_balance") == 0) {
+            size_t length = 0;
+            char *water = form_value(&request, "water", &length);
+            if (water == NULL || length != 1U || (water[0] != '1' && water[0] != '2')) {
+                snprintf(error, sizeof(error), T(S_E_WB_REQUEST), strerror(EINVAL));
+                send_sensors_page(fd, error, true);
+            } else if (request_white_balance(water[0], error, sizeof(error))) {
+                log_message("one-push white balance from Photos page by %s: %s", peer, error);
+                send_sensors_page(fd, error, false);
+            } else {
+                log_message("one-push white balance failed for %s: %s", peer, error);
+                send_sensors_page(fd, error, true);
+            }
+            free(water);
+#endif
         } else if (strcmp(request.path, "/time/sync") == 0) {
             if (sync_time_from_browser(&request, error, sizeof(error))) {
                 log_message("camera time synchronized from browser by %s", peer);

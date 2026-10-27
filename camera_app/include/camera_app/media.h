@@ -81,6 +81,17 @@ int ca_media_set_thermal_gain(struct ca_media *media, uint8_t gain);
 int ca_media_get_thermal_palette(struct ca_media *media, uint8_t *palette);
 int ca_media_set_thermal_palette(struct ca_media *media, uint8_t palette);
 int ca_media_set_inverted(struct ca_media *media, bool inverted);
+/* One-push white balance: the vendor's two underwater variants. */
+enum ca_wb_water {
+    /* make the centre of the picture neutral grey */
+    CA_WB_WATER_GREEN = 1,
+    /* raise red only, to the blue level and 20% past it */
+    CA_WB_WATER_BLUE = 2,
+};
+struct ca_wb_gains { unsigned red, green, blue; };   /* 1/256 */
+/* Measures the scene and returns manual gains; it does not apply them. */
+int ca_media_measure_white_balance(struct ca_media *media, enum ca_wb_water water,
+                                   struct ca_wb_gains *gains);
 void ca_media_close(struct ca_media *media);
 
 #endif

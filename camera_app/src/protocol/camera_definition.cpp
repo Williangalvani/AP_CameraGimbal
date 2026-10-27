@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "camera_app/camera_definition.h"
+#include "camera_app/media.h"
 #include "apcam/lens.h"
 #include <math.h>
 #include <stdlib.h>
@@ -10,6 +11,11 @@
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #if APCAM_HAVE_FOCUS
 static const struct ca_config_option autofocus[] = {{"Idle", 0}, {"Autofocus", 1}};
+#endif
+#if APCAM_HAVE_WB_TUNING
+static const struct ca_config_option wb_onepush[] = {
+    {"Idle", 0}, {"Green water", CA_WB_WATER_GREEN}, {"Blue water", CA_WB_WATER_BLUE},
+};
 #endif
 #if APCAM_HAVE_ZOOM_LENS
 static const struct ca_config_option lenses[] = {{"Wide RGB", 0}, {"Zoom RGB", 1}};
@@ -99,6 +105,14 @@ static const struct ca_camera_parameter parameters[] = {
     CONFIG("IMG_SHUTTER", "Shutter speed"),
     CONFIG("IMG_METERING", "Exposure metering"),
     CONFIG("IMG_WHITE_BAL", "White balance"),
+#if APCAM_HAVE_WB_TUNING
+    CONFIG("IMG_WB_RED", "Manual white balance red gain (256 = 1x)"),
+    CONFIG("IMG_WB_GREEN", "Manual white balance green gain (256 = 1x)"),
+    CONFIG("IMG_WB_BLUE", "Manual white balance blue gain (256 = 1x)"),
+    CONFIG("IMG_WB_TEMP", "White balance colour temperature (K)"),
+    OPTIONS("CAM_WB_ONEPUSH", "Measure white balance now and keep it as manual gains",
+            CA_CAMERA_WB_ONEPUSH, 0, wb_onepush),
+#endif
 #endif
     CONFIG("OSD_CROSS", "Targeting cross"),
 #if APCAM_HAVE_OVERLAY_RECORDING_SELECT
@@ -226,6 +240,10 @@ char *ca_camera_definition(size_t *length)
         }
         if (p.operation == CA_CAMERA_AUTOFOCUS) {
             fputs("      <updates><update>CAM_AUTOFOCUS</update></updates>\n", out);
+        } else if (p.operation == CA_CAMERA_WB_ONEPUSH) {
+            fputs("      <updates><update>CAM_WB_ONEPUSH</update><update>IMG_WHITE_BAL</update>"
+                  "<update>IMG_WB_RED</update><update>IMG_WB_GREEN</update>"
+                  "<update>IMG_WB_BLUE</update></updates>\n", out);
         } else if (p.operation == CA_CAMERA_LENS) {
             fputs("      <updates><update>CAM_ZOOM</update><update>CAM_OPT_ZOOM</update></updates>\n", out);
         } else if (p.operation == CA_CAMERA_SOURCE && APCAM_HAVE_ZOOM_LENS) {

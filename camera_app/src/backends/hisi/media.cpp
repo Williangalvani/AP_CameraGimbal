@@ -121,6 +121,7 @@ public:
     int set_thermal_palette(uint8_t) override { return unsupported(); }
     int set_inverted(bool inverted) override;
     int exposure(unsigned lens, struct ca_exposure *sample) override;
+    int measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains) override;
     int apply_overlay(const struct ca_config *settings) override;
     int apply_image(const struct ca_config *settings) override;
 private:
@@ -762,6 +763,19 @@ int APC_Media_HiSi::exposure(unsigned lens, struct ca_exposure *s)
     auto *media = _state;
     pthread_mutex_lock(&media->lock);
     int result = ca_hisi_exposure(lens, s);
+    pthread_mutex_unlock(&media->lock);
+    return result;
+}
+
+int APC_Media_HiSi::measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains)
+{
+    auto *media = _state;
+    if (media == NULL) {
+        errno = ENODEV;
+        return -1;
+    }
+    pthread_mutex_lock(&media->lock);
+    int result = ca_hisi_measure_white_balance(water, gains);
     pthread_mutex_unlock(&media->lock);
     return result;
 }

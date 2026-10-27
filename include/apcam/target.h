@@ -47,6 +47,13 @@
 #ifndef APCAM_HAVE_RECORDING_RESOLUTION
 #define APCAM_HAVE_RECORDING_RESOLUTION 1
 #endif
+/* Targets whose ISP takes arbitrary white-balance gains set this to 1. It adds
+ * the "manual" (IMG_WB_RED/GREEN/BLUE) and "temperature" (IMG_WB_TEMP)
+ * white-balance modes, and the one-push measurement (CAM_WB_ONEPUSH, the web
+ * Photos page), which the backend implements in measure_white_balance(). */
+#ifndef APCAM_HAVE_WB_TUNING
+#define APCAM_HAVE_WB_TUNING 0
+#endif
 /* Main stream encoder settings. A target opts in to each separately:
  *   APCAM_HAVE_VIDEO_BITRATE     VIDEO_MAIN_KBPS    ([stream.main] bitrate_kbps)
  *   APCAM_HAVE_VIDEO_FRAME_RATE  VIDEO_MAIN_FPS     ([stream.main] frame_rate)
