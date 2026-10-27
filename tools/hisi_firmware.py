@@ -36,6 +36,8 @@ VID_HDR_OFFSET = PAGE_SIZE
 DATA_OFFSET = 2 * PAGE_SIZE
 LEB_SIZE = PEB_SIZE - DATA_OFFSET
 APPFS_PEBS = 288
+# The volume size this camera's UBI and the vendor's own updates give appfs.
+APPFS_VOLUME_MAX_PEBS = 265
 LAYOUT_VOLUME_ID = 0x7fffefff
 VTBL_SLOTS = 128
 VTBL_RECORD_SIZE = 172
@@ -97,7 +99,7 @@ def _vtbl_record(reserved_pebs=0, name=b''):
 def ubinize(volume, name=b'appfs'):
     """A ubinize-equivalent image: layout volume in PEBs 0-1, volume 0 after."""
     lebs = max(1, -(-len(volume) // LEB_SIZE))
-    if lebs + 2 > APPFS_PEBS:
+    if lebs > APPFS_VOLUME_MAX_PEBS:
         raise ValueError(f'{len(volume)} bytes do not fit the appfs partition')
     image_seq = int.from_bytes(hashlib.sha256(volume).digest()[:4], 'big') or 1
     vtbl = _vtbl_record(lebs, name) + b''.join(_vtbl_record() for _ in range(VTBL_SLOTS - 1))
@@ -183,8 +185,8 @@ def check_ubi(image):
         if ubi_crc(record[:168]) != struct.unpack('>I', record[168:])[0]:
             raise ValueError(f'Volume table record {slot}: bad CRC')
     reserved, = struct.unpack_from('>I', vtbl)
-    if reserved != len(image) // PEB_SIZE - 2:
-        raise ValueError('Volume 0 size does not match the image')
+    if not len(image) // PEB_SIZE - 2 <= reserved <= APPFS_VOLUME_MAX_PEBS:
+        raise ValueError('Volume 0 size does not fit the image and the appfs partition')
 
 
 def squashfs(staging, output, mksquashfs):

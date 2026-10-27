@@ -22,9 +22,32 @@ constexpr size_t PEB_SIZE = 0x20000;
 constexpr size_t VID_HDR_OFFSET = 0x800;
 constexpr size_t DATA_OFFSET = 0x1000;
 constexpr size_t APPFS_PEBS = 288;
+// The volume size this camera's UBI and the vendor's own updates give appfs.
+constexpr size_t APPFS_VOLUME_MAX_PEBS = 265;
 constexpr size_t VTBL_SLOTS = 128;
 constexpr size_t VTBL_RECORD_SIZE = 172;
 constexpr size_t MAX_IMAGE_SIZE = HEADER_SIZE + ENTRY_SIZE + APPFS_PEBS * PEB_SIZE + TRAILER_SIZE;
+
+// Upload names: .img as the vendor web UI requires, or .bin, in the characters
+// vendor releases and browser renames use ("IPC_..._V16(260305) (1).img").
+// upgrade.js applies NAME_REGEX; both must agree.
+constexpr size_t NAME_MAX_LENGTH = 200;
+constexpr const char *NAME_REGEX = "^[A-Za-z0-9._()+ -]{1,196}\\.(img|bin)$";
+
+inline bool valid_image_name(const char *name)
+{
+    const size_t length = std::strlen(name);
+    if (length < 5 || length > NAME_MAX_LENGTH) return false;
+    if (std::strcmp(name + length - 4, ".img") != 0 && std::strcmp(name + length - 4, ".bin") != 0)
+        return false;
+    for (size_t i = 0; i < length; i++) {
+        const char c = name[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+              std::strchr("._()+ -", c)))
+            return false;
+    }
+    return true;
+}
 
 // updatetype.ini [UPDATE_SET] DEV_TYPE / SDK_TYPE / PLATFORM_TYPE.
 struct device_code { uint32_t dev, sdk, platform; };
@@ -112,7 +135,9 @@ inline const char *check_ubi(const uint8_t *image, size_t length, char *error, s
             return error;
         }
     }
-    if (be32(vtbl) != pebs - 2) return "Volume 0 size does not match the image";
+    const uint32_t reserved = be32(vtbl);
+    if (reserved < pebs - 2 || reserved > APPFS_VOLUME_MAX_PEBS)
+        return "Volume 0 size does not fit the image and the appfs partition";
     if (std::memcmp(image + 2 * PEB_SIZE + DATA_OFFSET, "hsqs", 4))
         return "appfs volume is not a little-endian squashfs";
     return nullptr;

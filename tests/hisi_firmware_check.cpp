@@ -1,11 +1,21 @@
 // Host driver for include/apcam/hisi_firmware.h, run by test_hisi_firmware.py:
-// hisi_firmware_check IMAGE [updatetype.ini] prints "ok" or the rejection.
+// hisi_firmware_check IMAGE [updatetype.ini] prints "ok" or the rejection,
+// --name NAME checks an upload filename and --name-regex prints NAME_REGEX.
 #include "apcam/hisi_firmware.h"
 
 #include <vector>
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--name-regex") == 0) {
+        std::puts(apcam_hisi_firmware::NAME_REGEX);
+        return 0;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--name") == 0) {
+        const bool valid = apcam_hisi_firmware::valid_image_name(argv[2]);
+        std::puts(valid ? "ok" : "bad name");
+        return valid ? 0 : 1;
+    }
     if (argc != 2 && argc != 3) return 2;
     apcam_hisi_firmware::device_code expected = apcam_hisi_firmware::CAMERA_DEVICE_CODE;
     if (argc == 3 && !apcam_hisi_firmware::read_device_code(argv[2], &expected)) {
