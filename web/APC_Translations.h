@@ -414,6 +414,7 @@ enum string_id {
     S_STATUS_UPGRADE_SYNC_MT11,
     S_STATUS_UPGRADE_SYNC_A8,
     S_STATUS_UPGRADE_INSTALL_Z1,
+    S_STATUS_UPGRADE_INSTALL_HISI,
     S_STATUS_REBOOT_CONFIRM,
     S_STATUS_REBOOT_BUTTON,
     S_STATUS_AUTH_NOTE,
@@ -594,6 +595,10 @@ enum string_id {
     S_DEBUG_FOOTER,
     S_E_LOG_UNREADABLE,
     S_E_FW_SIZE,
+    S_E_FW_SIZE_HISI,
+    S_E_FW_FLASHING,
+    S_E_FW_UPDATER,
+    S_E_FW_UPDATER_TIMEOUT,
     S_E_FW_CONTENT_TYPE,
     S_E_FW_NAME,
     S_E_FW_NAME_LONG,
@@ -612,6 +617,7 @@ enum string_id {
     S_FW_UPLOADED_MT11,
     S_FW_UPLOADED_A8,
     S_FW_INSTALLED_Z1,
+    S_FW_FLASHING_HISI,
     S_E_FW_PACKAGE,
     S_E_FW_INSTALL,
     S_E_FW_TMP,
@@ -630,6 +636,7 @@ enum string_id {
     S_JS_FW_CONFIRM_A8,
     S_JS_FW_CONFIRM_Z1,
     S_JS_FW_INSTALLED,
+    S_JS_FW_FLASHING_HISI,
     S_JS_FW_WRITING,
     S_JS_FW_HTTP,
     S_JS_FW_UPLOADED,
@@ -1079,6 +1086,7 @@ static constexpr Translations translations = [] {
     result[S_STATUS_UPGRADE_SYNC_MT11] = {"A complete upload is synced as <code>.bin.tmp</code>, atomically renamed to <code>.bin</code>, and synced again before the updater can discover it.", "上传完成后先以 <code>.bin.tmp</code> 同步写入，再原子地重命名为 <code>.bin</code> 并再次同步，之后升级程序才会发现它。", "アップロードが完了すると <code>.bin.tmp</code> として同期し、<code>.bin</code> にアトミックにリネームして再度同期してから、アップデーターが検出できるようになります。"};
     result[S_STATUS_UPGRADE_SYNC_A8] = {"A complete upload is synced to the microSD card as <code>%s</code>; U-Boot installs it on the next reboot.", "上传完成后会以 <code>%s</code> 同步写入 microSD 卡；U-Boot 会在下次重启时安装。", "アップロードが完了すると <code>%s</code> として microSD カードに同期され、次回の再起動時に U-Boot がインストールします。"};
     result[S_STATUS_UPGRADE_INSTALL_Z1] = {"The package is verified, installed into the application partition and the camera reboots. Settings and the web password are kept.", "升级包经校验后安装到应用分区，随后相机重启。设置和网页密码将被保留。", "パッケージは検証後にアプリ領域へインストールされ、カメラが再起動します。設定とウェブパスワードは保持されます。"};
+    result[S_STATUS_UPGRADE_INSTALL_HISI] = {"The image is checked and handed to the camera's recovery updater, which rewrites the application partition and reboots. Settings and the web password are kept.", "升级包经校验后交给相机的恢复升级程序，由其重写应用分区并重启。设置和网页密码将被保留。", "イメージは検証後にカメラの復旧用アップデーターへ渡され、アプリ領域を書き換えて再起動します。設定とウェブパスワードは保持されます。"};
     result[S_STATUS_REBOOT_CONFIRM] = {"I confirm this camera should reboot", "我确认要重启此相机", "このカメラを再起動することを確認しました"};
     result[S_STATUS_REBOOT_BUTTON] = {"Reboot camera", "重启相机", "カメラを再起動"};
     result[S_STATUS_AUTH_NOTE] = {"Authentication user: <code>admin</code>. The password is read from <code>%s</code> for every request. This service is HTTP, not HTTPS; keep it on the isolated camera network.", "认证用户：<code>admin</code>。每次请求都会从 <code>%s</code> 读取密码。本服务使用 HTTP 而非 HTTPS，请仅在隔离的相机网络中使用。", "認証ユーザー: <code>admin</code>。パスワードはリクエストごとに <code>%s</code> から読み込まれます。このサービスは HTTPS ではなく HTTP です。隔離されたカメラ用ネットワーク内でのみ使用してください。"};
@@ -1259,6 +1267,10 @@ static constexpr Translations translations = [] {
     result[S_DEBUG_FOOTER] = {"Showing the newest %zu bytes. The RAM log rotates at %u KiB and retains one previous segment.", "显示最新的 %zu 字节。内存日志在 %u KiB 时轮转，并保留上一段。", "最新の %zu バイトを表示しています。RAM 上のログは %u KiB でローテーションし、直前のログファイルを 1 世代保持します。"};
     result[S_E_LOG_UNREADABLE] = {"Unable to read log", "无法读取日志", "ログを読み取れません"};
     result[S_E_FW_SIZE] = {"Firmware size must be between 1 byte and 128 MiB", "固件大小必须在 1 字节至 128 MiB 之间", "ファームウェアのサイズは 1 バイト〜128 MiB である必要があります"};
+    result[S_E_FW_SIZE_HISI] = {"Firmware size must be between 1 byte and the 36 MiB application partition", "固件大小必须在 1 字节至 36 MiB 应用分区之间", "ファームウェアのサイズは 1 バイト〜36 MiB（アプリ領域）である必要があります"};
+    result[S_E_FW_FLASHING] = {"A firmware update is already being written; wait for the camera to reboot.", "固件正在写入，请等待相机重启。", "ファームウェアを書き込み中です。カメラの再起動をお待ちください。"};
+    result[S_E_FW_UPDATER] = {"The camera's updater did not accept the image: %.400s", "相机升级程序未接受该镜像：%.400s", "カメラのアップデーターがイメージを受け付けませんでした: %.400s"};
+    result[S_E_FW_UPDATER_TIMEOUT] = {"The camera's updater has not answered yet. It may still write the image and reboot; do not interrupt power.", "相机升级程序尚未响应，仍可能写入镜像并重启，请勿断电。", "カメラのアップデーターがまだ応答していません。書き込みと再起動が続く可能性があるため、電源を切らないでください。"};
     result[S_E_FW_CONTENT_TYPE] = {"Firmware upload must use application/octet-stream", "固件上传必须使用 application/octet-stream", "ファームウェアのアップロードは application/octet-stream で行う必要があります"};
     result[S_E_FW_NAME] = {"Filename must match %s and contain only safe ASCII characters", "文件名必须符合 %s 且只包含安全的 ASCII 字符", "ファイル名は %s の形式で、安全な ASCII 文字のみを含む必要があります"};
     result[S_E_FW_NAME_LONG] = {"Firmware filename is too long", "固件文件名过长", "ファームウェアのファイル名が長すぎます"};
@@ -1277,6 +1289,7 @@ static constexpr Translations translations = [] {
     result[S_FW_UPLOADED_MT11] = {"Firmware %.200s uploaded and synced to the microSD card. The updater checks about every 5 seconds and should start soon; do not interrupt power.", "固件 %.200s 已上传并同步到 microSD 卡。升级程序约每 5 秒检查一次，应很快开始；请勿断电。", "ファームウェア %.200s をアップロードし、microSD カードに同期しました。アップデーターは約 5 秒ごとに確認するため、まもなく開始されます。電源を切らないでください。"};
     result[S_FW_UPLOADED_A8] = {"Firmware %.200s uploaded and synced to the card as %s. Reboot the camera to install it; do not interrupt power while it installs.", "固件 %.200s 已上传并以 %s 同步到卡上。重启相机以安装；安装期间请勿断电。", "ファームウェア %.200s をアップロードし、%s としてカードに同期しました。インストールするにはカメラを再起動してください。インストール中は電源を切らないでください。"};
     result[S_FW_INSTALLED_Z1] = {"Firmware %.200s installed. The camera is rebooting; do not interrupt power.", "固件 %.200s 已安装。相机正在重启，请勿断电。", "ファームウェア %.200s をインストールしました。カメラが再起動中です。電源を切らないでください。"};
+    result[S_FW_FLASHING_HISI] = {"Firmware %.200s accepted. The updater is writing it and the camera will reboot; do not interrupt power.", "固件 %.200s 已接受。升级程序正在写入，相机随后重启，请勿断电。", "ファームウェア %.200s を受け付けました。書き込み後にカメラが再起動します。電源を切らないでください。"};
     result[S_E_FW_PACKAGE] = {"Invalid firmware package: %s", "固件升级包无效：%s", "ファームウェアパッケージが無効です: %s"};
     result[S_E_FW_INSTALL] = {"Firmware installation failed: %s", "固件安装失败：%s", "ファームウェアのインストールに失敗しました: %s"};
     result[S_E_FW_TMP] = {"Cannot store the upload in %s: %s", "无法将上传内容保存到 %s：%s", "%s にアップロードを保存できません: %s"};
@@ -1295,6 +1308,7 @@ static constexpr Translations translations = [] {
     result[S_JS_FW_CONFIRM_A8] = {"Upload %s? Reboot the camera afterwards to install it, and do not interrupt power while it installs.", "上传 %s？上传完成后需重启相机以安装固件，安装期间请勿断电。", "%s をアップロードしますか？アップロード後、インストールするにはカメラを再起動してください。インストール中は電源を切らないでください。"};
     result[S_JS_FW_CONFIRM_Z1] = {"Upload and install %s? The camera reboots when installation completes; do not interrupt power.", "上传并安装 %s？安装完成后相机将重启，请勿断电。", "%s をアップロードしてインストールしますか？インストール完了後にカメラが再起動します。電源を切らないでください。"};
     result[S_JS_FW_INSTALLED] = {"Firmware installed. Waiting for the camera to reboot…", "固件已安装。等待相机重启…", "ファームウェアをインストールしました。カメラの再起動を待っています…"};
+    result[S_JS_FW_FLASHING_HISI] = {"Writing firmware. Waiting for the camera to reboot…", "正在写入固件，等待相机重启…", "ファームウェアを書き込み中です。カメラの再起動を待っています…"};
     result[S_JS_FW_WRITING] = {"Writing %s…", "正在写入 %s…", "%s を書き込んでいます…"};
     result[S_JS_FW_HTTP] = {"Upload returned HTTP ", "上传返回 HTTP ", "アップロードの応答: HTTP "};
     result[S_JS_FW_UPLOADED] = {"Firmware uploaded. Waiting for the updater to reboot the camera…", "固件已上传。等待升级程序重启相机…", "ファームウェアをアップロードしました。アップデーターによるカメラの再起動を待っています…"};
