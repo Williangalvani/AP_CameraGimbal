@@ -52,6 +52,7 @@
 #define APCAM_DEFAULT_WB_GREEN 256
 #define APCAM_DEFAULT_WB_BLUE 504
 #define APCAM_DEFAULT_WB_TEMP 5000
+#define APCAM_HAVE_4KCAM_COMPAT 1
 #define APCAM_HAVE_EXTERNAL_UART 0
 #define APCAM_HAVE_SSH_KEYS 0
 #define APCAM_HAVE_SOC_TEMPERATURE 1
@@ -78,8 +79,14 @@
 #define APCAM_LENS1_HEIGHT 2160
 #define APCAM_ZOOM_MAX 1.0f
 #define APCAM_HAVE_VIDEO_BITRATE 1
-/* 0 = automatic: 12 Mbit/s at 2160p, 4 Mbit/s at 1080p, 2 Mbit/s below. */
+/* 0 = automatic, apcam_hisi_auto_bitrate_kbps() */
 #define APCAM_DEFAULT_MAIN_BITRATE_KBPS 0
+static inline unsigned apcam_hisi_auto_bitrate_kbps(unsigned width, unsigned height)
+{
+    if (width >= 3840U || height >= 2160U) return 12000U;
+    if (width >= 1920U || height >= 1080U) return 4096U;
+    return 2048U;
+}
 #define APCAM_MAIN_BITRATE_MIN_KBPS 0
 #define APCAM_HAVE_VIDEO_FRAME_RATE 1
 /* IMX678 4K@30 (10/12-bit); 60 fps mode exists but 30 is the qualified default. */

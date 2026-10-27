@@ -643,6 +643,11 @@ static const struct option replacement_wb_options[] = {
     {"manual", S_OPT_WB_MANUAL}, {"temperature", S_OPT_WB_TEMPERATURE},
 #endif
 };
+#if APCAM_HAVE_4KCAM_COMPAT
+static const struct option wb_water_options[] = {
+    {"green", S_OPT_WATER_GREEN}, {"blue", S_OPT_WATER_BLUE},
+};
+#endif
 
 
 static const struct option camera_component_options[] = {
@@ -766,6 +771,13 @@ static const struct parameter replacement_parameters[] = {
     {"wb_blue", "image", "wb_blue", S_P_WB_BLUE, S_H_WB_GAIN, PARAM_INTEGER, 128, 4095, 1, NULL, 0},
     {"wb_temp", "image", "wb_temp", S_P_WB_TEMP, S_H_WB_TEMP, PARAM_INTEGER, 1500, 15000, 1, NULL, 0},
 #endif
+#if APCAM_HAVE_4KCAM_COMPAT
+    {"wb_water", "image", "wb_water", S_P_WB_WATER, S_H_WB_WATER, PARAM_ENUM, 0, 0, 0, wb_water_options, 2},
+    {"fourkcam_manager", "compat", "fourkcam_manager", S_P_FOURKCAM, S_H_FOURKCAM,
+     PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
+    {"onvif_password", "compat", "onvif_password", S_P_ONVIF_PASSWORD, S_H_ONVIF_PASSWORD,
+     PARAM_PASSWORD, 1, 63, 1, NULL, 0},
+#endif
     {"proxy_enabled", "support_proxy", "enabled", S_P_PROXY_ENABLED, S_H_PROXY_ENABLED,
      PARAM_ENUM, 0, 0, 1, replacement_boolean_options, 2},
     {"proxy_host", "support_proxy", "host", S_P_PROXY_HOST, S_H_PROXY_HOST,
@@ -886,6 +898,9 @@ static const char *replacement_defaults[] = {
 #if APCAM_HAVE_WB_TUNING
     APCAM_STRING_VALUE(APCAM_DEFAULT_WB_RED), APCAM_STRING_VALUE(APCAM_DEFAULT_WB_GREEN),
     APCAM_STRING_VALUE(APCAM_DEFAULT_WB_BLUE), APCAM_STRING_VALUE(APCAM_DEFAULT_WB_TEMP),
+#endif
+#if APCAM_HAVE_4KCAM_COMPAT
+    "green", "true", "blue",
 #endif
     "false", "", "10001", "false", "", "1", "0", "video1", "0", "video2",
 #if APCAM_HAVE_RAW_THERMAL

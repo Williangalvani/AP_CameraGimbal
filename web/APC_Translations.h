@@ -89,6 +89,8 @@ enum string_id {
     S_OPT_WB_INCANDESCENT,
     S_OPT_WB_MANUAL,
     S_OPT_WB_TEMPERATURE,
+    S_OPT_WATER_GREEN,
+    S_OPT_WATER_BLUE,
     S_OPT_SCOPE_THERMAL,
     S_OPT_SCOPE_ALL,
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -135,6 +137,9 @@ enum string_id {
     S_P_WB_GREEN,
     S_P_WB_BLUE,
     S_P_WB_TEMP,
+    S_P_WB_WATER,
+    S_P_FOURKCAM,
+    S_P_ONVIF_PASSWORD,
     S_H_CARDV_BRIGHTNESS,
     S_H_CARDV_SATURATION,
     S_H_CARDV_CONTRAST,
@@ -257,6 +262,9 @@ enum string_id {
     S_H_WB_TUNING,
     S_H_WB_GAIN,
     S_H_WB_TEMP,
+    S_H_WB_WATER,
+    S_H_FOURKCAM,
+    S_H_ONVIF_PASSWORD,
     S_E_CONFIG_SIZE,
     S_E_INI_UNTERMINATED_SECTION,
     S_E_INI_TEXT_AFTER_SECTION,
@@ -739,6 +747,8 @@ static constexpr Translations translations = [] {
     result[S_OPT_WB_INCANDESCENT] = {"Incandescent", "白炽灯", "白熱灯"};
     result[S_OPT_WB_MANUAL] = {"Manual gains", "手动增益", "手動ゲイン"};
     result[S_OPT_WB_TEMPERATURE] = {"Colour temperature", "色温", "色温度"};
+    result[S_OPT_WATER_GREEN] = {"Green water", "绿色水体", "緑色の水"};
+    result[S_OPT_WATER_BLUE] = {"Blue water", "蓝色水体", "青色の水"};
     result[S_OPT_SCOPE_THERMAL] = {"Thermal only", "仅热成像", "サーマルのみ"};
     result[S_OPT_SCOPE_ALL] = {"All lenses", "全部镜头", "すべてのレンズ"};
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -785,6 +795,9 @@ static constexpr Translations translations = [] {
     result[S_P_WB_GREEN] = {"Manual green gain", "手动绿色增益", "手動の緑ゲイン"};
     result[S_P_WB_BLUE] = {"Manual blue gain", "手动蓝色增益", "手動の青ゲイン"};
     result[S_P_WB_TEMP] = {"Colour temperature (K)", "色温（K）", "色温度（K）"};
+    result[S_P_WB_WATER] = {"One-push water", "一键白平衡水色", "ワンプッシュの水の色"};
+    result[S_P_FOURKCAM] = {"Allow 4K Cam Manager", "允许 4K Cam Manager", "4K Cam Manager を許可"};
+    result[S_P_ONVIF_PASSWORD] = {"ONVIF password", "ONVIF 密码", "ONVIF パスワード"};
     result[S_H_CARDV_BRIGHTNESS] = {"ISP brightness.", "ISP 亮度。", "ISP の明るさ。"};
     result[S_H_CARDV_SATURATION] = {"ISP saturation.", "ISP 饱和度。", "ISP の彩度。"};
     result[S_H_CARDV_CONTRAST] = {"ISP contrast.", "ISP 对比度。", "ISP のコントラスト。"};
@@ -938,6 +951,9 @@ static constexpr Translations translations = [] {
     result[S_H_WB_TUNING] = {"Automatic, a light-source preset, the manual gains below, or the colour temperature below. One-push white balance on the Photos page sets manual gains.", "自动、光源预设、下方的手动增益或下方的色温。照片页面的一键白平衡会设置手动增益。", "オート、光源プリセット、下の手動ゲイン、または下の色温度。写真ページのワンプッシュホワイトバランスは手動ゲインを設定します。"};
     result[S_H_WB_GAIN] = {"Used when white balance is Manual gains. 256 is 1x.", "白平衡为手动增益时使用。256 表示 1 倍。", "ホワイトバランスが手動ゲインのときに使用します。256 が 1 倍です。"};
     result[S_H_WB_TEMP] = {"Used when white balance is Colour temperature: the light source's temperature in kelvin.", "白平衡为色温时使用：光源的色温，单位为开尔文。", "ホワイトバランスが色温度のときに使用します。光源の色温度（ケルビン）。"};
+    result[S_H_WB_WATER] = {"Water that 4K Cam Manager's one-push white balance measures for. The Photos page asks each time.", "4K Cam Manager 一键白平衡所针对的水色。照片页面每次单独选择。", "4K Cam Manager のワンプッシュ ホワイトバランスが対象とする水の色。写真ページでは毎回選びます。"};
+    result[S_H_FOURKCAM] = {"Lets Blue Robotics' 4K Cam Manager and MAVLink Camera Manager find and control this camera without the web login, as with the original firmware.", "允许 Blue Robotics 的 4K Cam Manager 和 MAVLink Camera Manager 无需网页登录即可发现并控制本相机，与原厂固件相同。", "Blue Robotics の 4K Cam Manager と MAVLink Camera Manager が、元のファームウェアと同様に Web ログインなしでこのカメラを検出・制御できるようにします。"};
+    result[S_H_ONVIF_PASSWORD] = {"Password of the ONVIF user admin. 4K Cam Manager logs in with blue.", "ONVIF 用户 admin 的密码。4K Cam Manager 使用 blue 登录。", "ONVIF ユーザー admin のパスワード。4K Cam Manager は blue でログインします。"};
     result[S_E_CONFIG_SIZE] = {"Config size must be between 1 and %u bytes", "配置大小必须在 1 至 %u 字节之间", "設定のサイズは 1〜%u バイトである必要があります"};
     result[S_E_INI_UNTERMINATED_SECTION] = {"Line %u has an unterminated section", "第 %u 行的节名未闭合", "%u 行目のセクションが閉じられていません"};
     result[S_E_INI_TEXT_AFTER_SECTION] = {"Line %u has text after its section", "第 %u 行的节名之后有多余文本", "%u 行目のセクションの後に余分な文字があります"};

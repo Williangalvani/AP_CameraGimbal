@@ -384,21 +384,14 @@ static void media_cleanup(struct APC_Media_HiSi_State *media, APC_Media_HiSi *ow
     if (media->sys_started) sample_comm_sys_exit();
 }
 
-static unsigned stream_bitrate(unsigned width, unsigned height)
-{
-    if (width >= 3840U || height >= 2160U) return 12000U;
-    if (width >= 1920U || height >= 1080U) return 4096U;
-    return 2048U;
-}
-
 // 0 selects the automatic rate for the main stream's resolution
 static unsigned main_bitrate(const struct APC_Media_HiSi_State *media,
                              const struct ca_config *settings)
 {
     return settings->main_bitrate_kbps != 0U
                ? settings->main_bitrate_kbps
-               : stream_bitrate(media->sizes.width[CA_HISI_MAIN_CHN],
-                                media->sizes.height[CA_HISI_MAIN_CHN]);
+               : apcam_hisi_auto_bitrate_kbps(media->sizes.width[CA_HISI_MAIN_CHN],
+                                              media->sizes.height[CA_HISI_MAIN_CHN]);
 }
 
 int APC_Media_HiSi::init(const struct ca_media_config *config)
@@ -457,13 +450,13 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_SUB_VENC], settings->sub_codec,
                              sizes->width[CA_HISI_SUB_CHN], sizes->height[CA_HISI_SUB_CHN],
                              APCAM_FRAME_RATE,
-                             stream_bitrate(sizes->width[CA_HISI_SUB_CHN],
-                                            sizes->height[CA_HISI_SUB_CHN]));
+                             apcam_hisi_auto_bitrate_kbps(sizes->width[CA_HISI_SUB_CHN],
+                                                          sizes->height[CA_HISI_SUB_CHN]));
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_RECORD_VENC], CA_VIDEO_H264,
                              sizes->width[CA_HISI_RECORD_CHN], sizes->height[CA_HISI_RECORD_CHN],
                              APCAM_FRAME_RATE,
-                             stream_bitrate(sizes->width[CA_HISI_RECORD_CHN],
-                                            sizes->height[CA_HISI_RECORD_CHN]));
+                             apcam_hisi_auto_bitrate_kbps(sizes->width[CA_HISI_RECORD_CHN],
+                                                          sizes->height[CA_HISI_RECORD_CHN]));
     stage = "VENC creation";
     for (unsigned channel = 0; channel < media->venc_count; channel++) {
         if (ss_mpi_venc_create_chn(channel, &media->venc_attr[channel]) != TD_SUCCESS) goto fail;

@@ -60,6 +60,12 @@
 #ifndef APCAM_HAVE_WB_TUNING
 #define APCAM_HAVE_WB_TUNING 0
 #endif
+/* Targets that answer Blue Robotics' 4K Cam Manager and MAVLink Camera Manager
+ * as the vendor's firmware does: WS-Discovery, a few ONVIF operations and the
+ * /action control protocol, all in the web server (docs/4kcam-manager-compat.md). */
+#ifndef APCAM_HAVE_4KCAM_COMPAT
+#define APCAM_HAVE_4KCAM_COMPAT 0
+#endif
 /* Default manual gains (1/256) and colour temperature (K). A WB-tuning target
  * sets its sensor calibration's reference point. */
 #ifndef APCAM_DEFAULT_WB_RED
