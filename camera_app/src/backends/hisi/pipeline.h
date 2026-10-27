@@ -33,6 +33,8 @@ void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
                               enum ca_video_codec codec, td_u32 width,
                               td_u32 height, td_u32 frame_rate,
                               td_u32 bit_rate_kbps);
+// call between create and start
+td_s32 ca_hisi_set_low_delay_vui(ot_venc_chn channel, enum ca_video_codec codec);
 td_s32 ca_hisi_set_bitrate(ot_venc_chn channel, td_u32 bit_rate_kbps);
 td_s32 ca_hisi_set_inverted(td_bool inverted, bool record_enabled,
                             const struct ca_hisi_output_sizes *sizes);

@@ -36,6 +36,12 @@
 #ifndef APCAM_HAVE_GIMBAL
 #define APCAM_HAVE_GIMBAL 1
 #endif
+/* The Live page plays through Media Source Extensions where the browser has
+ * them, with a ~0.1 s buffer; otherwise, and on targets without this, it
+ * hands the stream to <video src>. */
+#ifndef APCAM_LIVE_MSE
+#define APCAM_LIVE_MSE 0
+#endif
 /* Targets with selectable photo sizes (needing a sensor mode switch) set this
  * to 1 and define APCAM_PHOTO_{BINNED,FULL}_{WIDTH,HEIGHT,NAME}. */
 #ifndef APCAM_HAVE_PHOTO_RESOLUTION

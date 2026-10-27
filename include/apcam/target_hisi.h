@@ -39,6 +39,8 @@
 #define APCAM_GIMBAL_OPTIONAL 1
 /* No external UART is exposed, so no gimbal can be attached either. */
 #define APCAM_HAVE_GIMBAL 0
+/* Tuned with the encoder's no-reordering VUI; see pipeline.cpp. */
+#define APCAM_LIVE_MSE 1
 #define APCAM_SUPPRESS_DUPLICATE_ANGLES 0
 #define APCAM_WEB_CENTER_COMMAND 3
 #define APCAM_HAVE_OPTICAL_ZOOM 0

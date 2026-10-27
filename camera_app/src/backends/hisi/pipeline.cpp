@@ -161,6 +161,25 @@ void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
     attr->gop_attr.normal_p.ip_qp_delta = 2;
 }
 
+td_s32 ca_hisi_set_low_delay_vui(ot_venc_chn channel, enum ca_video_codec codec)
+{
+    // Without bitstream_restriction a decoder must assume frames are
+    // reordered and holds the level's whole DPB (5 frames at 4K) before
+    // showing one. These streams have no B-frames, so declare zero.
+    if (codec == CA_VIDEO_H265) {
+        ot_venc_h265_vui vui;
+        td_s32 result = ss_mpi_venc_get_h265_vui(channel, &vui);
+        if (result != TD_SUCCESS) return result;
+        vui.vui_bitstream_restric.bitstream_restriction_flag = 1;
+        return ss_mpi_venc_set_h265_vui(channel, &vui);
+    }
+    ot_venc_h264_vui vui;
+    td_s32 result = ss_mpi_venc_get_h264_vui(channel, &vui);
+    if (result != TD_SUCCESS) return result;
+    vui.vui_bitstream_restric.bitstream_restriction_flag = 1;
+    return ss_mpi_venc_set_h264_vui(channel, &vui);
+}
+
 td_s32 ca_hisi_set_bitrate(ot_venc_chn channel, td_u32 bit_rate_kbps)
 {
     ot_venc_chn_attr attr;

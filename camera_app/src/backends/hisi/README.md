@@ -25,11 +25,17 @@ against:
 - headers from OpenIPC `openhisilicon`;
 - the MPP shared libraries from OpenIPC `firmware` (musl builds);
 - a B040-era IMX678 driver (`open-source-toolkit/c0e5d`, 4-lane only), which
-  ships the IMX515 IQ tables.
+  ships the IMX515 IQ tables and is compiled from source into camera-app.
 
 `sample_comm` and xop still come from the V2.0.2.0 tree. `sdk_compat.h`
 covers what they need that B040 lacks, and `sensor_stubs.c` defines the
 sensors that `sample_comm_isp.c` can name but which are not linked.
+
+The camera's V2.0.1.0 B040 `ot_isp.ko` numbers the ISP ioctls from 0x6c up one
+higher than the V1.0.1.1 libraries do. `b040_compat.c` interposes `ioctl` and
+the MPP mmap calls to bridge this and two smaller differences. It renumbers
+only when `/proc/umap/isp` names `HI3519DV500_MPP_V2.0.1.0 B040`; with other
+drivers it logs that it passes ISP ioctls through unchanged.
 
 ## Build
 `make hisi` at the repository root fetches, pinned and never committed: the
@@ -61,8 +67,19 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   dedicated recorder stay at 30. `bitrate_kbps` / `VIDEO_MAIN_KBPS` applies
   live to the main encoder (so to shared recordings too); 0 (the default) picks
   12 Mbit/s at 2160p, 4 Mbit/s at 1080p and 2 Mbit/s below.
+- **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
+  `max_num_reorder_frames = 0`. Without it Chrome's decoder holds the level's
+  whole DPB (5 frames at 4K) before showing the first one.
 - Overlay reuses `mt11/overlay.cpp` (generic `ss_mpi_rgn`); exposure and image
   controls are mt11's ISP calls on pipe 0.
+- **White balance** differs from mt11. Auto uses the vendor's AWB calibration
+  for this sensor and lens (`isp.cpp`). The presets and `temperature` ask the
+  ISP for that calibration's gains at a colour temperature, and fall back to
+  auto if it has none. `manual` takes R/G/B gains in 1/256, defaulting to the
+  calibration's 4950 K gains. One-push (Photos page, green or blue water)
+  measures the centre of the picture and saves the result as manual gains.
+  ISP attributes and statistics have their own mutex, so a measurement does
+  not stall recording.
 
 ## Bring-up overrides (environment)
 - `CA_HISI_SENSOR_BUS=<0-7>`: sensor I²C bus. The default 3 is the SDK's DMEB
@@ -71,12 +88,11 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   encoder, not the sensor.
 
 ## Status
-Builds, links and starts under `qemu-aarch64` from the unpacked appfs image
-(every B040 symbol resolves through the musl loader), then fails cleanly at
-SYS/VB init because there are no MPP drivers. The supervisor and web UI pass
-`make hisi-test` on the host. Nothing has run on the camera yet. On first boot
-check `/proc/media-mem` against the VB plan, the sensor bus, and that VENC
-channels 0 and 1 log their first encoded frames.
+Runs on the camera in place of `xipc`: 4K30 H.264 on RTSP `/video1` and the
+sub stream on `/video2`, the Live page, image controls, white balance
+including one-push, and updates from the Status page. Photos, recording and
+the recording overlay need a microSD card and have not been exercised on the
+camera yet. The supervisor and web UI pass `make hisi-test` on a Linux host.
 
 ## Storage
 `/appfs` is a read-only squashfs (UBI volume on mtd4). Settings (`camera.ini`,
@@ -94,13 +110,30 @@ it mounts the tmpfs `/tmp` and `/var` that `xipc` used to, then runs
   `ot_wdt`, which nothing feeds yet;
 - mounts the card's first partition on `/mnt` and creates `DCIM/record`,
   `DCIM/capture` and `logs` only on a mounted card;
-- seeds `camera.ini` and `web.pass` (`ardupilot`) on first boot;
+- seeds `camera.ini` and `web.pass` (`ardupilot`) when they are missing or
+  empty, through a temporary file;
 - runs `hisi-web` on port 80 and camera-app with the web's restart protocol
-  (`/run/camera-app.request` / `.started`). A driver or startup failure leaves
-  the web UI up and waits for a restart from it.
+  (`/run/camera-app.request` / `.started`). A camera-app that crashes or fails
+  to start is restarted after 2, 10 and 30 s; after a fourth failure in a row
+  (a run of 10 minutes resets the count) it leaves the web UI up and waits for
+  a restart from it. So does a driver load failure. A camera-app that ignores
+  SIGTERM is killed after 15 s. If `hisi-web` exits it is restarted, backing
+  off to 10 s while it keeps exiting at once.
+
+A camera-app that dies without tearing down the ISP (a crash or SIGKILL) leaves
+`ot_isp.ko` initialised for pipe 0, and every later start fails with "ISP[0]
+already inited" (0xa01c800c). Only a reboot clears it: reloading the drivers
+can panic the kernel. So when a start fails with that message, the supervisor
+reboots the camera, at most 3 times in a row (counted in
+`/date/ap_cameragimbal/stale-isp-reboots`, cleared once camera-app is ready);
+after that it falls back to the restart delays above.
+
+There is no hardware watchdog (`ot_wdt` is not loaded, and unloading it once
+loaded hung the board), so a kernel or driver hang needs a power cycle.
 
 `/date/ap_cameragimbal/mpp.conf` may set `MPP_SENSOR`, `MPP_BOARD`,
-`MPP_DDR_MB`, `MPP_MMZ_START` or `MPP_MMZ_SIZE` for bring-up. The address
+`MPP_DDR_MB`, `MPP_MMZ_START` or `MPP_MMZ_SIZE` for bring-up. A file that does
+not run is reported and ignored, so it cannot keep the web UI down. The address
 needs no setup: the recovery updater applies the saved `eth0` MAC, IP and
 gateway from `/appfs/fconfigs/param/updatetype.ini` at boot, independently
 of `xipc`. Logs are in `/run` (`camera_app.log`, `hisi-web.log`,

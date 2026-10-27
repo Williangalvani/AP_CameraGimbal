@@ -468,6 +468,10 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     for (unsigned channel = 0; channel < media->venc_count; channel++) {
         if (ss_mpi_venc_create_chn(channel, &media->venc_attr[channel]) != TD_SUCCESS) goto fail;
         media->venc_created[channel] = TD_TRUE;
+        const enum ca_video_codec codec =
+            media->venc_attr[channel].venc_attr.type == OT_PT_H265 ? CA_VIDEO_H265 : CA_VIDEO_H264;
+        const td_s32 vui = ca_hisi_set_low_delay_vui(channel, codec);
+        if (vui != TD_SUCCESS) ca_log("VENC %u low-delay VUI failed: 0x%x", channel, (unsigned)vui);
     }
     stage = "VPSS-to-VENC binding";
     for (unsigned channel = 0; channel < media->venc_count; channel++) {
