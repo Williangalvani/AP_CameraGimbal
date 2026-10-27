@@ -355,9 +355,11 @@ On the Hi3516DV500 camera, the web server also answers Blue Robotics'
 extension and MAVLink Camera Manager as the original firmware does:
 WS-Discovery, ONVIF (`POST /onvif/device_service`, user `admin`) and the
 `POST /action/<name>` control protocol. Both routes skip the web login, so the
-extension works unchanged. **Allow 4K Cam Manager** (`[compat]
-fourkcam_manager`) turns it all off; **ONVIF password** (`[compat]
-onvif_password`, default `blue`, which the extension uses) and **One-push
-water** (`[image] wb_water`) are on the parameters page. If `camera.ini` can't
-be read, all of it stays off. Design and mapping:
+extension works unchanged, and refuse browser requests (any `Origin` header)
+with 403. **Allow 4K Cam Manager** (`[compat] fourkcam_manager`) turns it all
+off and is the real gate, since RTSP and `/action` are open while it is on;
+**ONVIF password** (`[compat] onvif_password`, default `blue`, which the
+extension uses) and **One-push water** (`[image] wb_water`) are on the
+parameters page. If `camera.ini` can't be read, all of it stays off. Design
+and mapping:
 [`docs/4kcam-manager-compat.md`](../docs/4kcam-manager-compat.md).

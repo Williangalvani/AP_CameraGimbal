@@ -42,11 +42,20 @@ A child process of `hisi-web` joins `239.255.255.250:3702` on every IPv4
 interface and answers `Probe` messages with a `ProbeMatch`, sent back to the
 prober. It exits with its parent (`PR_SET_PDEATHSIG`), so the supervisor's
 restart of `hisi-web` restarts it too. It reads **Allow 4K Cam Manager** for
-each probe, since saving the setting doesn't restart the web. Interfaces that
-come up later are joined within 30 s. Every probe is answered, whatever types
-or scopes it asks for. If port 3702 can't be bound, the child logs
+each probe, since saving the setting doesn't restart the web. The group is
+rejoined every 30 s or so, so an interface that comes up later is joined within
+about a minute at worst. The child starts only when the web listens on its
+default port (80), since `XAddrs` carry no port; with `-p` another port it logs
+`WS-Discovery off`. If port 3702 can't be bound, the child logs
 `WS-Discovery unavailable` and exits; it starts again only with `hisi-web`.
-The match carries:
+
+A probe is answered only if its `MessageID` isn't empty and its `Types` are
+absent or empty (MCM sends an empty `Types`) or include a QName whose local
+part is `NetworkVideoTransmitter` or `Device`; the namespaces aren't checked.
+Scopes in the probe aren't checked. Datagrams from a multicast address,
+`255.255.255.255`, `0.0.0.0` or port 0 are dropped before anything else is
+done. The
+match carries:
 
 - `EndpointReference` `urn:uuid:<UUID derived from the eth0 MAC>`, stable across
   boots;
@@ -80,6 +89,10 @@ on, so a `wsu:Timestamp`'s `Created` before it can't stand in. The digest is
 compared in constant time. `Created` isn't compared with the clock, which may
 not be set, so a captured request can be replayed.
 
+The ONVIF password protects only what ONVIF itself reveals (device
+information, profiles and stream URIs): RTSP and `/action` are open while
+**Allow 4K Cam Manager** is on, so that setting is the real gate.
+
 Replies must deserialize in MCM's `onvif-rs` schemas, which check element names
 and namespaces; `web/tests/onvif-check` checks them. onvif-rs's ver10 encoding
 enum has no H.265, so a stream set to H.265 reads there as an unknown
@@ -112,29 +125,33 @@ deserialize.
 | `getImageAdjustment` / `setImageAdjustment` | table below |
 | `getImageAdjustmentEx` / `setImageAdjustmentEx` | table below |
 | `getVencConf` / `setVencConf` | `channel` 0 = main stream, 1 = sub stream; channel 2 reads as the sub stream, and sets to it are accepted and ignored |
-| `restart` | restarts camera-app the way the web UI does (not a reboot) |
+| `restart` | restarts camera-app the way the web UI does (not a reboot); while a restart is in progress it replies at once with `code` −1 and `log` `restart in progress` instead of queueing another |
 
 Field mapping:
 
 | Vendor field | This firmware |
 |---|---|
 | `brightness`, `contrast`, `saturation` (0–255) | `image.*` (0–100), scaled and rounded |
-| `auto_awb` 0 / 1 | `white_balance` `auto` / `manual`. Reads report 1 for every non-auto mode; 1 switches only from `auto`, so a preset or colour temperature stays unless the gains change |
+| `auto_awb` 0 / 1 | `white_balance` `auto` / `manual`. Reads report 1 for every non-auto mode; 1 switches only from `auto`, so a preset or colour temperature stays unless the gains change. Gains sent with `auto_awb` 0 are saved, but white balance stays `auto` |
 | `awb_red`, `awb_green`, `awb_blue` (0–255) | `wb_red` = r×15+256, `wb_green` = (g+32)×8, `wb_blue` = (b+32)×8, the vendor's slider formula, and `white_balance` `manual`. Reads invert it and clamp to 0–255 |
 | `awb_auto_mode` 0 / 1 | new `image.wb_water` `green` / `blue` |
 | `onceAWB` 1 | one-push with `wb_water`, through the same `camera.ini.wb.command` as the Photos page. The reply comes back at once; the extension then polls `getImageAdjustment` until the manual gains change and settle. Nothing reads the result, so camera-app's `camera.ini.wb.status` stays until the next one-push |
 | `auto_exposureEx` 0 / 1, `exposure_time` | `shutter` `auto` / the nearest manual shutter |
-| `mirror` and `flip` | both 1 ↔ `mount.orientation = inverted`; both 0 ↔ `upright`. Other combinations are ignored |
+| `mirror`, `flip` | `mount.orientation`, which only has a 180° rotation: reads report both as 1 for `inverted` and both as 0 otherwise. The extension sends one of them alone; any one sent that differs from the current state sets `inverted` (1) or `upright` (0), and otherwise nothing changes |
+| `set_default` 1 (`setImageAdjustment`) | resets `brightness`, `contrast`, `saturation`, `white_balance`, `wb_red`, `wb_green`, `wb_blue`, `wb_water` and `shutter`, the keys this action maps, to the web's defaults; the request's other fields are ignored. The extension sends it for the image parameters' **Restore defaults** and with its recommended settings |
 | `encode_type` 1 / 5 | `codec` `h264` / `h265` |
 | `pic_width` × `pic_height`, `pixel_list` | `resolution`, from the target's resolution list: the requested size, else one of the same height (the extension's recommended sub stream is 640×480) |
 | `bitrate` (kbps) | `[stream.main] bitrate_kbps`, 1–20000. Reads of 0 (automatic), and of the sub stream, report the automatic rate for the resolution |
 | `frame_rate` | `[stream.main] frame_rate`, 5–30; the sub stream reports 30 |
 | `max_framerate` | 30 |
-| anything else, including `set_default` | accepted and ignored; reads report the vendor's defaults |
+| anything else, including `setImageAdjustmentEx`'s `set_default` | accepted and ignored; reads report the vendor's defaults |
 
 Resolution and codec changes need camera-app to restart. As with the vendor,
 they apply on the extension's **Save and restart camera**, which sends
-`restart`.
+`restart`. The reply comes once camera-app is back. The extension then waits
+for the camera to stop answering, up to its 60 s offline timeout, and since the
+web stays up during a camera-app restart it always waits the full 60 s
+before it carries on.
 
 ### Settings
 
@@ -146,14 +163,19 @@ they apply on the extension's **Save and restart camera**, which sends
 
 With **Allow 4K Cam Manager** off, discovery doesn't answer and
 `POST /onvif/device_service` and `POST /action/*` return 404. These are the
-only routes that skip the web login, and only while the setting is on, since
-the extension cannot log in; other methods and paths need the login as usual.
+only state-changing routes that skip the web login, and only while the setting
+is on, since the extension cannot log in; other methods and paths need the
+login as usual. While it is on, a request to either route with an `Origin`
+header gets 403 and does nothing: browsers send `Origin` on every POST, and
+neither the extension nor MCM (both reqwest) sends it, so a web page the user
+visits can't drive the camera.
 
-These settings fail closed. Defaults apply only to keys absent from
-`camera.ini`; if the file can't be read, or a value doesn't fit, the routes
-return 404, discovery doesn't answer and every ONVIF login fails, as it does
-with an empty password. An `/action` request that can't read `camera.ini` gets
-`code` −1.
+These settings fail closed; defaults apply only to keys absent from
+`camera.ini`. If `camera.ini` can't be read, or its `fourkcam_manager` value is
+too long to read, the routes return 404 and discovery doesn't answer. They are
+on only when the value is exactly `true`. If `onvif_password` can't be read, is
+too long or is empty, every ONVIF login fails. An `/action` set that can't take
+its lock or read `camera.ini` gets `code` −1.
 
 The ONVIF password is 1–63 bytes (not characters) with no whitespace or control
 characters, as the parameters page checks.
@@ -169,20 +191,27 @@ would be added to the extension, not here.
 
 - **Unit tests** (host): `web/tests/test_onvif.cpp` and
   `web/tests/test_fourkcam.cpp`, in `make -C web test`. They build and run on
-  macOS or Linux on their own (`make -C web tests/test_onvif
-  tests/test_fourkcam`, run from `web/`); the rest of `make -C web test` runs
-  on Linux.
+  macOS or Linux on their own: build with `make -C web tests/test_onvif
+  tests/test_fourkcam`, then run `./tests/test_onvif` and
+  `./tests/test_fourkcam` from `web/` (they read fixtures relative to it). The
+  rest of `make -C web test` runs on Linux.
 - **Schemas**: `web/tests/onvif-check` builds onvif-rs at MCM's revision on a
   Linux host with cargo and parses replies the way MCM does.
   `run.sh HOST requests` regenerates the request fixtures; `run.sh HOST check
   DIR` checks saved replies.
 - **On the camera** (`hisi-web` bind-mounted in RAM):
   `web/tests/check_4kcam_compat.py`, run from a machine on the camera's LAN,
-  probes WS-Discovery, runs each ONVIF operation with a correct digest, a wrong
-  one and none, reads and writes each `/action` (checking the extension's
-  types), runs `onceAWB` (manual gains within 10 s), turns the setting off
-  (404, no probe reply) and restarts camera-app. It backs up and restores
-  `camera.ini` and saves the ONVIF replies for `run.sh check`.
+  probes WS-Discovery (including `Types` it should and shouldn't answer), runs
+  each ONVIF operation with a correct digest, a wrong one and none, checks
+  that requests with `Origin` get 403 and change nothing, reads and writes
+  each `/action` (checking the extension's types, `mirror` or `flip` alone and
+  `set_default`), runs `onceAWB` (manual gains within 10 s), turns the setting
+  off (404, no probe reply) and restarts camera-app, checking that a second
+  `restart` meanwhile gets `restart in progress`. It backs up and restores
+  `camera.ini` (waiting up to 20 s more for a one-push that missed the 10 s,
+  so its gains can't land on the restored file) and saves the ONVIF replies
+  for `run.sh check`; it fails if the probe with the fixture's `MessageID`
+  gets no reply rather than keep an old `probe.xml`.
 - **End to end** (not yet run): BlueOS on a Raspberry Pi on the camera's LAN,
   with MCM and 4K Cam Manager installed. Success is the camera in the
   extension's list, its stream in MCM, and the widget's controls and one-push
