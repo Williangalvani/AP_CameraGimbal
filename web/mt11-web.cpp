@@ -5025,6 +5025,112 @@ static void handle_onvif(int fd, const APC_HTTPRequest *request)
     free(config);
     free(body);
 }
+
+/* Joins the WS-Discovery group on every IPv4 interface; ones that come up
+ * later are joined on the next pass. */
+static void join_discovery_group(int fd)
+{
+    struct ifaddrs *addresses;
+    if (getifaddrs(&addresses) != 0) return;
+    for (struct ifaddrs *item = addresses; item != NULL; item = item->ifa_next) {
+        if (item->ifa_addr == NULL || item->ifa_addr->sa_family != AF_INET ||
+            (item->ifa_flags & IFF_LOOPBACK) != 0) continue;
+        struct ip_mreq group = {};
+        group.imr_multiaddr.s_addr = inet_addr("239.255.255.250");
+        group.imr_interface = ((struct sockaddr_in *)item->ifa_addr)->sin_addr;
+        (void)setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &group, sizeof(group));
+    }
+    freeifaddrs(addresses);
+}
+
+/* The camera's address on the route to peer, for the reply's XAddrs. */
+static bool address_towards(const struct sockaddr_in *peer, char *out, size_t size)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    struct sockaddr_in local;
+    socklen_t length = sizeof(local);
+    bool ok = fd >= 0 && connect(fd, (const struct sockaddr *)peer, sizeof(*peer)) == 0 &&
+              getsockname(fd, (struct sockaddr *)&local, &length) == 0 &&
+              inet_ntop(AF_INET, &local.sin_addr, out, (socklen_t)size) != NULL;
+    if (fd >= 0) close(fd);
+    return ok;
+}
+
+static void random_uuid(char out[37])
+{
+    unsigned char bytes[16];
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0 || read(fd, bytes, sizeof(bytes)) != (ssize_t)sizeof(bytes)) {
+        const unsigned long seed = (unsigned long)time(NULL) ^ (unsigned long)getpid();
+        for (size_t i = 0; i < sizeof(bytes); i++) bytes[i] = (unsigned char)(seed >> (i % 8U * 8U)) ^ (unsigned char)i;
+    }
+    if (fd >= 0) close(fd);
+    bytes[6] = (unsigned char)((bytes[6] & 0x0FU) | 0x40U);
+    bytes[8] = (unsigned char)((bytes[8] & 0x3FU) | 0x80U);
+    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+             bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+}
+
+static void run_discovery(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    int on = 1;
+    struct sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(3702);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (fd < 0 || setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) != 0 ||
+        bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+        log_message("WS-Discovery unavailable: %s", strerror(errno));
+        _exit(1);
+    }
+    unsigned char mac[6] = {0};
+    char uuid[37], endpoint[48];
+    (void)eth0_mac(mac);
+    apc_onvif::uuid_from_mac(mac, uuid);
+    snprintf(endpoint, sizeof(endpoint), "urn:uuid:%s", uuid);
+    time_t joined = 0;
+    for (;;) {
+        if (time(NULL) - joined >= 30) {
+            join_discovery_group(fd);
+            joined = time(NULL);
+        }
+        struct pollfd ready = {fd, POLLIN, 0};
+        if (poll(&ready, 1, 30000) <= 0) continue;
+        char message[8192];
+        struct sockaddr_in peer;
+        socklen_t peer_length = sizeof(peer);
+        ssize_t got = recvfrom(fd, message, sizeof(message) - 1U, 0, (struct sockaddr *)&peer, &peer_length);
+        if (got <= 0) continue;
+        message[got] = '\0';
+        char relates_to[256], local[INET_ADDRSTRLEN], xaddr[96], message_id[48];
+        if (!apc_onvif::probe_message_id(message, relates_to, sizeof(relates_to)) || !fourkcam_enabled() ||
+            !address_towards(&peer, local, sizeof(local))) continue;
+        snprintf(xaddr, sizeof(xaddr), "http://%s/onvif/device_service", local);
+        random_uuid(uuid);
+        snprintf(message_id, sizeof(message_id), "uuid:%s", uuid);
+        APC_StringBuffer reply;
+        apc_onvif::probe_match(reply, message_id, relates_to, endpoint, xaddr);
+        if (reply.valid()) (void)sendto(fd, reply.data(), reply.size(), 0, (struct sockaddr *)&peer, peer_length);
+    }
+}
+
+/* Saving the setting doesn't restart the web, so the child always runs and
+ * reads the setting for each probe. */
+static void start_discovery(int listen_fd)
+{
+    const pid_t parent = getpid();
+    pid_t child = fork();
+    if (child < 0) log_message("cannot start WS-Discovery: %s", strerror(errno));
+    if (child != 0) return;
+    close(listen_fd);
+    signal(SIGTERM, SIG_DFL);
+    signal(SIGINT, SIG_DFL);
+    (void)prctl(PR_SET_PDEATHSIG, SIGTERM);
+    if (getppid() != parent) _exit(0);
+    run_discovery();
+}
 #endif
 
 static void append_notice(APC_StringBuffer *page, const char *message, bool is_error)
@@ -8494,6 +8600,9 @@ int main(int argc, char **argv)
     fclose(pid_file);
 #endif
     log_message("%s listening on 0.0.0.0:%u", SERVER_NAME, port);
+#if APCAM_HAVE_4KCAM_COMPAT
+    start_discovery(listen_fd);
+#endif
     while (listen_fd >= 0) {
         struct sockaddr_in peer_address;
         socklen_t peer_length = sizeof(peer_address);

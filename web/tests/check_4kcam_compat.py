@@ -24,6 +24,7 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKUP = '/run/4kcam-check.ini'
 BACKUP_WEB_BAK = '/run/4kcam-check.ini.web.bak'
+FIXTURE_MESSAGE_ID = 'uuid:00000000-0000-4000-8000-000000000000'
 
 U8 = range(256)
 U16 = range(65536)
@@ -217,6 +218,54 @@ def check_actions(args, check):
     check(image is not None and image['auto_awb'] == 1, f'onceAWB leaves manual gains within 10 s: {image}')
 
 
+def probe(args, message_id=None, timeout=3.0):
+    message_id = message_id or f'uuid:{uuid.uuid4()}'
+    with open(os.path.join(HERE, 'fixtures', 'onvif', 'Probe.xml')) as file:
+        message = file.read().replace(FIXTURE_MESSAGE_ID, message_id)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((args.local, 0))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(args.local))
+    sock.sendto(message.encode(), ('239.255.255.250', 3702))
+    sock.settimeout(0.5)
+    replies = []
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            data, source = sock.recvfrom(16384)
+        except socket.timeout:
+            continue
+        if source[0] == args.camera:
+            replies.append(data.decode())
+    sock.close()
+    return message_id, replies
+
+
+def check_discovery(args, check):
+    message_id, replies = probe(args)
+    reply = replies[0] if len(replies) == 1 else ''
+    relates = re.search(r'<a:RelatesTo>([^<]*)</a:RelatesTo>', reply)
+    check(len(replies) == 1 and relates is not None and relates.group(1) == message_id,
+          f'one ProbeMatch for our Probe ({len(replies)} replies)')
+    check('onvif://www.onvif.org/name/hd' in reply and 'onvif://www.onvif.org/hardware/HW0100302' in reply,
+          'ProbeMatch scopes name/hd and hardware/HW0100302')
+    check(f'<d:XAddrs>http://{args.camera}/onvif/device_service</d:XAddrs>' in reply, 'ProbeMatch XAddrs')
+    # onvif-check accepts only a reply to the fixture's MessageID
+    _, replies = probe(args, FIXTURE_MESSAGE_ID)
+    if len(replies) == 1:
+        save(args, 'probe', replies[0])
+
+
+def check_disabled(args, check):
+    camsh(args, f"if grep -q '^\\[compat\\]' {args.ini}; then sed -i '/^\\[compat\\]/a fourkcam_manager = false' {args.ini};"
+                f" else printf '\\n[compat]\\nfourkcam_manager = false\\n' >> {args.ini}; fi")
+    status, _ = post(f'http://{args.camera}/action/getSysConfig', '', 'application/json')
+    check(status == 404, f'/action is 404 with Allow 4K Cam Manager off ({status})')
+    status, _ = soap(args, '<tds:GetSystemDateAndTime/>', None)
+    check(status == 404, f'/onvif is 404 with Allow 4K Cam Manager off ({status})')
+    _, replies = probe(args)
+    check(not replies, 'no ProbeMatch with Allow 4K Cam Manager off')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--camera', default='192.168.2.10')
@@ -233,8 +282,12 @@ def main():
     camsh(args, f'cp -p {args.ini} {BACKUP} && '
                 f'if [ -e {web_bak} ]; then cp -p {web_bak} {BACKUP_WEB_BAK}; else rm -f {BACKUP_WEB_BAK}; fi')
     try:
+        if not args.skip_discovery:
+            check_discovery(args, check)
         check_onvif(args, check)
         check_actions(args, check)
+        if not args.skip_discovery:
+            check_disabled(args, check)
     finally:
         # a pending one-push would save its gains over the restored file
         camsh(args, f'rm -f {args.ini}.wb.command {args.ini}.wb.status && '
