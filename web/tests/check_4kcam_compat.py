@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Checks a camera running this firmware the way MAVLink Camera Manager and
+4K Cam Manager talk to it, and saves its ONVIF replies for onvif-check.
+
+camera.ini is backed up over telnet (tools/camsh.py) before the first change
+and restored at the end, then camera-app is restarted through /action/restart.
+"""
+import argparse
+import base64
+import datetime
+import hashlib
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BACKUP = '/run/4kcam-check.ini'
+
+U8 = range(256)
+U16 = range(65536)
+IMAGE_TYPES = {
+    'brightness': U8, 'contrast': U8, 'saturation': U8, 'antiFog': {0, 1},
+    'frameTurbo_pro': {0, 1, 2}, 'AE_strategy_mode': {0, 1}, 'auto_exposureEx': {0, 1},
+    'exposure_time': {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000, 10000, 34464},
+    'auto_awb': {0, 1}, 'awb_red': U8, 'awb_green': U8, 'awb_blue': U8, 'awb_auto_mode': {0, 1},
+    'rotate': {0, 1, 2, 3},
+}
+IMAGE_EX_TYPES = {'mirror': {0, 1}, 'flip': {0, 1}, 'onceAWB': U8}
+VENC_TYPES = {
+    'channel': {0, 1, 2}, 'encode_profile': {0, 1, 2}, 'encode_type': {1, 5}, 'pic_width': U16,
+    'pic_height': U16, 'rc_mode': {0, 1}, 'bitrate': U16, 'max_framerate': U16, 'frame_rate': U16, 'gop': U16,
+}
+IDENTITY = ('code', 'device_mac', 'device_id', 'device_ip', 'log', 'sign_tby')
+
+
+class Check:
+    def __init__(self):
+        self.failures = 0
+
+    def __call__(self, ok, what):
+        print(('PASS ' if ok else 'FAIL ') + what, flush=True)
+        if not ok:
+            self.failures += 1
+        return ok
+
+
+def camsh(args, command, timeout=30):
+    result = subprocess.run([sys.executable, args.camsh, '-t', str(timeout), command],
+                            check=True, capture_output=True, text=True)
+    return result.stdout
+
+
+def post(url, body, content_type):
+    request = urllib.request.Request(url, data=body.encode(), method='POST',
+                                     headers={'Content-Type': content_type})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as reply:
+            return reply.status, reply.read().decode()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode()
+
+
+def action(args, name, fields=None):
+    body = json.dumps(fields) if fields is not None else ''
+    status, text = post(f'http://{args.camera}/action/{name}', body, 'application/json')
+    return status, (json.loads(text) if status == 200 else None)
+
+
+def bad_types(reply, types):
+    return [key for key, allowed in types.items()
+            if key in reply and not (isinstance(reply[key], int) and reply[key] in allowed)]
+
+
+def username_token(password, user='admin'):
+    nonce = os.urandom(16)
+    created = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    digest = base64.b64encode(hashlib.sha1(nonce + created.encode() + password.encode()).digest()).decode()
+    return ('<s:Header><wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" '
+            'xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"><wsse:UsernameToken>'
+            f'<wsse:Username>{user}</wsse:Username>'
+            '<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">'
+            f'{digest}</wsse:Password>'
+            '<wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">'
+            f'{base64.b64encode(nonce).decode()}</wsse:Nonce><wsu:Created>{created}</wsu:Created>'
+            '</wsse:UsernameToken></wsse:Security></s:Header>')
+
+
+def soap(args, operation, password):
+    header = username_token(password) if password is not None else ''
+    envelope = ('<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+                'xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" '
+                f'xmlns:tt="http://www.onvif.org/ver10/schema">{header}<s:Body>{operation}</s:Body></s:Envelope>')
+    return post(f'http://{args.camera}/onvif/device_service', envelope, 'application/soap+xml; charset=utf-8')
+
+
+def save(args, kind, text):
+    with open(os.path.join(args.out, kind + '.xml'), 'w') as file:
+        file.write(text)
+
+
+def check_onvif(args, check):
+    status, text = soap(args, '<tds:GetSystemDateAndTime/>', None)
+    check(status == 200 and 'UTCDateTime' in text, 'GetSystemDateAndTime without a login')
+    status, text = soap(args, '<tds:GetDeviceInformation/>', None)
+    check(status == 400 and 'ter:NotAuthorized' in text, 'GetDeviceInformation without a login is NotAuthorized')
+    save(args, 'not-authorized', text)
+    status, text = soap(args, '<tds:GetDeviceInformation/>', 'wrong')
+    check(status == 400 and 'ter:NotAuthorized' in text, 'GetDeviceInformation with a wrong password is NotAuthorized')
+    status, text = soap(args, '<tds:GetDeviceInformation/>', args.password)
+    check(status == 200 and '<tds:Manufacturer>RadCam</tds:Manufacturer><tds:Model>HDIPC</tds:Model>' in text
+          and '<tds:HardwareId>IPCamera</tds:HardwareId>' in text, 'GetDeviceInformation')
+    save(args, 'device-information', text)
+    status, text = soap(args, '<tds:GetServices><tds:IncludeCapability>false</tds:IncludeCapability></tds:GetServices>',
+                        args.password)
+    check(status == 200 and f'<tds:XAddr>http://{args.camera}/onvif/device_service</tds:XAddr>' in text
+          and 'ver10/media/wsdl' in text, 'GetServices')
+    save(args, 'services', text)
+    status, text = soap(args, '<trt:GetProfiles/>', args.password)
+    check(status == 200 and 'token="main"' in text and 'token="sub"' in text, 'GetProfiles')
+    save(args, 'profiles', text)
+    for token, path in (('main', 'video1'), ('sub', 'video2')):
+        status, text = soap(args, '<trt:GetStreamUri><trt:StreamSetup><tt:Stream>RTP-Unicast</tt:Stream>'
+                                  '<tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup>'
+                                  f'<trt:ProfileToken>{token}</trt:ProfileToken></trt:GetStreamUri>', args.password)
+        check(status == 200 and f'<tt:Uri>rtsp://{args.camera}:8554/{path}</tt:Uri>' in text, f'GetStreamUri {token}')
+        if token == 'main':
+            save(args, 'stream-uri', text)
+    status, text = soap(args, '<tds:GetCapabilities/>', args.password)
+    check(status == 400 and 'ter:ActionNotSupported' in text, 'an unsupported operation is ActionNotSupported')
+
+
+def round_trip(args, check, name, fields, getter, getter_fields, expect):
+    status, reply = action(args, name, fields)
+    _, after = action(args, getter, getter_fields)
+    got = {key: (after or {}).get(key) for key in expect}
+    check(status == 200 and reply['code'] == 0 and got == expect, f'{name} {fields} reads back {expect}, got {got}')
+
+
+def check_actions(args, check):
+    status, reply = action(args, 'getSysConfig')
+    check(status == 200 and reply['code'] == 0 and all(key in reply for key in IDENTITY)
+          and reply['device_ip'] == args.camera, 'getSysConfig identity')
+    status, reply = action(args, 'noSuchAction', {})
+    check(status == 200 and reply['code'] == -1, 'an unknown action is code -1')
+    status, image = action(args, 'getImageAdjustment')
+    check(status == 200 and image['code'] == 0 and not bad_types(image, IMAGE_TYPES),
+          f'getImageAdjustment types {bad_types(image, IMAGE_TYPES)}')
+    status, ex = action(args, 'getImageAdjustmentEx')
+    check(status == 200 and ex['code'] == 0 and not bad_types(ex, IMAGE_EX_TYPES), 'getImageAdjustmentEx types')
+    for channel in (0, 1, 2):
+        status, venc = action(args, 'getVencConf', {'channel': channel})
+        check(status == 200 and venc['code'] == 0 and not bad_types(venc, VENC_TYPES) and venc['pixel_list'],
+              f'getVencConf channel {channel} types')
+
+    level = 204 if image['brightness'] != 204 else 128
+    round_trip(args, check, 'setImageAdjustment', {'brightness': level}, 'getImageAdjustment', None, {'brightness': level})
+    round_trip(args, check, 'setImageAdjustment', {'auto_awb': 1, 'awb_red': 40, 'awb_blue': 60},
+               'getImageAdjustment', None, {'auto_awb': 1, 'awb_red': 40, 'awb_blue': 60})
+    round_trip(args, check, 'setImageAdjustment', {'awb_auto_mode': 1}, 'getImageAdjustment', None, {'awb_auto_mode': 1})
+    round_trip(args, check, 'setImageAdjustment', {'awb_auto_mode': 0}, 'getImageAdjustment', None, {'awb_auto_mode': 0})
+    round_trip(args, check, 'setImageAdjustment', {'auto_exposureEx': 1, 'exposure_time': 400},
+               'getImageAdjustment', None, {'auto_exposureEx': 1, 'exposure_time': 400})
+    round_trip(args, check, 'setImageAdjustment', {'auto_exposureEx': 0}, 'getImageAdjustment', None, {'auto_exposureEx': 0})
+    round_trip(args, check, 'setImageAdjustmentEx', {'mirror': 1, 'flip': 1}, 'getImageAdjustmentEx', None,
+               {'mirror': 1, 'flip': 1})
+    round_trip(args, check, 'setImageAdjustmentEx', {'mirror': 0, 'flip': 0}, 'getImageAdjustmentEx', None,
+               {'mirror': 0, 'flip': 0})
+    round_trip(args, check, 'setVencConf', {'channel': 0, 'bitrate': 8000}, 'getVencConf', {'channel': 0},
+               {'bitrate': 8000})
+    status, reply = action(args, 'setVencConf', {'channel': 2, 'bitrate': 32})
+    check(status == 200 and reply['code'] == 0, 'setVencConf channel 2 is accepted')
+
+    round_trip(args, check, 'setImageAdjustment', {'auto_awb': 0}, 'getImageAdjustment', None, {'auto_awb': 0})
+    started = time.time()
+    status, reply = action(args, 'setImageAdjustmentEx', {'onceAWB': 1})
+    check(status == 200 and reply['code'] == 0 and time.time() - started < 2, 'onceAWB replies at once')
+    deadline = time.time() + 10
+    image = None
+    while time.time() < deadline:
+        _, image = action(args, 'getImageAdjustment')
+        if image and image['auto_awb'] == 1:
+            break
+        time.sleep(0.5)
+    check(image is not None and image['auto_awb'] == 1, f'onceAWB leaves manual gains within 10 s: {image}')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--camera', default='192.168.2.10')
+    parser.add_argument('--local', default='192.168.2.15', help="this machine's address on the camera's LAN")
+    parser.add_argument('--camsh', required=True, help='path to tools/camsh.py')
+    parser.add_argument('--password', default='blue')
+    parser.add_argument('--ini', default='/date/ap_cameragimbal/camera.ini')
+    parser.add_argument('--out', default=os.path.join(HERE, 'onvif-check', 'replies'))
+    parser.add_argument('--skip-discovery', action='store_true')
+    args = parser.parse_args()
+    os.makedirs(args.out, exist_ok=True)
+    check = Check()
+    camsh(args, f'cp {args.ini} {BACKUP}')
+    try:
+        check_onvif(args, check)
+        check_actions(args, check)
+    finally:
+        camsh(args, f'cp {BACKUP} {args.ini}.restore && mv {args.ini}.restore {args.ini}')
+    status, reply = action(args, 'restart', {})
+    check(status == 200 and reply['code'] == 0, 'restart restarts camera-app')
+    status, reply = action(args, 'getSysConfig')
+    check(status == 200 and reply['code'] == 0, 'getSysConfig after restart')
+    print(f'{check.failures} failure(s)')
+    return 1 if check.failures else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -480,6 +480,12 @@ static bool language_from_accept(const char *header, size_t header_len,
 }
 
 #include "APC_HTTPRequest.h"
+#if APCAM_HAVE_4KCAM_COMPAT
+#include "APC_FourKCam.h"
+#include "APC_ONVIF.h"
+#include <net/if.h>
+#include <sys/prctl.h>
+#endif
 
 struct option {
     const char *value;
@@ -3747,7 +3753,9 @@ static bool set_lidar_enabled(bool enabled, char *error, size_t error_size)
 #if APCAM_HAVE_WB_TUNING
 /* camera-app polls <config>.wb.command every 500 ms, measures, and answers in
  * <config>.wb.status: "ok" or "error", then its message. */
-static bool request_white_balance(char water, char *message, size_t message_size)
+/* Asks camera-app for a one-push measurement ('1' green or '2' blue water)
+ * through <config>.wb.command, without waiting for the result. */
+static bool start_white_balance(char water, char *message, size_t message_size)
 {
     char command[sizeof(REPLACEMENT_CONFIG_PATH) + sizeof(".wb.command")];
     char temporary[sizeof(command) + sizeof(".tmp")];
@@ -3771,6 +3779,17 @@ static bool request_white_balance(char water, char *message, size_t message_size
         (void)unlink(temporary);
         return false;
     }
+    return true;
+}
+
+static bool request_white_balance(char water, char *message, size_t message_size)
+{
+    char command[sizeof(REPLACEMENT_CONFIG_PATH) + sizeof(".wb.command")];
+    char status[sizeof(REPLACEMENT_CONFIG_PATH) + sizeof(".wb.status")];
+
+    if (!start_white_balance(water, message, message_size)) return false;
+    snprintf(command, sizeof(command), "%s.wb.command", REPLACEMENT_CONFIG_PATH);
+    snprintf(status, sizeof(status), "%s.wb.status", REPLACEMENT_CONFIG_PATH);
     for (unsigned attempt = 0; attempt < 100U; attempt++) {
         const struct timespec delay = {.tv_sec = 0, .tv_nsec = 100000000L};
         (void)nanosleep(&delay, NULL);
@@ -4697,6 +4716,268 @@ static bool restarted_config_ok(char *error, size_t error_size)
     free(config);
     return !failed;
 }
+
+#if APCAM_HAVE_4KCAM_COMPAT
+/* ---- 4K Cam Manager and MAVLink Camera Manager (docs/4kcam-manager-compat.md) ---- */
+static_assert(APCAM_HAVE_VIDEO_BITRATE && APCAM_HAVE_VIDEO_FRAME_RATE && APCAM_HAVE_WB_TUNING,
+              "the 4K Cam Manager mapping uses bitrate, frame rate and one-push white balance");
+
+/* A camera.ini value, or the web's default for it when the key is absent. */
+static void effective_value(const char *config, const char *section, const char *key,
+                            char *value, size_t size)
+{
+    if (config != NULL && ini_get_value(config, section, key, value, size)) return;
+    value[0] = '\0';
+    for (size_t i = 0; i < sizeof(replacement_parameters) / sizeof(replacement_parameters[0]); i++) {
+        if (!strcmp(replacement_parameters[i].section, section) && !strcmp(replacement_parameters[i].key, key)) {
+            snprintf(value, size, "%s", replacement_defaults[i]);
+            return;
+        }
+    }
+}
+
+static bool fourkcam_enabled(void)
+{
+    size_t length;
+    char *config = read_file(config_path(CAMERA_REPLACEMENT), MAX_CONFIG, &length);
+    char value[16];
+    effective_value(config, "compat", "fourkcam_manager", value, sizeof(value));
+    free(config);
+    return strcmp(value, "false") != 0;
+}
+
+/* Not read_file(): sysfs reports every attribute as 4096 bytes long. */
+static bool eth0_mac(unsigned char mac[6])
+{
+    FILE *input = fopen("/sys/class/net/eth0/address", "re");
+    if (input == NULL) return false;
+    bool ok = fscanf(input, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                     &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6;
+    fclose(input);
+    if (!ok) memset(mac, 0, 6);
+    return ok;
+}
+
+/* The camera's address on this connection, which the client can reach. */
+static void local_address(int fd, char *out, size_t size)
+{
+    struct sockaddr_in address;
+    socklen_t length = sizeof(address);
+    if (getsockname(fd, (struct sockaddr *)&address, &length) != 0 ||
+        inet_ntop(AF_INET, &address.sin_addr, out, (socklen_t)size) == NULL) snprintf(out, size, "0.0.0.0");
+}
+
+static unsigned rtsp_port(void)
+{
+    const char *text = getenv("CAMERA_APP_RTSP_PORT");
+    char *end;
+    unsigned long port = text != NULL ? strtoul(text, &end, 10) : 0;
+    return text != NULL && *text != '\0' && *end == '\0' && port > 0 && port <= 65535 ? (unsigned)port : 8554U;
+}
+
+static void fourkcam_image(const char *config, apc_fourkcam::Image &image)
+{
+    char value[32];
+    effective_value(config, "image", "brightness", value, sizeof(value));
+    image.brightness = strtol(value, NULL, 10);
+    effective_value(config, "image", "contrast", value, sizeof(value));
+    image.contrast = strtol(value, NULL, 10);
+    effective_value(config, "image", "saturation", value, sizeof(value));
+    image.saturation = strtol(value, NULL, 10);
+    effective_value(config, "image", "white_balance", image.white_balance, sizeof(image.white_balance));
+    effective_value(config, "image", "wb_red", value, sizeof(value));
+    image.wb_red = (unsigned)strtoul(value, NULL, 10);
+    effective_value(config, "image", "wb_green", value, sizeof(value));
+    image.wb_green = (unsigned)strtoul(value, NULL, 10);
+    effective_value(config, "image", "wb_blue", value, sizeof(value));
+    image.wb_blue = (unsigned)strtoul(value, NULL, 10);
+    effective_value(config, "image", "wb_water", value, sizeof(value));
+    image.blue_water = strcmp(value, "blue") == 0;
+    effective_value(config, "image", "shutter", image.shutter, sizeof(image.shutter));
+    effective_value(config, "mount", "orientation", value, sizeof(value));
+    image.inverted = strcmp(value, "inverted") == 0;
+}
+
+static void fourkcam_stream(const char *config, bool main_stream, apc_fourkcam::Stream &stream)
+{
+    const char *section = main_stream ? "stream.main" : "stream.sub";
+    char value[32];
+    effective_value(config, section, "resolution", value, sizeof(value));
+    if (sscanf(value, "%ux%u", &stream.width, &stream.height) != 2) stream.width = stream.height = 0;
+    effective_value(config, section, "codec", value, sizeof(value));
+    stream.h265 = strcmp(value, "h265") == 0;
+    stream.frame_rate = stream.max_frame_rate = APCAM_FRAME_RATE;
+    stream.bitrate_kbps = apcam_hisi_auto_bitrate_kbps(stream.width, stream.height);
+    if (!main_stream) return;
+    stream.configurable = true;
+    stream.min_frame_rate = APCAM_MAIN_FPS_MIN;
+    stream.max_bitrate_kbps = APCAM_MAIN_BITRATE_MAX_KBPS;
+    effective_value(config, section, "bitrate_kbps", value, sizeof(value));
+    if (strtoul(value, NULL, 10) != 0) stream.bitrate_kbps = (unsigned)strtoul(value, NULL, 10);
+    effective_value(config, section, "frame_rate", value, sizeof(value));
+    if (strtoul(value, NULL, 10) != 0) stream.frame_rate = (unsigned)strtoul(value, NULL, 10);
+}
+
+/* Saved like the parameter form saves; camera-app applies it within 500 ms. */
+static bool fourkcam_save(const char *config, const apc_fourkcam::Changes &changes, char *message, size_t size)
+{
+    struct ini_update updates[sizeof(changes.updates) / sizeof(changes.updates[0])];
+    for (size_t i = 0; i < changes.count; i++) {
+        updates[i].section = changes.updates[i].section;
+        snprintf(updates[i].key, sizeof(updates[i].key), "%s", changes.updates[i].key);
+        snprintf(updates[i].value, sizeof(updates[i].value), "%s", changes.updates[i].value);
+        updates[i].found = false;
+    }
+    size_t length = 0;
+    char *updated = ini_apply_updates(config, updates, changes.count, true, &length, message, size);
+    bool ok = updated != NULL &&
+              save_config(config_path(CAMERA_REPLACEMENT), config_backup_path(CAMERA_REPLACEMENT),
+                          updated, length, message, size);
+    if (ok && wait_live_config(updated, length, message, size, false)) ok = false;
+    free(updated);
+    return ok;
+}
+
+static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const char *peer)
+{
+    const char *name = request->path + strlen("/action/");
+    size_t config_length = 0;
+    char *config = read_file(config_path(CAMERA_REPLACEMENT), MAX_CONFIG, &config_length);
+    apc_fourkcam::Field fields[64];
+    size_t field_count = 0;
+    apc_fourkcam::Image image;
+    apc_fourkcam::Stream streams[2];
+    apc_fourkcam::Changes changes;
+    const char *main_names[sizeof(main_resolution_options) / sizeof(main_resolution_options[0])];
+    const char *sub_names[sizeof(sub_resolution_options) / sizeof(sub_resolution_options[0])];
+    const size_t main_count = sizeof(main_names) / sizeof(main_names[0]);
+    const size_t sub_count = sizeof(sub_names) / sizeof(sub_names[0]);
+    for (size_t i = 0; i < main_count; i++) main_names[i] = main_resolution_options[i].value;
+    for (size_t i = 0; i < sub_count; i++) sub_names[i] = sub_resolution_options[i].value;
+    char message[512] = "";
+    int code = 0;
+
+    if (config == NULL) {
+        code = -1;
+        snprintf(message, sizeof(message), T(S_E_CANNOT_READ), config_path(CAMERA_REPLACEMENT), strerror(errno));
+    } else if (!apc_fourkcam::parse_object(request->body, request->body_len, fields,
+                                           sizeof(fields) / sizeof(fields[0]), &field_count)) {
+        code = -1;
+        snprintf(message, sizeof(message), "malformed JSON");
+    }
+    fourkcam_image(config, image);
+    fourkcam_stream(config, true, streams[0]);
+    fourkcam_stream(config, false, streams[1]);
+    const apc_fourkcam::Field *channel_field = apc_fourkcam::find(fields, field_count, "channel");
+    const long channel = channel_field != NULL ? channel_field->value : 0;
+    const bool main_channel = channel == 0;
+
+    APC_StringBuffer reply;
+    reply.append("{");
+    if (code != 0) {
+    } else if (!strcmp(name, "getSysConfig")) {
+    } else if (!strcmp(name, "getImageAdjustment")) {
+        apc_fourkcam::image_adjustment(reply, image);
+    } else if (!strcmp(name, "setImageAdjustment")) {
+        apc_fourkcam::image_adjustment_changes(fields, field_count, image, changes);
+    } else if (!strcmp(name, "getImageAdjustmentEx")) {
+        apc_fourkcam::image_adjustment_ex(reply, image);
+    } else if (!strcmp(name, "setImageAdjustmentEx")) {
+        apc_fourkcam::image_adjustment_ex_changes(fields, field_count, image, changes);
+    } else if (!strcmp(name, "getVencConf")) {
+        // the vendor's third stream reads as the sub stream
+        apc_fourkcam::venc(reply, channel, streams[main_channel ? 0 : 1],
+                           main_channel ? main_names : sub_names, main_channel ? main_count : sub_count);
+    } else if (!strcmp(name, "setVencConf")) {
+        if (channel == 0 || channel == 1)
+            apc_fourkcam::venc_changes(fields, field_count, streams[channel], channel == 0 ? main_names : sub_names,
+                                       channel == 0 ? main_count : sub_count,
+                                       channel == 0 ? "stream.main" : "stream.sub", changes);
+    } else if (!strcmp(name, "restart")) {
+        if (!restart_camera(message, sizeof(message))) code = -1;
+    } else {
+        code = -1;
+        snprintf(message, sizeof(message), "unsupported action %s", name);
+    }
+    if (code == 0 && changes.count > 0 && !fourkcam_save(config, changes, message, sizeof(message))) code = -1;
+    if (code == 0 && changes.one_push &&
+        !start_white_balance(image.blue_water ? '2' : '1', message, sizeof(message))) code = -1;
+    if (code != 0) log_message("4K Cam Manager %s from %s failed: %s", name, peer, message);
+    else if (changes.count > 0 || changes.one_push) log_message("4K Cam Manager %s by %s", name, peer);
+
+    unsigned char mac[6] = {0};
+    char mac_text[18], serial[13], address[INET_ADDRSTRLEN];
+    (void)eth0_mac(mac);
+    snprintf(mac_text, sizeof(mac_text), "%02x-%02x-%02x-%02x-%02x-%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    snprintf(serial, sizeof(serial), "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    local_address(fd, address, sizeof(address));
+    apc_fourkcam::finish(reply, code, code != 0 ? message : "", {mac_text, serial, address});
+    if (reply.valid()) send_response(fd, 200, "OK", "application/json", reply.data(), reply.size(), NULL);
+    else send_text_errorf(fd, 500, "Internal Server Error", S_OUT_OF_MEMORY);
+    free(config);
+}
+
+static void handle_onvif(int fd, const APC_HTTPRequest *request)
+{
+    char *body = strndup(request->body, request->body_len);
+    if (body == NULL) {
+        send_text_errorf(fd, 500, "Internal Server Error", S_OUT_OF_MEMORY);
+        return;
+    }
+    size_t config_length = 0;
+    char *config = read_file(config_path(CAMERA_REPLACEMENT), MAX_CONFIG, &config_length);
+    char operation[64] = "", password[128], address[INET_ADDRSTRLEN], text[160];
+    effective_value(config, "compat", "onvif_password", password, sizeof(password));
+    local_address(fd, address, sizeof(address));
+    APC_StringBuffer reply;
+    int status = 200;
+
+    if (!apc_onvif::body_operation(body, operation, sizeof(operation))) {
+        status = 400;
+        apc_onvif::fault(reply, "Sender", "InvalidArgVal", "No SOAP operation");
+    } else if (!strcmp(operation, "GetSystemDateAndTime")) {
+        const time_t now = time(NULL);
+        struct tm utc;
+        gmtime_r(&now, &utc);
+        apc_onvif::system_date_and_time(reply, utc);
+    } else if (apc_onvif::check_username_token(body, "admin", password) != apc_onvif::Auth::ok) {
+        status = 400;
+        apc_onvif::fault(reply, "Sender", "NotAuthorized", "Sender not authorized");
+    } else if (!strcmp(operation, "GetDeviceInformation")) {
+        unsigned char mac[6] = {0};
+        char serial[13];
+        (void)eth0_mac(mac);
+        snprintf(serial, sizeof(serial), "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        apc_onvif::device_information(reply, {"RadCam", "HDIPC", CA_FIRMWARE_GIT_HASH, serial, "IPCamera"});
+    } else if (!strcmp(operation, "GetServices")) {
+        snprintf(text, sizeof(text), "http://%s/onvif/device_service", address);
+        apc_onvif::services(reply, text);
+    } else if (!strcmp(operation, "GetProfiles")) {
+        apc_fourkcam::Stream streams[2];
+        fourkcam_stream(config, true, streams[0]);
+        fourkcam_stream(config, false, streams[1]);
+        const apc_onvif::Profile profiles[] = {
+            {"main", streams[0].width, streams[0].height, streams[0].frame_rate, streams[0].bitrate_kbps, streams[0].h265},
+            {"sub", streams[1].width, streams[1].height, streams[1].frame_rate, streams[1].bitrate_kbps, streams[1].h265},
+        };
+        apc_onvif::profiles(reply, profiles, sizeof(profiles) / sizeof(profiles[0]));
+    } else if (!strcmp(operation, "GetStreamUri")) {
+        char token[16] = "";
+        (void)apc_onvif::element_text(body, "ProfileToken", token, sizeof(token));
+        snprintf(text, sizeof(text), "rtsp://%s:%u/%s", address, rtsp_port(), strcmp(token, "sub") ? "video1" : "video2");
+        apc_onvif::stream_uri(reply, text);
+    } else {
+        status = 400;
+        apc_onvif::fault(reply, "Receiver", "ActionNotSupported", "Operation not supported");
+    }
+    if (reply.valid())
+        send_response(fd, status, status == 200 ? "OK" : "Bad Request", "application/soap+xml; charset=utf-8",
+                      reply.data(), reply.size(), NULL);
+    else send_text_errorf(fd, 500, "Internal Server Error", S_OUT_OF_MEMORY);
+    free(config);
+    free(body);
+}
+#endif
 
 static void append_notice(APC_StringBuffer *page, const char *message, bool is_error)
 {
@@ -7543,6 +7824,18 @@ static void handle_request(int fd, const char *peer)
         send_asset(fd, reboot_script, "application/javascript; charset=utf-8");
         goto done;
     }
+#if APCAM_HAVE_4KCAM_COMPAT
+    /* 4K Cam Manager and MAVLink Camera Manager can't log in to the web. ONVIF
+     * checks its own UsernameToken; /action is open, as on the vendor's camera. */
+    if (strcmp(request.method, "POST") == 0 &&
+        (strncmp(request.path, "/action/", strlen("/action/")) == 0 ||
+         strcmp(request.path, "/onvif/device_service") == 0)) {
+        if (!fourkcam_enabled()) send_text_errorf(fd, 404, "Not Found", S_NOT_FOUND);
+        else if (request.path[1] == 'a') handle_fourkcam_action(fd, &request, peer);
+        else handle_onvif(fd, &request);
+        goto done;
+    }
+#endif
     select_language(&request);
     auth = authenticate(&request, session_token);
     if (auth < 0) {
