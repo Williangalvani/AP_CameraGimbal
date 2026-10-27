@@ -212,9 +212,10 @@ $(RPI_HOST_CHECK): mt11-web.cpp gcu_manifest.h z1mini_mavlink.h $(VERSION_HEADER
 		-DSOC_TEMPERATURE_PATH='"$(RPI_TEST_ROOT)/soc-temperature"' \
 		-o $@ $< -lm
 
-# HiSilicon Hi3516DV500: static like camera-app, so it carries no runtime pins
-# against the camera's /lib64. MAVLink headers come from the camera_app build.
-HISI_CROSS_COMPILE ?= aarch64-linux-gnu-
+# HiSilicon Hi3516DV500: static musl, so it needs neither the camera's glibc
+# nor camera-app's library directory. MAVLink headers come from the camera_app
+# build.
+HISI_CROSS_COMPILE ?= aarch64-linux-
 hisi-web: mt11-web.cpp gcu_manifest.h z1mini_mavlink.h $(VERSION_HEADER) $(ICON_HEADER) $(WEBROOT_HEADER) $(APCAM_HEADERS) $(wildcard APC_*.h) $(RPI_MAVLINK)/all/mavlink.h Makefile
 	$(call progress,Linking $@)
 	$(HISI_CROSS_COMPILE)g++ -static $(WEB_CXXFLAGS) -Wno-unused-function -Wno-address-of-packed-member -DAPCAM_TARGET=APCAM_TARGET_HISI -isystem $(RPI_MAVLINK) -o $@ $< -lm

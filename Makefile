@@ -459,14 +459,19 @@ zr10_sitl-run: zr10_sitl
 	CAMERA_GIMBAL_SITL_BACKEND=zr10 \
 		CAMERA_GIMBAL_SITL_BUILD=$(abspath $(ZR10_SITL_BUILD)) sh sitl/run.sh
 
-# HiSilicon Hi3516DV500 (IMX678) camera-only build against the pinned
-# Hi3519DV500 MPP sample tree. Build only: nothing here contacts a camera.
-HISI_CROSS_COMPILE ?= aarch64-linux-gnu-
+# HiSilicon Hi3516DV500 (IMX678) camera-only build: sources from the pinned
+# Hi3519DV500 MPP sample tree, headers and musl libraries from the pinned B040
+# tree. Build only: nothing here contacts a camera.
+HISI_TOOLCHAIN ?= $(CURDIR)/build/hisi-deps/aarch64--musl--stable-2025.08-1
+HISI_CROSS_COMPILE ?= $(HISI_TOOLCHAIN)/bin/aarch64-linux-
 HISI_MPP_ROOT ?= $(abspath $(DEPS_ROOT)/hi3516dv500-mpp)
-export HISI_MPP_ROOT
+HISI_B040_ROOT ?= $(abspath $(DEPS_ROOT)/hi3519dv500-b040)
+export HISI_MPP_ROOT HISI_B040_ROOT
 .PHONY: hisi hisi_dependencies
 hisi_dependencies: build-dependencies
+	tools/bootstrap_hisi_toolchain.sh
 	tools/bootstrap_hisi_mpp.sh '$(HISI_MPP_ROOT)'
+	tools/bootstrap_hisi_b040.sh '$(HISI_B040_ROOT)'
 hisi: hisi_dependencies generated
 	$(MAKE) -C camera_app CAMERA_BACKEND=hisi CROSS_COMPILE='$(HISI_CROSS_COMPILE)'
 	$(MAKE) -C web CAMERA_BACKEND=hisi HISI_CROSS_COMPILE='$(HISI_CROSS_COMPILE)' hisi-web

@@ -22,8 +22,7 @@ struct ca_hisi_output_sizes {
     bool record_channel;
 };
 
-/* Bring-up overrides: CA_HISI_SENSOR_BUS=<n> selects the sensor I2C bus and
- * CA_HISI_SENSOR_2LANE=1 the 2-lane IMX678 mode. */
+/* Bring-up override: CA_HISI_SENSOR_BUS=<n> selects the sensor I2C bus. */
 sample_sns_type ca_hisi_sensor_type(void);
 td_s32 ca_hisi_system_init(const struct ca_hisi_output_sizes *sizes);
 void ca_hisi_configure_vi(sample_vi_cfg *vi_cfg);

@@ -954,11 +954,11 @@ static void send_response(int fd, int status, const char *reason,
     APC_HTTPResponse(fd, SERVER_NAME).send(status, reason, content_type, body, body_len, extra_headers);
 }
 
-#if APCAM_TARGET == APCAM_TARGET_ZR10
+#if APCAM_TARGET == APCAM_TARGET_ZR10 || APCAM_TARGET == APCAM_TARGET_HISI
 #if !defined(__CYGWIN__) && !defined(__APPLE__)
 #include <sys/syscall.h>
 
-/* The installed uClibc predates renameat2, but the 4.9 kernel supports it. */
+/* ZR10's uClibc and hisi's musl lack renameat2; both kernels support it. */
 #ifndef RENAME_NOREPLACE
 #define RENAME_NOREPLACE 1
 static int renameat2(int olddir, const char *oldname, int newdir,

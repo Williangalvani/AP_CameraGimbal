@@ -13,6 +13,7 @@
 #include <linux/rtnetlink.h>
 #include <net/if.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #define SNAPSHOT_MAX 64
