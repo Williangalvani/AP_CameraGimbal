@@ -7,8 +7,10 @@ private user/net/pid namespace; it stops at the missing MTD device.
 """
 import contextlib
 import io
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -26,6 +28,16 @@ MKSQUASHFS = os.environ.get('MKSQUASHFS', str(ROOT / 'build/deps/squashfs-tools/
 
 def sample_ubi():
     return fw.ubinize(bytes(range(256)) * 900)
+
+
+def with_reserved(ubi, reserved):
+    """ubi with volume 0 reserving `reserved` PEBs in both volume table copies."""
+    image = bytearray(ubi)
+    for copy in range(2):
+        record = copy * fw.PEB_SIZE + fw.DATA_OFFSET
+        struct.pack_into('>I', image, record, reserved)
+        struct.pack_into('>I', image, record + 168, fw.ubi_crc(image[record:record + 168]))
+    return bytes(image)
 
 
 class Container(unittest.TestCase):
@@ -86,7 +98,16 @@ class Ubi(unittest.TestCase):
 
     def test_too_large(self):
         with self.assertRaisesRegex(ValueError, 'do not fit'):
-            fw.ubinize(b'\0' * (fw.APPFS_PEBS - 1) * fw.LEB_SIZE)
+            fw.ubinize(b'\0' * (fw.APPFS_VOLUME_MAX_PEBS * fw.LEB_SIZE + 1))
+        fw.check_ubi(fw.ubinize(b'\0' * fw.APPFS_VOLUME_MAX_PEBS * fw.LEB_SIZE))
+
+    def test_volume_may_reserve_the_partition(self):
+        image = sample_ubi()
+        fw.check_ubi(with_reserved(image, fw.APPFS_VOLUME_MAX_PEBS))
+        with self.assertRaisesRegex(ValueError, 'Volume 0'):
+            fw.check_ubi(with_reserved(image, fw.APPFS_VOLUME_MAX_PEBS + 1))
+        with self.assertRaisesRegex(ValueError, 'Volume 0'):
+            fw.check_ubi(with_reserved(image, len(image) // fw.PEB_SIZE - 3))
 
 
 def build_appfs(directory, *extra):
@@ -160,6 +181,12 @@ class Appfs(unittest.TestCase):
 
 CXX = os.environ.get('CXX', 'c++')
 VENDOR_APPFS = ROOT.parents[1] / 'restore/vendor_appfs_restore.bin'
+# An original vendor update, e.g. IPC_18.010.U35.5_0054_V16(260305).img.
+VENDOR_IMAGE = Path(os.environ.get('HISI_VENDOR_IMAGE', '/nonexistent'))
+NAMES_ACCEPTED = ['HISI_AP_b321e2_appfs.img', 'HISI_AP_b321e2_appfs.bin',
+                  'IPC_18.010.U35.5_0054_V16(260305).img', 'IPC_18.010 (1).img', 'a+b.img', 'x' * 196 + '.img']
+NAMES_REJECTED = ['', '.img', 'appfs.tar', 'appfs.img.txt', 'APPFS.IMG', '../appfs.img', 'dir/appfs.img',
+                  'dir\\appfs.img', 'a"b.img', 'a<b>.img', 'a&b.img', "a'b.img", 'a\tb.img', 'x' * 197 + '.img']
 
 
 @unittest.skipUnless(shutil.which(CXX), 'no host C++ compiler')
@@ -195,6 +222,40 @@ class WebCheck(unittest.TestCase):
     def test_accepts_vendor_restore(self):
         self.assertEqual(self.check(VENDOR_APPFS.read_bytes()), 'ok')
 
+    @unittest.skipUnless(VENDOR_IMAGE.is_file(), 'HISI_VENDOR_IMAGE not set')
+    def test_accepts_vendor_image(self):
+        self.assertEqual(self.check(VENDOR_IMAGE.read_bytes()), 'ok')
+
+    def test_volume_may_reserve_the_partition(self):
+        pebs = len(self.ubi) // fw.PEB_SIZE
+        self.assertEqual(self.check(fw.pack([(fw.APPFS_MTD, with_reserved(self.ubi, fw.APPFS_VOLUME_MAX_PEBS))])), 'ok')
+        for reserved in (fw.APPFS_VOLUME_MAX_PEBS + 1, pebs - 3):
+            self.assertIn('Volume 0', self.check(fw.pack([(fw.APPFS_MTD, with_reserved(self.ubi, reserved))])))
+
+    def name_verdict(self, name):
+        result = subprocess.run([str(self.checker), '--name', name], capture_output=True, text=True)
+        return result.stdout.strip()
+
+    def test_names(self):
+        for name in NAMES_ACCEPTED:
+            self.assertEqual(self.name_verdict(name), 'ok', name)
+        for name in NAMES_REJECTED:
+            self.assertNotEqual(self.name_verdict(name), 'ok', name)
+
+    def test_name_regex_matches_the_check(self):
+        """upgrade.js tests names with NAME_REGEX before uploading."""
+        regex = subprocess.run([str(self.checker), '--name-regex'], capture_output=True, text=True,
+                               check=True).stdout.rstrip('\n')
+        for name in NAMES_ACCEPTED + NAMES_REJECTED:
+            self.assertEqual(bool(re.fullmatch(regex, name)), name in NAMES_ACCEPTED, name)
+        node = shutil.which('node')
+        if node:
+            script = 'const r = new RegExp(process.argv[1]); console.log(JSON.stringify(JSON.parse(process.argv[2]).map(n => r.test(n))))'
+            names = NAMES_ACCEPTED + NAMES_REJECTED
+            verdicts = subprocess.run([node, '-e', script, regex, json.dumps(names)], capture_output=True,
+                                      text=True, check=True).stdout
+            self.assertEqual(json.loads(verdicts), [name in NAMES_ACCEPTED for name in names])
+
     def test_device_code_from_updatetype(self):
         ini = self.path / 'updatetype.ini'
         ini.write_text('[UPDATE_SET]\nVER = 1\nDEV_TYPE = 19\nSDK_TYPE = 2\nPLATFORM_TYPE = 52\n')
@@ -217,6 +278,38 @@ class WebCheck(unittest.TestCase):
         self.assertIn('EC header', self.check(fw.pack([(fw.APPFS_MTD, bytes(ubi))])))
         self.assertIn('squashfs', self.check(fw.pack([(fw.APPFS_MTD, sample_ubi())])))
         self.assertIn('whole number', self.check(fw.pack([(fw.APPFS_MTD, self.ubi[:-1])])))
+
+    def mutants(self):
+        def poke(offset, value):
+            image = bytearray(self.good)
+            image[offset:offset + len(value)] = value
+            return bytes(image)
+        path = fw.HEADER_SIZE
+        return {
+            'rootfs': fw.pack([('/dev/mtd3', self.ubi)]),
+            'mtd40': fw.pack([('/dev/mtd40', self.ubi)]),
+            'path without NUL': poke(path, b'/dev/mtd4'.ljust(fw.ENTRY_PATH_SIZE, b'x')),
+            'offset': poke(path + 0x84, struct.pack('<I', fw.HEADER_SIZE + fw.ENTRY_SIZE + 1)),
+            'two entries': fw.pack([(fw.APPFS_MTD, self.ubi), (fw.APPFS_MTD, self.ubi)]),
+            'header flags': poke(0x1e, b'\1'),
+            'no reboot': fw.pack([(fw.APPFS_MTD, self.ubi)], reboot=False),
+            'not squashfs': fw.pack([(fw.APPFS_MTD, sample_ubi())]),
+        }
+
+    def test_python_check_matches_the_web(self):
+        """tools/hisi_firmware.py check is what to run before curling an image to :9091."""
+        self.assertEqual(len(fw.check_appfs_image(self.good)), len(self.ubi))
+        for name, image in self.mutants().items():
+            with self.subTest(name):
+                self.assertNotEqual(self.check(image), 'ok')
+                with self.assertRaises(ValueError):
+                    fw.check_appfs_image(image)
+        rootfs = self.path / 'rootfs.img'
+        rootfs.write_bytes(self.mutants()['rootfs'])
+        result = subprocess.run([sys.executable, str(ROOT / 'tools/hisi_firmware.py'), 'check', str(rootfs)],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('/dev/mtd4', result.stderr)
 
 
 if __name__ == '__main__':

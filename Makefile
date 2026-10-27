@@ -478,7 +478,7 @@ hisi: hisi_dependencies generated
 # Whole-appfs (mtd4) image for the vendor web uploader or the rootfs
 # recovery updater on TCP 9091. Package only: nothing here contacts a camera.
 HISI_BUILD_HASH := $(MT11_GIT_HASH)$(shell git diff --quiet HEAD -- || printf -- -dirty)
-HISI_APPFS_OUT ?= build/HISI_AP_$(MT11_VERSION)_$(HISI_BUILD_HASH)_appfs.bin
+HISI_APPFS_OUT ?= build/HISI_AP_$(MT11_VERSION)_$(HISI_BUILD_HASH)_appfs.img
 SQUASHFS_TOOLS_ROOT ?= $(abspath $(DEPS_ROOT)/squashfs-tools)
 .PHONY: hisi_appfs hisi-test
 hisi_appfs: hisi

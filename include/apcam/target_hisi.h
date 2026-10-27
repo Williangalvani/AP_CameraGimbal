@@ -130,9 +130,13 @@
  * keeps settings across appfs updates; recordings and logs go to the microSD
  * card on /mnt, which the launcher mounts in place of xipc. */
 #ifdef APCAM_WEB_BUILD
-/* Uploads go to the rootfs recovery updater, which survives any appfs. */
+/* Uploads go to the rootfs recovery updater, which survives any appfs. Names
+ * follow apcam_hisi_firmware::valid_image_name(), so the vendor's own .img
+ * releases are accepted as well as ours. */
 #define WEB_HAVE_FIRMWARE_UPLOAD 1
-#define FIRMWARE_PREFIX "HISI_"
+#define FIRMWARE_PREFIX ""
+#define FIRMWARE_ACCEPT ".img,.bin"
+#define FIRMWARE_NAME_PATTERNS "*.img / *.bin"
 #ifndef APP_INSTALL_DIR
 #define APP_INSTALL_DIR "/appfs/ap_cameragimbal"
 #endif

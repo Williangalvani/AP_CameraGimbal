@@ -79,8 +79,14 @@
 #if APCAM_TARGET == APCAM_TARGET_ZR10
 #include "build/zr10_upgrade.h"
 #endif
+#if APCAM_TARGET == APCAM_TARGET_HISI
+#include "../include/apcam/hisi_firmware.h"
+#endif
 #ifndef FIRMWARE_SUFFIX
 #define FIRMWARE_SUFFIX ".bin"
+#endif
+#ifndef FIRMWARE_ACCEPT
+#define FIRMWARE_ACCEPT FIRMWARE_SUFFIX
 #endif
 /* Targets keeping media on the root filesystem set this to 0. */
 #ifndef WEB_MEDIA_IS_MOUNT
@@ -90,7 +96,8 @@
 #ifndef WEB_HAVE_FIRMWARE_UPLOAD
 #define WEB_HAVE_FIRMWARE_UPLOAD 1
 #endif
-#ifdef FIRMWARE_INSTALL_NAME
+#ifdef FIRMWARE_NAME_PATTERNS
+#elif defined(FIRMWARE_INSTALL_NAME)
 #define FIRMWARE_NAME_PATTERNS FIRMWARE_INSTALL_NAME " / " FIRMWARE_PREFIX "*" FIRMWARE_SUFFIX
 #else
 #define FIRMWARE_NAME_PATTERNS FIRMWARE_PREFIX "*" FIRMWARE_SUFFIX
@@ -5054,7 +5061,7 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
 #endif
 #if WEB_HAVE_FIRMWARE_UPLOAD
     page.appendf("<form id=firmware-upload method=post action=/upgrade>"
-                      "<input id=firmware type=file accept=" FIRMWARE_SUFFIX " hidden>"
+                      "<input id=firmware type=file accept=" FIRMWARE_ACCEPT " hidden>"
                       "<button id=select-firmware type=button>%s</button>"
                       "<progress id=firmware-progress value=0 max=100 hidden></progress>"
                       "<output id=firmware-status class=upload-status></output></form>"
@@ -6287,8 +6294,10 @@ static const char *upgrade_script = "upgrade.js";
 #endif
 #if APCAM_TARGET == APCAM_TARGET_HISI
 #define UPGRADE_SIZE_STRING S_E_FW_SIZE_HISI
+#define UPGRADE_NAME_STRING S_E_FW_NAME
 #else
 #define UPGRADE_SIZE_STRING S_JS_FW_SIZE
+#define UPGRADE_NAME_STRING S_JS_FW_NAME
 #endif
 #ifndef FIRMWARE_INSTALL_NAME
 #define FIRMWARE_INSTALL_NAME_JS ""
@@ -6304,7 +6313,7 @@ static void send_upgrade_script(int fd)
         {"applicationUpdate", "true"}, {"maxSize", "33554432"}, {"appFailed", T(S_APP_UPDATE_FAILED)},
         {"confirmRollback", T(S_APP_ROLLBACK)},
 #elif APCAM_TARGET == APCAM_TARGET_HISI
-        {"maxSize", "37748980"},
+        {"maxSize", "37748980"}, {"namePattern", apcam_hisi_firmware::NAME_REGEX},
 #endif
         {"mediaRoot", UPGRADE_WRITE_ROOT}, {"reboots", WEB_UPGRADE_REBOOTS_JS},
         {"prefix", FIRMWARE_PREFIX}, {"suffix", FIRMWARE_SUFFIX},
@@ -6320,7 +6329,7 @@ static void send_upgrade_script(int fd)
         {"closed", T(S_JS_FW_CLOSED)},
     };
 
-    snprintf(bad_name, sizeof(bad_name), T(S_JS_FW_NAME), FIRMWARE_NAME_PATTERNS);
+    snprintf(bad_name, sizeof(bad_name), T(UPGRADE_NAME_STRING), FIRMWARE_NAME_PATTERNS);
     send_script(fd, items, sizeof(items) / sizeof(items[0]), upgrade_script);
 }
 
@@ -6341,6 +6350,9 @@ static void send_users_script(int fd)
 
 static bool valid_firmware_name(const char *name)
 {
+#if APCAM_TARGET == APCAM_TARGET_HISI
+    return apcam_hisi_firmware::valid_image_name(name);
+#else
 #ifdef FIRMWARE_INSTALL_NAME
     if (strcmp(name, FIRMWARE_INSTALL_NAME) == 0) return true;
 #endif
@@ -6356,6 +6368,7 @@ static bool valid_firmware_name(const char *name)
         if (!(isalnum(value) || value == '.' || value == '_' || value == '-')) return false;
     }
     return true;
+#endif
 }
 
 [[maybe_unused]] static void sync_firmware_storage(void)

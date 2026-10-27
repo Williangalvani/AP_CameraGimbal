@@ -96,7 +96,8 @@
   input.addEventListener('change', () => {
     const file = input.files && input.files[0];
     if (!file) return;
-    const pattern = new RegExp('^' + L.prefix + '[A-Za-z0-9._-]+' + L.suffix.replace(/\./g, '\\.') + '$');
+    const pattern = L.namePattern ? new RegExp(L.namePattern)
+      : new RegExp('^' + L.prefix + '[A-Za-z0-9._-]+' + L.suffix.replace(/\./g, '\\.') + '$');
     if (!(pattern.test(file.name) || (L.installName && file.name === L.installName))) {
       status.textContent = L.badName; return;
     }

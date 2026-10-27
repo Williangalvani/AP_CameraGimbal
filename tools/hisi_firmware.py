@@ -36,6 +36,8 @@ VID_HDR_OFFSET = PAGE_SIZE
 DATA_OFFSET = 2 * PAGE_SIZE
 LEB_SIZE = PEB_SIZE - DATA_OFFSET
 APPFS_PEBS = 288
+# The volume size this camera's UBI and the vendor's own updates give appfs.
+APPFS_VOLUME_MAX_PEBS = 265
 LAYOUT_VOLUME_ID = 0x7fffefff
 VTBL_SLOTS = 128
 VTBL_RECORD_SIZE = 172
@@ -97,7 +99,7 @@ def _vtbl_record(reserved_pebs=0, name=b''):
 def ubinize(volume, name=b'appfs'):
     """A ubinize-equivalent image: layout volume in PEBs 0-1, volume 0 after."""
     lebs = max(1, -(-len(volume) // LEB_SIZE))
-    if lebs + 2 > APPFS_PEBS:
+    if lebs > APPFS_VOLUME_MAX_PEBS:
         raise ValueError(f'{len(volume)} bytes do not fit the appfs partition')
     image_seq = int.from_bytes(hashlib.sha256(volume).digest()[:4], 'big') or 1
     vtbl = _vtbl_record(lebs, name) + b''.join(_vtbl_record() for _ in range(VTBL_SLOTS - 1))
@@ -143,14 +145,17 @@ def unpack(contents, device_code=DEVICE_CODE):
     if (dev_type, sdk_type, platform_type) != tuple(device_code):
         raise ValueError(f'Device code {dev_type}/{sdk_type}/{platform_type} does not match')
     entries = []
+    table_end = HEADER_SIZE + count * ENTRY_SIZE
     for index in range(count):
         base = HEADER_SIZE + index * ENTRY_SIZE
         if base + ENTRY_SIZE > len(contents) - TRAILER_SIZE:
             raise ValueError('Entry table overruns the image')
         raw_path, length, offset, crc = struct.unpack_from('<128sII8xI', contents, base)
-        path = raw_path.split(b'\0', 1)[0].decode()
+        path = raw_path.split(b'\0', 1)[0].decode(errors='replace')
         if not path.startswith('/dev/mtd') or '\\' in path:
             raise ValueError(f'Invalid MTD path {path!r}')
+        if offset < table_end:
+            raise ValueError(f'{path} data overlaps the entry table')
         if offset + length > len(contents) - TRAILER_SIZE:
             raise ValueError(f'{path} data overruns the image')
         data = contents[offset:offset + length]
@@ -183,8 +188,39 @@ def check_ubi(image):
         if ubi_crc(record[:168]) != struct.unpack('>I', record[168:])[0]:
             raise ValueError(f'Volume table record {slot}: bad CRC')
     reserved, = struct.unpack_from('>I', vtbl)
-    if reserved != len(image) // PEB_SIZE - 2:
-        raise ValueError('Volume 0 size does not match the image')
+    if not len(image) // PEB_SIZE - 2 <= reserved <= APPFS_VOLUME_MAX_PEBS:
+        raise ValueError('Volume 0 size does not fit the image and the appfs partition')
+
+
+MAX_IMAGE_SIZE = HEADER_SIZE + ENTRY_SIZE + APPFS_PEBS * PEB_SIZE + TRAILER_SIZE
+
+
+def check_appfs_image(contents, device_code=DEVICE_CODE):
+    """What hisi-web accepts (include/apcam/hisi_firmware.h check_appfs_image()):
+    unpack()'s checks plus a single rebooting /dev/mtd4 entry holding a squashfs
+    volume, so the image cannot rewrite the rootfs that carries the updater."""
+    if len(contents) < HEADER_SIZE + ENTRY_SIZE + TRAILER_SIZE:
+        raise ValueError('Image is too short')
+    if len(contents) > MAX_IMAGE_SIZE:
+        raise ValueError('Image is larger than the appfs partition')
+    count, = struct.unpack_from('<I', contents, 0x14)
+    if count != 1:
+        raise ValueError('Image must contain exactly one partition (appfs)')
+    if contents[0x1c] != 1:
+        raise ValueError('Image does not reboot after writing')
+    if contents[0x1e] != 0:
+        raise ValueError('Unsupported header flags')
+    raw_path = contents[HEADER_SIZE:HEADER_SIZE + ENTRY_PATH_SIZE]
+    if b'\0' not in raw_path or raw_path.split(b'\0', 1)[0] != APPFS_MTD.encode():
+        raise ValueError(f'Image does not target the appfs partition ({APPFS_MTD})')
+    length, offset = struct.unpack_from('<II', contents, HEADER_SIZE + ENTRY_PATH_SIZE)
+    if offset != HEADER_SIZE + ENTRY_SIZE or offset + length != len(contents) - TRAILER_SIZE:
+        raise ValueError('Partition data does not fill the image')
+    _, ((_, image),) = unpack(contents, device_code)
+    check_ubi(image)
+    if image[2 * PEB_SIZE + DATA_OFFSET:2 * PEB_SIZE + DATA_OFFSET + 4] != b'hsqs':
+        raise ValueError('appfs volume is not a little-endian squashfs')
+    return image
 
 
 def squashfs(staging, output, mksquashfs):
@@ -225,7 +261,8 @@ def main():
     volume.add_argument('squashfs', type=Path)
     volume.add_argument('output', type=Path)
     volume.add_argument('--no-reboot', action='store_true')
-    check = sub.add_parser('check', help='validate an image like the camera does')
+    check = sub.add_parser('check', help='validate an image as the web UI does: appfs only, '
+                           'so it is also safe to send to the rootfs updater on :9091')
     check.add_argument('image', type=Path)
     args = parser.parse_args()
     if args.command == 'appfs':
@@ -233,12 +270,11 @@ def main():
     elif args.command == 'volume':
         build_volume(args.squashfs.read_bytes(), args.output, reboot=not args.no_reboot)
     else:
-        reboot, entries = unpack(args.image.read_bytes())
-        for path, data in entries:
-            if path == APPFS_MTD:
-                check_ubi(data)
-            print(f'{path}: {len(data)} bytes')
-        print('reboots after update' if reboot else 'no reboot after update')
+        try:
+            image = check_appfs_image(args.image.read_bytes())
+        except ValueError as error:
+            raise SystemExit(f'{args.image}: rejected: {error}')
+        print(f'{args.image}: {APPFS_MTD} {len(image) // PEB_SIZE} PEBs, reboots after update')
 
 
 if __name__ == '__main__':

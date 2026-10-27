@@ -107,13 +107,23 @@ of `xipc`. Logs are in `/run` (`camera_app.log`, `hisi-web.log`,
 `hisi-service.log`).
 
 ## Updates
-`make hisi_appfs` writes `build/HISI_AP_<version>_<hash>_appfs.bin`, a whole
+`make hisi_appfs` writes `build/HISI_AP_<version>_<hash>_appfs.img`, a whole
 appfs (mtd4) image in the vendor update format: a squashfs in a UBI image in
-the vendor container. The stock uploader takes it, and so does the rootfs
-recovery updater (`/usr/hiface/update`, HTTP `POST :9091/fwUpgrade`, raw
-body), which survives our appfs. The camera erases mtd4, writes the image
-and reboots. `tests/test_hisi_firmware.py` checks the format, and with
-`HISI_VENDOR_ROOTFS` set it runs the vendor updater under qemu against it.
+the vendor container. Three uploaders take it, and each erases mtd4, writes
+the image and reboots:
+- the vendor web UI's firmware upgrade, which only treats `.img` files as
+  camera firmware (`.bin` goes to its driver-board upgrade);
+- the rootfs recovery updater (`/usr/hiface/update`, HTTP `POST
+  :9091/fwUpgrade`, raw body), which survives our appfs;
+- our Status page, which forwards to the recovery updater.
+
+Our Status page also takes the vendor's own appfs releases (e.g.
+`IPC_18.010.U35.5_0054_V16(260305).img`). Their volume reserves the whole
+partition (265 PEBs) rather than just the PEBs in the image, as ours does.
+`tests/test_hisi_firmware.py` checks the format and the upload names. With
+`HISI_VENDOR_IMAGE` set to a vendor `.img`, it also checks that our web
+validator accepts it. With `HISI_VENDOR_ROOTFS` set, it runs the vendor
+updater under qemu against our image.
 
 Planned: zt30-style application slots on `/date` with trial and automatic
 rollback, with the appfs copy as the golden fallback, so routine updates do
