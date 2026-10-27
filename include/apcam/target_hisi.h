@@ -137,6 +137,9 @@
 #ifndef WEB_PATH
 #define WEB_PATH APP_INSTALL_DIR "/bin/hisi-web"
 #endif
+#ifndef WEBROOT_PATH
+#define WEBROOT_PATH APP_INSTALL_DIR "/webroot"
+#endif
 #ifndef APP_REQUEST_PATH
 #define APP_REQUEST_PATH "/run/camera-app.request"
 #endif

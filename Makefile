@@ -475,6 +475,22 @@ hisi_dependencies: build-dependencies
 hisi: hisi_dependencies generated
 	$(MAKE) -C camera_app CAMERA_BACKEND=hisi CROSS_COMPILE='$(HISI_CROSS_COMPILE)'
 	$(MAKE) -C web CAMERA_BACKEND=hisi HISI_CROSS_COMPILE='$(HISI_CROSS_COMPILE)' hisi-web
+# Whole-appfs (mtd4) image for the vendor web uploader or the rootfs
+# recovery updater on TCP 9091. Package only: nothing here contacts a camera.
+HISI_BUILD_HASH := $(MT11_GIT_HASH)$(shell git diff --quiet HEAD -- || printf -- -dirty)
+HISI_APPFS_OUT ?= build/HISI_AP_$(MT11_VERSION)_$(HISI_BUILD_HASH)_appfs.bin
+SQUASHFS_TOOLS_ROOT ?= $(abspath $(DEPS_ROOT)/squashfs-tools)
+.PHONY: hisi_appfs hisi-test
+hisi_appfs: hisi
+	tools/bootstrap_squashfs_tools.sh '$(SQUASHFS_TOOLS_ROOT)'
+	python3 tools/build_hisi_appfs.py --mksquashfs '$(SQUASHFS_TOOLS_ROOT)/bin/mksquashfs' \
+		--lib-dir '$(HISI_B040_ROOT)/openipc/general/package/hisilicon-osdrv-hi3519dv500/files/lib' \
+		--loader '$(HISI_TOOLCHAIN)/aarch64-buildroot-linux-musl/sysroot/lib/libc.so' \
+		camera_app/build/hisi/camera-app web/hisi-web '$(HISI_APPFS_OUT)'
+hisi-test: z1mini-test-headers
+	tools/bootstrap_squashfs_tools.sh '$(SQUASHFS_TOOLS_ROOT)'
+	MKSQUASHFS='$(SQUASHFS_TOOLS_ROOT)/bin/mksquashfs' python3 tests/test_hisi_firmware.py
+	python3 tests/test_hisi_service.py
 .PHONY: zr10_sitl-test
 zr10_sitl-test: zr10_sitl
 	python3 sitl/test_unigcs.py $(ZR10_SITL_BUILD)/camera-app --backend zr10 --video-codec h265
