@@ -380,17 +380,28 @@ inline void image_adjustment_changes(const Field *fields, size_t count, const Im
     }
 }
 
+/* The [image] keys image_adjustment_changes writes; set_default 1 resets them. */
+constexpr const char *image_adjustment_keys[] = {"brightness", "contrast", "saturation", "white_balance", "wb_red",
+                                                 "wb_green", "wb_blue", "wb_water", "shutter"};
+
+inline bool resets(const Field *fields, size_t count)
+{
+    const Field *field = find(fields, count, "set_default");
+    return field != NULL && field->value == 1;
+}
+
 inline void image_adjustment_ex_changes(const Field *fields, size_t count, const Image &image, Changes &changes)
 {
     const Field *once = find(fields, count, "onceAWB");
     if (once != NULL && once->value == 1) changes.one_push = true;
-    // mount.orientation only has upright and inverted, so only mirror and flip together map
+    /* mount.orientation only has upright and inverted (mirror and flip both),
+     * and the extension sends mirror or flip alone: either one that differs
+     * from it turns the image. */
     const Field *mirror = find_flag(fields, count, "mirror");
     const Field *flip = find_flag(fields, count, "flip");
-    const long mirrored = mirror != NULL ? mirror->value : (long)image.inverted;
-    const long flipped = flip != NULL ? flip->value : (long)image.inverted;
-    if ((mirror != NULL || flip != NULL) && mirrored == flipped && (mirrored == 1) != image.inverted)
-        changes.set("mount", "orientation", mirrored == 1 ? "inverted" : "upright");
+    if ((mirror != NULL && (mirror->value == 1) != image.inverted) ||
+        (flip != NULL && (flip->value == 1) != image.inverted))
+        changes.set("mount", "orientation", image.inverted ? "upright" : "inverted");
 }
 
 /* A resolution from the target's list: the requested size, else one of the

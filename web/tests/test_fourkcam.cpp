@@ -203,21 +203,61 @@ static void test_image_ex_changes()
     assert(parse("{\"mirror\":0,\"flip\":0,\"onceAWB\":0}", fields, &count));
     image_adjustment_ex_changes(fields, count, image, changes);
     assert(!changes.one_push && changes.count == 0);
+    // the extension sends mirror or flip alone; either one that differs turns the image
     assert(parse("{\"mirror\":1}", fields, &count));
     image_adjustment_ex_changes(fields, count, image, changes);
-    assert(changes.count == 0);
+    assert(changes.count == 1 && !strcmp(change(changes, "orientation")->value, "inverted"));
+    assert(!strcmp(changes.updates[0].section, "mount"));
+    changes = Changes();
     assert(parse("{\"mirror\":1,\"flip\":1}", fields, &count));
     image_adjustment_ex_changes(fields, count, image, changes);
-    assert(!strcmp(change(changes, "orientation")->value, "inverted"));
-    assert(!strcmp(changes.updates[0].section, "mount"));
+    assert(changes.count == 1 && !strcmp(change(changes, "orientation")->value, "inverted"));
+    changes = Changes();
+    assert(parse("{\"mirror\":0,\"flip\":1}", fields, &count));
+    image_adjustment_ex_changes(fields, count, image, changes);
+    assert(changes.count == 1 && !strcmp(change(changes, "orientation")->value, "inverted"));
 
     image.inverted = true;
     changes = Changes();
+    assert(parse("{\"flip\":0}", fields, &count));
+    image_adjustment_ex_changes(fields, count, image, changes);
+    assert(changes.count == 1 && !strcmp(change(changes, "orientation")->value, "upright"));
+    changes = Changes();
+    assert(parse("{\"mirror\":1,\"flip\":0}", fields, &count));
+    image_adjustment_ex_changes(fields, count, image, changes);
+    assert(changes.count == 1 && !strcmp(change(changes, "orientation")->value, "upright"));
+    changes = Changes();
+    assert(parse("{\"mirror\":1,\"flip\":1}", fields, &count));
+    image_adjustment_ex_changes(fields, count, image, changes);
     assert(parse("{\"mirror\":2,\"flip\":2}", fields, &count));
     image_adjustment_ex_changes(fields, count, image, changes);
-    assert(parse("{\"mirror\":0,\"flip\":7}", fields, &count));
+    assert(parse("{\"mirror\":1,\"flip\":7}", fields, &count));
     image_adjustment_ex_changes(fields, count, image, changes);
     assert(changes.count == 0);
+}
+
+static void test_reset()
+{
+    Field fields[16];
+    size_t count;
+    assert(parse("{\"set_default\":1,\"brightness\":0}", fields, &count) && resets(fields, count));
+    assert(parse("{\"set_default\":0}", fields, &count) && !resets(fields, count));
+    assert(parse("{\"set_default\":2}", fields, &count) && !resets(fields, count));
+    assert(parse("{}", fields, &count) && !resets(fields, count));
+
+    // the reset covers every setting setImageAdjustment writes
+    Image image = test_image();
+    strcpy(image.white_balance, "daylight");
+    Changes changes;
+    assert(parse("{\"brightness\":0,\"contrast\":0,\"saturation\":0,\"awb_red\":1,\"awb_green\":1,\"awb_blue\":1,"
+                 "\"awb_auto_mode\":1,\"auto_exposureEx\":1,\"exposure_time\":30}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == sizeof(image_adjustment_keys) / sizeof(image_adjustment_keys[0]));
+    for (size_t i = 0; i < changes.count; i++) {
+        bool covered = false;
+        for (const char *key : image_adjustment_keys) covered = covered || !strcmp(changes.updates[i].key, key);
+        assert(covered && !strcmp(changes.updates[i].section, "image"));
+    }
 }
 
 static const char *const main_names[] = {"3840x2160", "1920x1080", "1280x720", "960x540", "854x480"};
@@ -388,6 +428,7 @@ int main()
     test_conversions();
     test_image_changes();
     test_image_ex_changes();
+    test_reset();
     test_venc();
     test_replies();
     test_echo();

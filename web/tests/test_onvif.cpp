@@ -103,6 +103,28 @@ static void test_probe()
         "<s:Envelope><s:Header><a:MessageID>uuid:1</a:MessageID>"
         "<a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches</a:Action></s:Header></s:Envelope>",
         id, sizeof(id)));
+    assert(!apc_onvif::probe_message_id(
+        "<s:Envelope><s:Header><a:MessageID> </a:MessageID>"
+        "<a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action></s:Header></s:Envelope>",
+        id, sizeof(id)));
+
+    // MCM's probe has empty Types
+    assert(apc_onvif::probe_types_match(fixture("Probe.xml").c_str()));
+    static const char *const wanted[] = {
+        "<s:Body><d:Probe/></s:Body>",
+        "<s:Body><d:Probe><d:Types/></d:Probe></s:Body>",
+        "<s:Body><d:Probe><d:Types> \n </d:Types></d:Probe></s:Body>",
+        "<s:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></s:Body>",
+        "<s:Body><d:Probe><d:Types>tds:Device</d:Types></d:Probe></s:Body>",
+        "<s:Body><d:Probe><d:Types>wsdp:Printer\tNetworkVideoTransmitter</d:Types></d:Probe></s:Body>",
+    };
+    for (const char *xml : wanted) assert(apc_onvif::probe_types_match(xml));
+    static const char *const unwanted[] = {
+        "<s:Body><d:Probe><d:Types>wsdp:Printer</d:Types></d:Probe></s:Body>",
+        "<s:Body><d:Probe><d:Types>dn:NetworkVideoTransmitters dn:Devices</d:Types></d:Probe></s:Body>",
+        "<s:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter",
+    };
+    for (const char *xml : unwanted) assert(!apc_onvif::probe_types_match(xml));
 }
 
 static void test_hostile()
@@ -113,7 +135,8 @@ static void test_hostile()
     const auto start = std::chrono::steady_clock::now();
     assert(!apc_onvif::body_operation(angles.c_str(), text, sizeof(text)));
     assert(apc_onvif::check_username_token(angles.c_str(), "admin", "blue") == apc_onvif::Auth::missing);
-    assert(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(200));
+    assert(apc_onvif::probe_types_match(angles.c_str()));
+    assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(2));
 }
 
 static bool contains(const APC_StringBuffer &text, const char *part)

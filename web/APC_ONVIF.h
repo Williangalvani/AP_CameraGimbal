@@ -220,7 +220,8 @@ inline Auth check_username_token(const char *xml, const char *user, const char *
     return difference == 0U ? Auth::ok : Auth::bad;
 }
 
-/* The MessageID of a WS-Discovery Probe; false for any other message. */
+/* The MessageID of a WS-Discovery Probe; false for any other message or an
+ * empty MessageID. */
 inline bool probe_message_id(const char *xml, char *out, size_t capacity)
 {
     static const char suffix[] = "/discovery/Probe";
@@ -228,7 +229,37 @@ inline bool probe_message_id(const char *xml, char *out, size_t capacity)
     if (!element_text(xml, "Action", action, sizeof(action))) return false;
     const size_t length = strlen(action);
     if (length < sizeof(suffix) - 1U || strcmp(action + length - (sizeof(suffix) - 1U), suffix) != 0) return false;
-    return element_text(xml, "MessageID", out, capacity);
+    return element_text(xml, "MessageID", out, capacity) && out[0] != '\0';
+}
+
+/* Whether a Probe's Types ask for this camera: none (MCM sends an empty
+ * Types), or a QName whose local part is NetworkVideoTransmitter or Device.
+ * The namespaces aren't checked. */
+inline bool probe_types_match(const char *xml)
+{
+    const char *local;
+    size_t length;
+    const char *p = next_start_tag(xml, &local, &length);
+    while (p != NULL && !local_name_is(local, length, "Types")) p = next_start_tag(p + 1, &local, &length);
+    if (p == NULL) return true;
+    const char *close = strchr(local + length, '>');
+    if (close == NULL) return false;
+    if (close[-1] == '/') return true;
+    const char *stop = strchr(close + 1, '<');
+    if (stop == NULL) return false;
+    bool empty = true;
+    for (const char *q = close + 1; q < stop;) {
+        while (q < stop && isspace((unsigned char)*q)) q++;
+        if (q == stop) break;
+        empty = false;
+        const char *name = q;
+        for (; q < stop && !isspace((unsigned char)*q); q++)
+            if (*q == ':') name = q + 1;
+        const size_t name_length = (size_t)(q - name);
+        if (local_name_is(name, name_length, "NetworkVideoTransmitter") || local_name_is(name, name_length, "Device"))
+            return true;
+    }
+    return empty;
 }
 
 inline void element(APC_StringBuffer &out, const char *tag, const char *text)
