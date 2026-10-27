@@ -100,9 +100,10 @@ inline bool parse_scalar(const char *p, const char *end, bool *number, long *val
 }
 
 /* One flat JSON object. Numbers are kept; strings, nested values and
- * literals are skipped. More fields than capacity is an error; keys too long
- * for Field are ignored. An empty body is an empty object: reads have no
- * body. The text needn't be NUL-terminated. */
+ * literals are checked and skipped, so a whole echoed reply fits. More
+ * numbers than capacity is an error; keys too long for Field are ignored. An
+ * empty body is an empty object: reads have no body. The text needn't be
+ * NUL-terminated. */
 inline bool parse_object(const char *text, size_t length, Field *fields, size_t capacity, size_t *count)
 {
     const char *end = text + length;
@@ -126,7 +127,7 @@ inline bool parse_object(const char *text, size_t length, Field *fields, size_t 
         bool number = false;
         long value = 0;
         if (*p != '"' && *p != '{' && *p != '[' && !parse_scalar(p, value_end, &number, &value)) return false;
-        if (key_length < sizeof(fields[0].key)) {
+        if (number && key_length < sizeof(fields[0].key)) {
             if (*count == capacity) return false;
             Field &field = fields[(*count)++];
             memcpy(field.key, key, key_length);
@@ -435,7 +436,8 @@ inline void venc_changes(const Field *fields, size_t count, const Stream &stream
     const Field *rate = find(fields, count, "frame_rate");
     if (rate != NULL) {
         const long value = clamp(rate->value, stream.min_frame_rate, (long)stream.max_frame_rate);
-        if (value != (long)stream.frame_rate) changes.set_number(section, "frame_rate", value);
+        if (rate->value != (long)stream.frame_rate && value != (long)stream.frame_rate)
+            changes.set_number(section, "frame_rate", value);
     }
 }
 

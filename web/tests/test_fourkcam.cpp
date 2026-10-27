@@ -24,7 +24,7 @@ static void test_json()
     assert(parse(" \n", fields, &count) && count == 0);
     assert(parse("{}", fields, &count) && count == 0);
     assert(parse("{\"channel\":0,\"pixel_list\":[{\"width\":3840,\"height\":2160}],\"name\":\"a,}\","
-                 "\"awb_red\":-3,\"flag\":true, \"rate\" : 25.5 }", fields, &count) && count == 6);
+                 "\"awb_red\":-3,\"flag\":true, \"rate\" : 25.5 }", fields, &count) && count == 3);
     assert(find(fields, count, "channel") && find(fields, count, "channel")->value == 0);
     assert(find(fields, count, "pixel_list") == NULL);
     assert(find(fields, count, "name") == NULL);
@@ -49,7 +49,7 @@ static void test_json()
                                             "{\"a\":1\"x\"}", "{\"a\":[},\"b\":1}", "{\"a\":{]}", "{\"a\":1.}",
                                             "{\"a\":.5}", "{\"a\":+1}", "{\"a\":tru}", "{\"a\":\"x\"1}"};
     for (const char *text : malformed) assert(!parse(text, fields, &count));
-    assert(parse("{\"a\":-0.75 ,\"b\":null,\"c\":false,\"d\":{\"e\":[1,{\"f\":\"]\"}]}}", fields, &count) && count == 4);
+    assert(parse("{\"a\":-0.75 ,\"b\":null,\"c\":false,\"d\":{\"e\":[1,{\"f\":\"]\"}]}}", fields, &count) && count == 1);
     assert(find(fields, count, "a")->value == 0 && find(fields, count, "b") == NULL);
 
     assert(parse("{\"big\":99999999999999999999,\"small\":-99999999999999999999}", fields, &count));
@@ -64,6 +64,9 @@ static void test_json()
     const char *three = "{\"a\":1,\"b\":2,\"c\":3}";
     assert(parse_object(two, strlen(two), fields, 2, &count) && count == 2);
     assert(!parse_object(three, strlen(three), fields, 2, &count));
+    const char *mixed = "{\"a\":1,\"s\":\"x\",\"n\":null,\"l\":[1,2],\"b\":2}";
+    assert(parse_object(mixed, strlen(mixed), fields, 2, &count) && count == 2);
+    assert(!parse("{\"a\":1,\"s\":\"x\\\"}", fields, &count));
 
     char nested[64];
     for (unsigned depth = 1; depth <= 17; depth++) {
@@ -262,6 +265,13 @@ static void test_venc()
     venc_changes(fields, count, no_max, main_names, 5, "stream.main", changes);
     assert(changes.count == 0);
 
+    Stream fast = main_stream();
+    fast.frame_rate = 60;
+    changes = Changes();
+    assert(parse("{\"frame_rate\":60}", fields, &count));
+    venc_changes(fields, count, fast, main_names, 5, "stream.main", changes);
+    assert(changes.count == 0);
+
     Stream sub;
     sub.width = 1280;
     sub.height = 720;
@@ -315,6 +325,63 @@ static void test_replies()
     assert(strstr(out.data(), "\"channel\":0,"));
 }
 
+/* A client echoing a whole reply back parses at capacity 16 and changes nothing. */
+static void test_echo()
+{
+    const Identity identity = {"aa-bb-cc-dd-ee-ff", "AABBCCDDEEFF", "192.168.2.10"};
+    Image images[3];
+    images[1] = test_image();
+    images[1].brightness = 33;
+    strcpy(images[1].white_balance, "daylight");
+    strcpy(images[1].shutter, "1/500");
+    images[1].blue_water = true;
+    images[2] = images[1];
+    strcpy(images[2].white_balance, "manual");
+    strcpy(images[2].shutter, "1/60");
+    images[2].saturation = 120;
+    images[2].inverted = true;
+    for (const Image &image : images) {
+        APC_StringBuffer out;
+        out.append("{");
+        image_adjustment(out, image);
+        finish(out, 0, "ok", identity);
+        Field fields[16];
+        size_t count;
+        Changes changes;
+        assert(out.valid() && parse_object(out.data(), out.size(), fields, 16, &count));
+        image_adjustment_changes(fields, count, image, changes);
+        assert(changes.count == 0);
+
+        out.reset();
+        out.append("{");
+        image_adjustment_ex(out, image);
+        finish(out, 0, "", identity);
+        assert(out.valid() && parse_object(out.data(), out.size(), fields, 16, &count));
+        image_adjustment_ex_changes(fields, count, image, changes);
+        assert(changes.count == 0 && !changes.one_push);
+    }
+
+    Stream streams[3] = {main_stream(), main_stream(), Stream()};
+    streams[1].h265 = true;
+    streams[1].frame_rate = 60;
+    streams[1].bitrate_kbps = 30000;
+    streams[2].width = 1280;
+    streams[2].height = 720;
+    streams[2].bitrate_kbps = 2048;
+    for (const Stream &stream : streams) {
+        APC_StringBuffer out;
+        out.append("{");
+        venc(out, 0, stream, main_names, 5);
+        finish(out, 0, "", identity);
+        Field fields[16];
+        size_t count;
+        Changes changes;
+        assert(out.valid() && parse_object(out.data(), out.size(), fields, 16, &count));
+        venc_changes(fields, count, stream, main_names, 5, "stream.main", changes);
+        assert(changes.count == 0);
+    }
+}
+
 int main()
 {
     test_json();
@@ -323,6 +390,7 @@ int main()
     test_image_ex_changes();
     test_venc();
     test_replies();
+    test_echo();
     puts("test_fourkcam: ok");
     return 0;
 }
