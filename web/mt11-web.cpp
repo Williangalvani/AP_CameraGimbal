@@ -3606,14 +3606,6 @@ static void read_camera_attitude(struct camera_attitude_values *values)
 }
 
 #if WEB_HAVE_THERMAL
-static uint64_t monotonic_milliseconds(void)
-{
-    struct timespec now;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) return 0U;
-    return (uint64_t)now.tv_sec * 1000U + (uint64_t)now.tv_nsec / 1000000U;
-}
-
 static void read_camera_sensors(struct camera_sensor_values *values)
 {
     const struct timeval timeout = {.tv_sec = 1, .tv_usec = 200000};
@@ -3622,7 +3614,7 @@ static void read_camera_sensors(struct camera_sensor_values *values)
                               {.fd = -1, .events = POLLIN}};
     uint8_t datagram[2048];
     uint8_t reply[32];
-    uint64_t deadline;
+    int64_t deadline;
     unsigned pending = 0U;
 
     memset(values, 0, sizeof(*values));
@@ -3647,9 +3639,9 @@ static void read_camera_sensors(struct camera_sensor_values *values)
      * after that boundary can legitimately take nearly a second when another
      * aircraft client is also polling, so allow overlapping HTTP polls to
      * pipeline under a bounded deadline. */
-    deadline = monotonic_milliseconds() + 1200U;
+    deadline = monotonic_milliseconds() + 1200;
     while (pending != 0U) {
-        uint64_t now = monotonic_milliseconds();
+        int64_t now = monotonic_milliseconds();
         int remaining = now < deadline ? (int)(deadline - now) : 0;
         int ready;
 
@@ -5913,7 +5905,7 @@ static void select_language(const APC_HTTPRequest *request)
     char code[16];
     size_t length;
     const char *accept;
-    enum language lang;
+    enum language lang = LANG_EN;
 
     current_language = LANG_EN;
     if (cookie_value(request, "lang", code, sizeof(code)) &&
