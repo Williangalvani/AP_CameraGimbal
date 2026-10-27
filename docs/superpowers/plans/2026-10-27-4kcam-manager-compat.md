@@ -32,11 +32,14 @@
 
 ```bash
 mkdir -p /tmp/4kdeploy && cp web/hisi-web /tmp/4kdeploy/hisi-web
-pgrep -f "http.server 8089" >/dev/null || (cd /tmp/4kdeploy && nohup python3 -m http.server 8089 --bind 192.168.2.15 >/tmp/4kdeploy/http.log 2>&1 &)
-python3 /Users/will/git/4kcamera_works/tools/camsh.py -t 60 'mkdir -p /run/4kc && umount -l /appfs/ap_cameragimbal/bin/hisi-web 2>/dev/null; wget -q -O /run/4kc/hisi-web http://192.168.2.15:8089/hisi-web && chmod +x /run/4kc/hisi-web && mount --bind /run/4kc/hisi-web /appfs/ap_cameragimbal/bin/hisi-web && kill $(pidof hisi-web); sleep 3; pidof hisi-web'
+# Serve /tmp/4kdeploy from its own background process (a nohup'd server from a
+# one-off shell dies with it, and a pgrep guard matches its own command line):
+#   python3 -m http.server 8089 --bind 192.168.2.15 --directory /tmp/4kdeploy
+# Stop it when done.
+python3 /Users/will/git/4kcamera_works/tools/camsh.py -t 60 'mkdir -p /run/4kc && wget -q -O /run/4kc/hisi-web.new http://192.168.2.15:8089/hisi-web && chmod +x /run/4kc/hisi-web.new && mv /run/4kc/hisi-web.new /run/4kc/hisi-web && { umount -l /appfs/ap_cameragimbal/bin/hisi-web 2>/dev/null; mount --bind /run/4kc/hisi-web /appfs/ap_cameragimbal/bin/hisi-web; } && kill $(pidof hisi-web); sleep 3; pidof hisi-web; sha1sum /appfs/ap_cameragimbal/bin/hisi-web'
 ```
 
-Expected: one or more PIDs printed (service.sh respawned hisi-web from the bind-mounted binary).
+The download goes to `.new` and is renamed, because the running hisi-web holds `/run/4kc/hisi-web` open ("Text file busy" on a redeploy); the bind mount is redone since the rename replaces the file. Expected: one or more PIDs printed (service.sh respawned hisi-web from the bind-mounted binary) and the sha1 of `web/hisi-web`.
 
 ---
 
