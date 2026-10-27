@@ -1,5 +1,6 @@
 #include "../APC_FourKCam.h"
 #include <cassert>
+#include <climits>
 
 using namespace apc_fourkcam;
 
@@ -43,6 +44,37 @@ static void test_json()
         assert(!parse_object(exact, length, fields, 16, &count));
         free(exact);
     }
+
+    static const char *const malformed[] = {"{\"auto_awb\":-}", "{\"brightness\":1abc}", "{\"a\":1 2}",
+                                            "{\"a\":1\"x\"}", "{\"a\":[},\"b\":1}", "{\"a\":{]}", "{\"a\":1.}",
+                                            "{\"a\":.5}", "{\"a\":+1}", "{\"a\":tru}", "{\"a\":\"x\"1}"};
+    for (const char *text : malformed) assert(!parse(text, fields, &count));
+    assert(parse("{\"a\":-0.75 ,\"b\":null,\"c\":false,\"d\":{\"e\":[1,{\"f\":\"]\"}]}}", fields, &count) && count == 4);
+    assert(find(fields, count, "a")->value == 0 && find(fields, count, "b") == NULL);
+
+    assert(parse("{\"big\":99999999999999999999,\"small\":-99999999999999999999}", fields, &count));
+    assert(find(fields, count, "big")->value == LONG_MAX && find(fields, count, "small")->value <= -LONG_MAX);
+
+    // keys longer than Field::key holds are ignored
+    assert(parse("{\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\":1,\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\":2,"
+                 "\"cccccccccccccccccccccccccccccccccccccccccccccccc\":3,\"d\":4}", fields, &count) && count == 2);
+    assert(find(fields, count, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")->value == 1 && find(fields, count, "d")->value == 4);
+
+    const char *two = "{\"a\":1,\"b\":2}";
+    const char *three = "{\"a\":1,\"b\":2,\"c\":3}";
+    assert(parse_object(two, strlen(two), fields, 2, &count) && count == 2);
+    assert(!parse_object(three, strlen(three), fields, 2, &count));
+
+    char nested[64];
+    for (unsigned depth = 1; depth <= 17; depth++) {
+        unsigned n = 0;
+        n += (unsigned)snprintf(nested + n, sizeof(nested) - n, "{\"a\":");
+        for (unsigned i = 0; i < depth; i++) nested[n++] = '[';
+        for (unsigned i = 0; i < depth; i++) nested[n++] = ']';
+        nested[n++] = '}';
+        nested[n] = '\0';
+        assert(parse(nested, fields, &count) == (depth <= max_depth));
+    }
 }
 
 static void test_conversions()
@@ -55,6 +87,7 @@ static void test_conversions()
         assert(red_level(red_gain(level)) == level);
         assert(green_blue_level(green_blue_gain(level)) == level);
     }
+    for (long percent = 0; percent <= 100; percent++) assert(percent_from_level(level_from_percent(percent)) == percent);
     assert(green_blue_gain(0) == 256 && green_blue_level(504) == 31 && green_blue_level(725) == 59);
     assert(exposure_time("auto") == 60 && exposure_time("1/250") == 200);
     assert(exposure_time("1/750") == 800 && exposure_time("1/30") == 30);
@@ -131,6 +164,26 @@ static void test_image_changes()
     assert(parse("{\"auto_exposureEx\":0}", fields, &count));
     image_adjustment_changes(fields, count, image, changes);
     assert(!strcmp(change(changes, "shutter")->value, "auto"));
+
+    // only targets that differ from the current setting are changes
+    changes = Changes();
+    assert(parse("{\"brightness\":127,\"exposure_time\":500,\"awb_red\":300}", fields, &count));
+    image.wb_red = red_gain(255);
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == 0);
+    assert(parse("{\"brightness\":99999999999999999999,\"saturation\":-99999999999999999999}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(!strcmp(change(changes, "brightness")->value, "100") && !strcmp(change(changes, "saturation")->value, "0"));
+
+    // enums that only take 0 or 1 change nothing otherwise
+    image = test_image();
+    image.blue_water = true;
+    strcpy(image.shutter, "1/500");
+    strcpy(image.white_balance, "daylight");
+    changes = Changes();
+    assert(parse("{\"awb_auto_mode\":2,\"auto_exposureEx\":2,\"auto_awb\":-1}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == 0);
 }
 
 static void test_image_ex_changes()
@@ -154,6 +207,14 @@ static void test_image_ex_changes()
     image_adjustment_ex_changes(fields, count, image, changes);
     assert(!strcmp(change(changes, "orientation")->value, "inverted"));
     assert(!strcmp(changes.updates[0].section, "mount"));
+
+    image.inverted = true;
+    changes = Changes();
+    assert(parse("{\"mirror\":2,\"flip\":2}", fields, &count));
+    image_adjustment_ex_changes(fields, count, image, changes);
+    assert(parse("{\"mirror\":0,\"flip\":7}", fields, &count));
+    image_adjustment_ex_changes(fields, count, image, changes);
+    assert(changes.count == 0);
 }
 
 static const char *const main_names[] = {"3840x2160", "1920x1080", "1280x720", "960x540", "854x480"};
@@ -187,6 +248,19 @@ static void test_venc()
     assert(parse("{\"bitrate\":30000,\"frame_rate\":60}", fields, &count));
     venc_changes(fields, count, main_stream(), main_names, 5, "stream.main", changes);
     assert(changes.count == 1 && !strcmp(change(changes, "bitrate_kbps")->value, "20000"));
+
+    Stream at_max = main_stream();
+    at_max.bitrate_kbps = 20000;
+    changes = Changes();
+    venc_changes(fields, count, at_max, main_names, 5, "stream.main", changes);
+    assert(changes.count == 0);
+
+    Stream no_max = main_stream();
+    no_max.max_bitrate_kbps = 0;
+    changes = Changes();
+    assert(parse("{\"bitrate\":5000}", fields, &count));
+    venc_changes(fields, count, no_max, main_names, 5, "stream.main", changes);
+    assert(changes.count == 0);
 
     Stream sub;
     sub.width = 1280;
@@ -223,6 +297,22 @@ static void test_replies()
     assert(strstr(out.data(), "\"pic_width\":3840,\"pic_height\":2160,\"rc_mode\":1,\"bitrate\":12000,"
                               "\"max_framerate\":30,\"frame_rate\":30,\"gop\":60,"));
     assert(strstr(out.data(), "\"code\":-1,") && strstr(out.data(), "\"log\":\"say \\\"hi\\\"\\\\\\u000a\""));
+
+    // venc fields stay in the extension's types: channel 0–2, the rest u16
+    out.reset();
+    Stream huge = main_stream();
+    huge.width = 70000;
+    huge.bitrate_kbps = 70000;
+    huge.frame_rate = 40000;
+    huge.max_frame_rate = 70000;
+    static const char *const huge_names[] = {"70000x2160"};
+    venc(out, 7, huge, huge_names, 1);
+    assert(strstr(out.data(), "\"channel\":2,"));
+    assert(strstr(out.data(), "\"pixel_list\":[{\"width\":65535,\"height\":2160}],\"pic_width\":65535,"));
+    assert(strstr(out.data(), "\"bitrate\":65535,\"max_framerate\":65535,\"frame_rate\":40000,\"gop\":65535,"));
+    out.reset();
+    venc(out, -1, huge, huge_names, 0);
+    assert(strstr(out.data(), "\"channel\":0,"));
 }
 
 int main()

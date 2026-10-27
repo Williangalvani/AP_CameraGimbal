@@ -6,6 +6,7 @@
  * with the value reads report changes nothing, so a client echoing a whole
  * reply back doesn't move settings that don't map exactly. */
 #include "APC_StringBuffer.h"
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -38,10 +39,14 @@ inline const char *skip_string(const char *p, const char *end)
     return NULL;
 }
 
+constexpr unsigned max_depth = 16;
+
 /* Past any JSON value starting at p, nested ones included: scalars end at the
- * next ',' or '}' of the enclosing object. NULL if it doesn't end. */
+ * next ',' or '}' of the enclosing object. NULL if it doesn't end, nests
+ * deeper than max_depth or closes a bracket of the other kind. */
 inline const char *skip_value(const char *p, const char *end)
 {
+    char closers[max_depth];
     unsigned depth = 0;
     while (p < end) {
         if (*p == '"') {
@@ -51,10 +56,12 @@ inline const char *skip_value(const char *p, const char *end)
             continue;
         }
         if (*p == '{' || *p == '[') {
-            depth++;
+            if (depth == max_depth) return NULL;
+            closers[depth++] = *p == '{' ? '}' : ']';
         } else if (*p == '}' || *p == ']') {
             if (depth == 0U) return p;
-            if (--depth == 0U) return p + 1;
+            if (*p != closers[--depth]) return NULL;
+            if (depth == 0U) return p + 1;
         } else if (depth == 0U && *p == ',') {
             return p;
         }
@@ -63,9 +70,39 @@ inline const char *skip_value(const char *p, const char *end)
     return depth == 0U ? p : NULL;
 }
 
-/* One flat JSON object. Numbers are kept (fractions truncated); other values
- * are skipped. An empty body is an empty object: reads have no body. The text
- * needn't be NUL-terminated. */
+/* The scalar from p to end, spaces after it allowed: true, false or null, or
+ * a number -digits[.digits] (the fraction truncated, overflow saturated). */
+inline bool parse_scalar(const char *p, const char *end, bool *number, long *value)
+{
+    *number = false;
+    *value = 0;
+    static const char *const words[] = {"true", "false", "null"};
+    for (const char *word : words) {
+        const size_t length = strlen(word);
+        if ((size_t)(end - p) >= length && memcmp(p, word, length) == 0) return skip_space(p + length, end) == end;
+    }
+    const bool negative = p < end && *p == '-';
+    if (negative) p++;
+    const char *digits = p;
+    long magnitude = 0;
+    for (; p < end && *p >= '0' && *p <= '9'; p++)
+        magnitude = magnitude > (LONG_MAX - 9) / 10 ? LONG_MAX : magnitude * 10 + (*p - '0');
+    if (p == digits) return false;
+    if (p < end && *p == '.') {
+        const char *fraction = ++p;
+        while (p < end && *p >= '0' && *p <= '9') p++;
+        if (p == fraction) return false;
+    }
+    if (skip_space(p, end) != end) return false;
+    *number = true;
+    *value = negative ? -magnitude : magnitude;
+    return true;
+}
+
+/* One flat JSON object. Numbers are kept; strings, nested values and
+ * literals are skipped. More fields than capacity is an error; keys too long
+ * for Field are ignored. An empty body is an empty object: reads have no
+ * body. The text needn't be NUL-terminated. */
 inline bool parse_object(const char *text, size_t length, Field *fields, size_t capacity, size_t *count)
 {
     const char *end = text + length;
@@ -85,14 +122,17 @@ inline bool parse_object(const char *text, size_t length, Field *fields, size_t 
         if (p == end || *p++ != ':') return false;
         p = skip_space(p, end);
         const char *value_end = skip_value(p, end);
-        // the delimiter at value_end also stops strtol inside the text
-        if (value_end == NULL || value_end == p || value_end == end) return false;
-        if (*count < capacity && key_length < sizeof(fields[0].key)) {
+        if (value_end == NULL || value_end == p) return false;
+        bool number = false;
+        long value = 0;
+        if (*p != '"' && *p != '{' && *p != '[' && !parse_scalar(p, value_end, &number, &value)) return false;
+        if (key_length < sizeof(fields[0].key)) {
+            if (*count == capacity) return false;
             Field &field = fields[(*count)++];
             memcpy(field.key, key, key_length);
             field.key[key_length] = '\0';
-            field.number = *p == '-' || (*p >= '0' && *p <= '9');
-            field.value = field.number ? strtol(p, NULL, 10) : 0;
+            field.number = number;
+            field.value = value;
         }
         p = skip_space(value_end, end);
         if (p == end) return false;
@@ -110,10 +150,19 @@ inline const Field *find(const Field *fields, size_t count, const char *key)
     return NULL;
 }
 
+/* A field of a 0/1 enum; other values are as if it wasn't sent. */
+inline const Field *find_flag(const Field *fields, size_t count, const char *key)
+{
+    const Field *field = find(fields, count, key);
+    return field != NULL && (field->value == 0 || field->value == 1) ? field : NULL;
+}
+
 inline long clamp(long value, long low, long high)
 {
     return value < low ? low : value > high ? high : value;
 }
+
+inline long u16(long value) { return clamp(value, 0, 65535); }
 
 /* image.brightness/contrast/saturation are 0–100; the vendor's are 0–255. */
 inline long level_from_percent(long percent) { return (clamp(percent, 0, 100) * 255 + 50) / 100; }
@@ -248,22 +297,24 @@ inline void image_adjustment_ex(APC_StringBuffer &out, const Image &image)
     out.appendf("\"mirror\":%d,\"flip\":%d,\"onceAWB\":0,", image.inverted, image.inverted);
 }
 
+/* channel is the extension's 0–2 enum and the sizes and rates its u16s, so
+ * the reply always deserializes. */
 inline void venc(APC_StringBuffer &out, long channel, const Stream &stream,
                  const char *const *resolutions, size_t count)
 {
     out.appendf("\"channel\":%ld,\"encode_type\":%d,\"encode_profile\":2,\"pixel_list\":[",
-                channel, stream.h265 ? 5 : 1);
+                clamp(channel, 0, 2), stream.h265 ? 5 : 1);
     bool first = true;
     for (size_t i = 0; i < count; i++) {
         unsigned width, height;
         if (sscanf(resolutions[i], "%ux%u", &width, &height) != 2) continue;
-        out.appendf("%s{\"width\":%u,\"height\":%u}", first ? "" : ",", width, height);
+        out.appendf("%s{\"width\":%ld,\"height\":%ld}", first ? "" : ",", u16(width), u16(height));
         first = false;
     }
-    out.appendf("],\"pic_width\":%u,\"pic_height\":%u,\"rc_mode\":1,\"bitrate\":%u,"
-                "\"max_framerate\":%u,\"frame_rate\":%u,\"gop\":%u,",
-                stream.width, stream.height, stream.bitrate_kbps, stream.max_frame_rate,
-                stream.frame_rate, stream.frame_rate * 2U);
+    out.appendf("],\"pic_width\":%ld,\"pic_height\":%ld,\"rc_mode\":1,\"bitrate\":%ld,"
+                "\"max_framerate\":%ld,\"frame_rate\":%ld,\"gop\":%ld,",
+                u16(stream.width), u16(stream.height), u16(stream.bitrate_kbps), u16(stream.max_frame_rate),
+                u16(stream.frame_rate), u16(stream.frame_rate * 2L));
 }
 
 inline void finish(APC_StringBuffer &out, int code, const char *log, const Identity &identity)
@@ -282,7 +333,8 @@ inline void image_adjustment_changes(const Field *fields, size_t count, const Im
     } levels[] = {{"brightness", image.brightness}, {"contrast", image.contrast}, {"saturation", image.saturation}};
     for (const auto &level : levels) {
         const Field *field = find(fields, count, level.key);
-        if (field != NULL && field->value != level_from_percent(level.percent))
+        if (field != NULL && field->value != level_from_percent(level.percent) &&
+            percent_from_level(field->value) != level.percent)
             changes.set_number("image", level.key, percent_from_level(field->value));
     }
 
@@ -290,16 +342,16 @@ inline void image_adjustment_changes(const Field *fields, size_t count, const Im
     const Field *red = find(fields, count, "awb_red");
     const Field *green = find(fields, count, "awb_green");
     const Field *blue = find(fields, count, "awb_blue");
-    if (red != NULL && red->value != red_level(image.wb_red))
+    if (red != NULL && clamp(red->value, 0, 255) != red_level(image.wb_red))
         changes.set_number("image", "wb_red", red_gain(red->value));
-    if (green != NULL && green->value != green_blue_level(image.wb_green))
+    if (green != NULL && clamp(green->value, 0, 255) != green_blue_level(image.wb_green))
         changes.set_number("image", "wb_green", green_blue_gain(green->value));
-    if (blue != NULL && blue->value != green_blue_level(image.wb_blue))
+    if (blue != NULL && clamp(blue->value, 0, 255) != green_blue_level(image.wb_blue))
         changes.set_number("image", "wb_blue", green_blue_gain(blue->value));
     const bool gains_changed = changes.count > before_gains;
 
     // auto_awb 1 means "not auto": a preset or colour temperature stays, unless the gains move
-    const Field *awb = find(fields, count, "auto_awb");
+    const Field *awb = find_flag(fields, count, "auto_awb");
     const bool automatic = strcmp(image.white_balance, "auto") == 0;
     if (awb != NULL && awb->value == 0) {
         if (!automatic) changes.set("image", "white_balance", "auto");
@@ -308,11 +360,11 @@ inline void image_adjustment_changes(const Field *fields, size_t count, const Im
         changes.set("image", "white_balance", "manual");
     }
 
-    const Field *water = find(fields, count, "awb_auto_mode");
+    const Field *water = find_flag(fields, count, "awb_auto_mode");
     if (water != NULL && (water->value == 1) != image.blue_water)
         changes.set("image", "wb_water", water->value == 1 ? "blue" : "green");
 
-    const Field *mode = find(fields, count, "auto_exposureEx");
+    const Field *mode = find_flag(fields, count, "auto_exposureEx");
     const Field *time = find(fields, count, "exposure_time");
     const bool was_manual = strcmp(image.shutter, "auto") != 0;
     const bool manual = mode != NULL ? mode->value == 1 : was_manual;
@@ -320,11 +372,10 @@ inline void image_adjustment_changes(const Field *fields, size_t count, const Im
         changes.set("image", "shutter", "auto");
     } else if (manual) {
         const long wanted = time != NULL ? time->value : (long)exposure_time(image.shutter);
-        if (!was_manual || wanted != (long)exposure_time(image.shutter)) {
-            char shutter[16];
-            snprintf(shutter, sizeof(shutter), "1/%u", shutter_denominator(wanted));
+        char shutter[16];
+        snprintf(shutter, sizeof(shutter), "1/%u", shutter_denominator(wanted));
+        if (!was_manual || (wanted != (long)exposure_time(image.shutter) && strcmp(shutter, image.shutter) != 0))
             changes.set("image", "shutter", shutter);
-        }
     }
 }
 
@@ -333,8 +384,8 @@ inline void image_adjustment_ex_changes(const Field *fields, size_t count, const
     const Field *once = find(fields, count, "onceAWB");
     if (once != NULL && once->value == 1) changes.one_push = true;
     // mount.orientation only has upright and inverted, so only mirror and flip together map
-    const Field *mirror = find(fields, count, "mirror");
-    const Field *flip = find(fields, count, "flip");
+    const Field *mirror = find_flag(fields, count, "mirror");
+    const Field *flip = find_flag(fields, count, "flip");
     const long mirrored = mirror != NULL ? mirror->value : (long)image.inverted;
     const long flipped = flip != NULL ? flip->value : (long)image.inverted;
     if ((mirror != NULL || flip != NULL) && mirrored == flipped && (mirrored == 1) != image.inverted)
@@ -374,9 +425,13 @@ inline void venc_changes(const Field *fields, size_t count, const Stream &stream
     }
 
     if (!stream.configurable) return;
+    // a maximum of 0 means the bitrate isn't a setting
     const Field *bitrate = find(fields, count, "bitrate");
-    if (bitrate != NULL && bitrate->value != (long)stream.bitrate_kbps)
-        changes.set_number(section, "bitrate_kbps", clamp(bitrate->value, 1, stream.max_bitrate_kbps));
+    if (bitrate != NULL && stream.max_bitrate_kbps > 0) {
+        const long value = clamp(bitrate->value, 1, stream.max_bitrate_kbps);
+        if (bitrate->value != (long)stream.bitrate_kbps && value != (long)stream.bitrate_kbps)
+            changes.set_number(section, "bitrate_kbps", value);
+    }
     const Field *rate = find(fields, count, "frame_rate");
     if (rate != NULL) {
         const long value = clamp(rate->value, stream.min_frame_rate, (long)stream.max_frame_rate);
