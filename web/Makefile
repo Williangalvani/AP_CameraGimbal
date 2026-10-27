@@ -143,6 +143,10 @@ tests/test_string_buffer: tests/test_string_buffer.cpp APC_StringBuffer.h
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(WEB_CXXFLAGS) -o $@ $<
 
+tests/test_onvif: tests/test_onvif.cpp APC_ONVIF.h APC_StringBuffer.h
+	$(call progress,Linking $@)
+	$(HOST_CXX) $(WEB_CXXFLAGS) -o $@ $<
+
 tests/test_webroot: tests/test_webroot.cpp APC_WebRoot.h APC_StringBuffer.h $(WEBROOT_HEADER)
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(WEB_CXXFLAGS) -o $@ $<
@@ -158,9 +162,10 @@ zt30-parameters-test: generated
 zt30-process-test: tests/test_zt30_process
 	./tests/test_zt30_process
 
-test: zt30-parameters-test tests/test_zt30_process $(HOST_TEST) $(A8_HOST_CHECK) $(RPI_HOST_CHECK) tests/test_string_buffer tests/test_webroot
+test: zt30-parameters-test tests/test_zt30_process $(HOST_TEST) $(A8_HOST_CHECK) $(RPI_HOST_CHECK) tests/test_string_buffer tests/test_onvif tests/test_webroot
 	./tests/test_zt30_process
 	./tests/test_string_buffer
+	./tests/test_onvif
 	./tests/test_webroot
 	python3 tests/test_integration.py ./$(HOST_TEST) '$(TEST_ROOT)'
 	python3 tests/test_a8_upgrade.py
