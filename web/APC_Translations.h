@@ -57,6 +57,7 @@ enum string_id {
     S_LOGIN_EXPIRED,
     S_LOGIN_INCORRECT,
     S_LOGIN_ORIGIN,
+    S_E_BROWSER_REQUEST,
     S_LOGOUT_FAILED,
     S_LOGIN_SESSION_FAILED,
     S_AUTH_REQUIRED,
@@ -715,6 +716,7 @@ static constexpr Translations translations = [] {
     result[S_LOGIN_EXPIRED] = {"The login form has expired; try again", "登录表单已过期，请重试", "ログインフォームの有効期限が切れました。もう一度お試しください"};
     result[S_LOGIN_INCORRECT] = {"Incorrect username or password", "用户名或密码错误", "ユーザー名またはパスワードが正しくありません"};
     result[S_LOGIN_ORIGIN] = {"Cross-site login request rejected", "已拒绝跨站登录请求", "他サイトからのログイン要求を拒否しました"};
+    result[S_E_BROWSER_REQUEST] = {"Browser requests are rejected here", "此处拒绝浏览器请求", "ここではブラウザーからの要求を拒否します"};
     result[S_LOGOUT_FAILED] = {"Cannot revoke the login session on the camera; try again", "无法在相机上撤销登录会话，请重试", "カメラ上のログインセッションを取り消せません。もう一度お試しください"};
     result[S_LOGIN_SESSION_FAILED] = {"Cannot create a login session on the camera", "无法在相机上创建登录会话", "カメラ上にログインセッションを作成できません"};
     result[S_AUTH_REQUIRED] = {"Authentication required", "需要认证", "認証が必要です"};

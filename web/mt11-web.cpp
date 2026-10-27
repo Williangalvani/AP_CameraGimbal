@@ -3986,9 +3986,13 @@ static int lock_restart(char *error, size_t error_size, bool nonblocking = false
         usleep(20000);
     } while (true);
 #else
-    (void)nonblocking;
-    if (lock >= 0) result = flock(lock, LOCK_EX);
+    if (lock >= 0) result = flock(lock, nonblocking ? LOCK_EX | LOCK_NB : LOCK_EX);
 #endif
+    if (lock >= 0 && result < 0 && nonblocking && (errno == EWOULDBLOCK || errno == EAGAIN)) {
+        snprintf(error, error_size, "restart in progress");
+        close(lock);
+        return -1;
+    }
     if (result < 0) {
         snprintf(error, error_size, T(S_E_SWITCH_LOCK), strerror(errno));
         if (lock >= 0) close(lock);
@@ -4109,9 +4113,9 @@ static bool restart_camera_direct(char *error, size_t error_size)
     snprintf(error, error_size, T(S_E_NOT_READY), REPLACEMENT_CAMERA_PATH);
     return false;
 }
-static bool restart_camera(char *error, size_t error_size)
+static bool restart_camera(char *error, size_t error_size, bool nonblocking = false)
 {
-    int lock = lock_restart(error, error_size);
+    int lock = lock_restart(error, error_size, nonblocking);
     if (lock < 0) return false;
     bool ok = restart_camera_direct(error, error_size);
     if (ok) ok = restarted_config_ok(error, error_size);
@@ -4284,10 +4288,11 @@ static bool restart_camera_locked(enum camera_kind kind, char *error,
 
 
 
-static bool restart_camera(char *error, size_t error_size)
+/* nonblocking fails with "restart in progress" rather than queueing behind one. */
+static bool restart_camera(char *error, size_t error_size, bool nonblocking = false)
 {
     enum camera_kind kind;
-    int lock = lock_restart(error, error_size);
+    int lock = lock_restart(error, error_size, nonblocking);
     bool ok;
 
     if (lock < 0) return false;
@@ -4730,6 +4735,16 @@ static bool restarted_config_ok(char *error, size_t error_size)
 static_assert(APCAM_HAVE_VIDEO_BITRATE && APCAM_HAVE_VIDEO_FRAME_RATE && APCAM_HAVE_WB_TUNING,
               "the 4K Cam Manager mapping uses bitrate, frame rate and one-push white balance");
 
+/* The web's default for a camera.ini key, or NULL if it has none. */
+static const char *default_value(const char *section, const char *key)
+{
+    for (size_t i = 0; i < sizeof(replacement_parameters) / sizeof(replacement_parameters[0]); i++) {
+        if (!strcmp(replacement_parameters[i].section, section) && !strcmp(replacement_parameters[i].key, key))
+            return replacement_defaults[i];
+    }
+    return NULL;
+}
+
 /* A camera.ini value, or the web's default for it when the key is absent.
  * False, with value empty, when camera.ini wasn't read or the value doesn't
  * fit: callers guarding access must refuse rather than use the default. */
@@ -4747,12 +4762,10 @@ static bool effective_value(const char *config, const char *section, const char 
     case INI_ABSENT:
         break;
     }
-    for (size_t i = 0; i < sizeof(replacement_parameters) / sizeof(replacement_parameters[0]); i++) {
-        if (!strcmp(replacement_parameters[i].section, section) && !strcmp(replacement_parameters[i].key, key)) {
-            if ((size_t)snprintf(value, size, "%s", replacement_defaults[i]) < size) return true;
-            value[0] = '\0';
-            return false;
-        }
+    const char *fallback = default_value(section, key);
+    if (fallback != NULL && (size_t)snprintf(value, size, "%s", fallback) >= size) {
+        value[0] = '\0';
+        return false;
     }
     return true;
 }
@@ -4764,7 +4777,7 @@ static bool fourkcam_enabled(void)
     char value[16];
     const bool read = effective_value(config, "compat", "fourkcam_manager", value, sizeof(value));
     free(config);
-    return read && strcmp(value, "false") != 0;
+    return read && strcmp(value, "true") == 0;
 }
 
 /* Not read_file(): sysfs reports every attribute as 4096 bytes long. */
@@ -4924,6 +4937,14 @@ static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const
     } else if (!strcmp(name, "getSysConfig")) {
     } else if (!strcmp(name, "getImageAdjustment")) {
         apc_fourkcam::image_adjustment(reply, image);
+    } else if (!strcmp(name, "setImageAdjustment") && apc_fourkcam::resets(fields, field_count)) {
+        for (const char *key : apc_fourkcam::image_adjustment_keys) {
+            char current[32];
+            const char *fallback = default_value("image", key);
+            if (fallback != NULL && (!effective_value(config, "image", key, current, sizeof(current)) ||
+                                     strcmp(current, fallback) != 0))
+                changes.set("image", key, fallback);
+        }
     } else if (!strcmp(name, "setImageAdjustment")) {
         apc_fourkcam::image_adjustment_changes(fields, field_count, image, changes);
     } else if (!strcmp(name, "getImageAdjustmentEx")) {
@@ -4940,7 +4961,7 @@ static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const
                                        channel == 0 ? main_count : sub_count,
                                        channel == 0 ? "stream.main" : "stream.sub", changes);
     } else if (!strcmp(name, "restart")) {
-        if (!restart_camera(message, sizeof(message))) code = -1;
+        if (!restart_camera(message, sizeof(message), true)) code = -1;
     } else {
         code = -1;
         snprintf(message, sizeof(message), "unsupported action %s", logged_name);
@@ -5090,11 +5111,11 @@ static void run_discovery(void)
     (void)eth0_mac(mac);
     apc_onvif::uuid_from_mac(mac, uuid);
     snprintf(endpoint, sizeof(endpoint), "urn:uuid:%s", uuid);
-    time_t joined = 0;
+    int64_t joined = monotonic_milliseconds() - 30000;
     for (;;) {
-        if (time(NULL) - joined >= 30) {
+        if (monotonic_milliseconds() - joined >= 30000) {
             join_discovery_group(fd);
-            joined = time(NULL);
+            joined = monotonic_milliseconds();
         }
         struct pollfd ready = {fd, POLLIN, 0};
         if (poll(&ready, 1, 30000) <= 0) continue;
@@ -5103,9 +5124,14 @@ static void run_discovery(void)
         socklen_t peer_length = sizeof(peer);
         ssize_t got = recvfrom(fd, message, sizeof(message) - 1U, 0, (struct sockaddr *)&peer, &peer_length);
         if (got <= 0) continue;
+        // a reply to these would go to a group, everyone, or nowhere
+        const uint32_t source = ntohl(peer.sin_addr.s_addr);
+        if (IN_MULTICAST(source) || source == INADDR_BROADCAST || source == INADDR_ANY || peer.sin_port == 0)
+            continue;
         message[got] = '\0';
         char relates_to[256], local[INET_ADDRSTRLEN], xaddr[96], message_id[48];
-        if (!apc_onvif::probe_message_id(message, relates_to, sizeof(relates_to)) || !fourkcam_enabled() ||
+        if (!apc_onvif::probe_message_id(message, relates_to, sizeof(relates_to)) ||
+            !apc_onvif::probe_types_match(message) || !fourkcam_enabled() ||
             !address_towards(&peer, local, sizeof(local))) continue;
         snprintf(xaddr, sizeof(xaddr), "http://%s/onvif/device_service", local);
         random_uuid(uuid);
@@ -7980,11 +8006,16 @@ static void handle_request(int fd, const char *peer)
     }
 #if APCAM_HAVE_4KCAM_COMPAT
     /* 4K Cam Manager and MAVLink Camera Manager can't log in to the web. ONVIF
-     * checks its own UsernameToken; /action is open, as on the vendor's camera. */
+     * checks its own UsernameToken; /action is open, as on the vendor's camera.
+     * Neither client sends Origin, which browsers send on every POST, so a web
+     * page can't use these routes. */
     if (strcmp(request.method, "POST") == 0 &&
         (strncmp(request.path, "/action/", strlen("/action/")) == 0 ||
          strcmp(request.path, "/onvif/device_service") == 0)) {
+        size_t origin_length;
         if (!fourkcam_enabled()) send_text_errorf(fd, 404, "Not Found", S_NOT_FOUND);
+        else if (find_header_span(&request, "Origin", &origin_length) != NULL)
+            send_text_errorf(fd, 403, "Forbidden", S_E_BROWSER_REQUEST);
         else if (strncmp(request.path, "/action/", strlen("/action/")) == 0) handle_fourkcam_action(fd, &request, peer);
         else handle_onvif(fd, &request);
         goto done;
@@ -8601,7 +8632,9 @@ int main(int argc, char **argv)
 #endif
     log_message("%s listening on 0.0.0.0:%u", SERVER_NAME, port);
 #if APCAM_HAVE_4KCAM_COMPAT
-    start_discovery(listen_fd);
+    // XAddrs carry no port
+    if (port == DEFAULT_PORT) start_discovery(listen_fd);
+    else log_message("WS-Discovery off: not on port %u", (unsigned)DEFAULT_PORT);
 #endif
     while (listen_fd >= 0) {
         struct sockaddr_in peer_address;
