@@ -760,7 +760,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
- "uuid",
+ "uuid 0.8.2",
  "xml-rs",
  "xmltree",
  "xsd-macro-utils",
@@ -777,6 +777,8 @@ dependencies = [
  "onvif",
  "schema",
  "tokio",
+ "url",
+ "uuid 1.19.0",
  "yaserde",
 ]
 
@@ -1372,6 +1374,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
 dependencies = [
  "getrandom",
+]
+
+[[package]]
+name = "uuid"
+version = "1.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2e054861b4bd027cd373e18e8d8d8e6548085000e41290d95ce0c373a654b4a"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

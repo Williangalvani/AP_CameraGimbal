@@ -9,4 +9,6 @@ async-trait = "0.1"
 onvif = { git = "https://github.com/lumeohq/onvif-rs", rev = "8e2408db" }
 onvif-schema = { git = "https://github.com/lumeohq/onvif-rs", rev = "8e2408db", package = "schema", features = ["devicemgmt", "media"] }
 tokio = { version = "1", features = ["macros", "rt"] }
+url = "2.5"
+uuid = "1.8"
 yaserde = "0.7.1"

@@ -2,7 +2,7 @@
 //! Camera Manager uses, the way MCM reads them, and writes the requests MCM
 //! sends (fixtures for web/tests/test_onvif.cpp).
 
-use std::{env, fs, process::exit};
+use std::{env, fs, net::IpAddr, process::exit};
 
 use async_trait::async_trait;
 use onvif::soap::{self, auth::username_token::UsernameToken};
@@ -10,6 +10,8 @@ use onvif_schema::{
     devicemgmt, media, onvif as tt, transport,
     ws_discovery::{probe, probe_matches},
 };
+
+const PROBE_MESSAGE_ID: &str = "uuid:00000000-0000-4000-8000-000000000000";
 
 /// Answers every request with one saved reply, as soap::client::Client does
 /// for an HTTP 200.
@@ -36,7 +38,6 @@ fn stream_uri_request(token: &str) -> media::GetStreamUri {
 }
 
 fn write_requests() {
-    let token = Some(UsernameToken::new("admin", "blue", None));
     let requests = [
         ("GetDeviceInformation", yaserde::ser::to_string(&devicemgmt::GetDeviceInformation::default())),
         ("GetServices", yaserde::ser::to_string(&devicemgmt::GetServices::default())),
@@ -46,12 +47,14 @@ fn write_requests() {
     for (name, body) in requests {
         // transport::request drops the XML declaration before wrapping
         let body: String = body.expect("serialize request").split("?>").skip(1).collect();
+        // soap::client::Client mints a token, and so a nonce, per request
+        let token = Some(UsernameToken::new("admin", "blue", None));
         let envelope = soap::soap(&body, &token).expect("wrap request");
         fs::write(format!("{name}.xml"), envelope).expect("write request");
     }
     let probe = probe::Envelope {
         header: probe::Header {
-            message_id: "uuid:00000000-0000-4000-8000-000000000000".into(),
+            message_id: PROBE_MESSAGE_ID.into(),
             action: "http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe".into(),
             to: "urn:schemas-xmlsoap-org:ws:2005:04:discovery".into(),
         },
@@ -65,6 +68,13 @@ async fn check(kind: &str, xml: &str) -> Result<String, String> {
     match kind {
         "probe" => {
             let envelope = yaserde::de::from_str::<probe_matches::Envelope>(xml)?;
+            // onvif::discovery drops replies to other probes
+            if envelope.header.relates_to != PROBE_MESSAGE_ID {
+                return Err(format!(
+                    "RelatesTo {} is not the Probe's MessageID {PROBE_MESSAGE_ID}",
+                    envelope.header.relates_to
+                ));
+            }
             let found = envelope
                 .body
                 .probe_matches
@@ -72,11 +82,30 @@ async fn check(kind: &str, xml: &str) -> Result<String, String> {
                 .iter()
                 .find(|m| m.find_in_scopes("onvif://www.onvif.org").is_some())
                 .ok_or_else(|| "no ProbeMatch with an ONVIF scope".to_string())?;
-            let xaddrs: Vec<String> = found.x_addrs().iter().map(|u| u.to_string()).collect();
+            // MCM's OnvifDevice::try_from needs a UUID address and an IP host in the first XAddr
+            let address = found.endpoint_reference_address();
+            let uuid: uuid::Uuid = address
+                .split(':')
+                .next_back()
+                .unwrap_or_default()
+                .parse()
+                .map_err(|e| format!("EndpointReference address {address} does not end in a UUID: {e}"))?;
+            let urls = found.x_addrs();
+            let host = urls
+                .first()
+                .ok_or_else(|| "no XAddrs".to_string())?
+                .host_str()
+                .ok_or_else(|| format!("first XAddr {} has no host", urls[0]))?;
+            let ip: IpAddr = host
+                .parse()
+                .map_err(|e| format!("first XAddr host {host} is not an IP address: {e}"))?;
+            let xaddrs: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
             Ok(format!(
-                "relates_to={} address={} name={:?} hardware={:?} types={:?} xaddrs={:?}",
+                "relates_to={} address={} uuid={} ip={} name={:?} hardware={:?} types={:?} xaddrs={:?}",
                 envelope.header.relates_to,
-                found.endpoint_reference_address(),
+                address,
+                uuid,
+                ip,
                 found.name(),
                 found.hardware(),
                 found.types(),
@@ -126,6 +155,9 @@ async fn check(kind: &str, xml: &str) -> Result<String, String> {
             let r = media::get_stream_uri(&reply, &stream_uri_request("main"))
                 .await
                 .map_err(|e| e.to_string())?;
+            // MCM skips a profile whose URI doesn't parse
+            url::Url::parse(&r.media_uri.uri)
+                .map_err(|e| format!("stream URI {} does not parse: {e}", r.media_uri.uri))?;
             Ok(r.media_uri.uri)
         }
         "not-authorized" => match soap::unsoap(xml) {

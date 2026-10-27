@@ -5,16 +5,16 @@
             xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"
             xmlns:dn="http://www.onvif.org/ver10/network/wsdl">
     <SOAP-ENV:Header>
-        <wsa:RelatesTo>uuid:84ede3de-7dec-11d0-c360-F01234567890</wsa:RelatesTo>
+        <wsa:RelatesTo>uuid:00000000-0000-4000-8000-000000000000</wsa:RelatesTo>
     </SOAP-ENV:Header>
     <SOAP-ENV:Body>
         <d:ProbeMatches>
             <d:ProbeMatch>
                 <wsa:EndpointReference>
-                    <wsa:Address>an address</wsa:Address>
+                    <wsa:Address>urn:uuid:bc071801-c50f-8301-ac36-bc071801c50f</wsa:Address>
                 </wsa:EndpointReference>
                 <d:Scopes>onvif://www.onvif.org/name/MyCamera2000</d:Scopes>
-                <d:XAddrs>http://addr_20 http://addr_21</d:XAddrs>
+                <d:XAddrs>http://192.168.2.10/onvif/device_service</d:XAddrs>
             </d:ProbeMatch>
         </d:ProbeMatches>
     </SOAP-ENV:Body>

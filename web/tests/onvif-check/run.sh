@@ -3,6 +3,16 @@
 #   run.sh HOST requests             writes MCM's requests to ../fixtures/onvif/
 #   run.sh HOST check DIR [KIND...]  checks the replies saved as DIR/<KIND>.xml
 set -eu
+usage() {
+    echo "usage: $0 HOST requests | $0 HOST check DIR [KIND...]" >&2
+    exit 2
+}
+[ $# -ge 2 ] || usage
+case "$2" in
+requests) ;;
+check) [ $# -ge 3 ] || usage ;;
+*) usage ;;
+esac
 here=$(cd "$(dirname "$0")" && pwd)
 host=$1
 mode=$2
@@ -21,9 +31,5 @@ check)
     kinds=${*:-probe device-information services profiles stream-uri not-authorized}
     rsync -a --delete "$dir/" "$host:onvif-check/replies/"
     ssh "$host" "cd onvif-check && rc=0; for kind in $kinds; do echo \"== \$kind\"; ./target/release/onvif-check \$kind replies/\$kind.xml || rc=1; done; exit \$rc"
-    ;;
-*)
-    echo "usage: $0 HOST requests | $0 HOST check DIR [KIND...]" >&2
-    exit 2
     ;;
 esac
