@@ -1053,7 +1053,7 @@ static constexpr Translations translations = [] {
     result[S_STATUS_CPU_BUSY] = {"%u%% busy across %u cores (load average %.*s is inflated by the media driver's kernel threads)", "占用 %u%%，共 %u 个核心（负载平均值 %.*s 因媒体驱动的内核线程而偏高）", "使用率 %u%%、%u コア（ロードアベレージ %.*s はメディアドライバーのカーネルスレッドにより高めに出ます）"};
     result[S_STATUS_LOAD] = {"Load", "负载", "負荷"};
     result[S_STATUS_SOC_TEMPERATURE] = {"SoC temperature", "SoC 温度", "SoC 温度"};
-#if APCAM_TARGET == APCAM_TARGET_ZT30
+#if APCAM_TARGET == APCAM_TARGET_ZT30 || APCAM_TARGET == APCAM_TARGET_HISI
     result[S_STATUS_SOC_AVERAGE] = {"%s%d &deg;C", "%s%d &deg;C", "%s%d &deg;C"};
 #elif APCAM_TARGET == APCAM_TARGET_Z1_MINI
     result[S_STATUS_SOC_AVERAGE] = {"%s%d.%d &deg;C", "%s%d.%d &deg;C", "%s%d.%d &deg;C"};

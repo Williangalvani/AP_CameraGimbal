@@ -2202,6 +2202,9 @@ static bool parameter_shown(const struct parameter *parameter)
 #endif
         ) return false;
     if (!APCAM_HAVE_THERMAL_VIDEO && !strcmp(parameter->key,"photo_scope")) return false;
+    if (!APCAM_HAVE_GIMBAL && (!strcmp(parameter->section, "survey") ||
+        !strcmp(parameter->form_name, "position_targeting") ||
+        !strcmp(parameter->form_name, "tracking_method"))) return false;
     return true;
 }
 
@@ -4762,7 +4765,9 @@ static void append_parameter_field(APC_StringBuffer *page, const char *config,
 static bool read_soc_temperature(int *millidegrees)
 {
 /* Kernel thermal zone where available; otherwise the SS928 sensor registers. */
-#ifdef SOC_TEMPERATURE_PATH
+#if defined(SOC_TEMPERATURE_PATH) && defined(SOC_TEMPERATURE_FIELD)
+    return apcam_read_soc_temperature_field(SOC_TEMPERATURE_PATH,SOC_TEMPERATURE_FIELD,millidegrees);
+#elif defined(SOC_TEMPERATURE_PATH)
 #ifdef SOC_TEMPERATURE_LABELLED_CELSIUS
     constexpr bool labelled=true;
 #else
@@ -4934,7 +4939,7 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     page.appendf("<tr><th>%s</th><td>", T(S_STATUS_SOC_TEMPERATURE));
     if (have_soc_temperature) {
         int absolute = soc_temperature < 0 ? -soc_temperature : soc_temperature;
-#ifdef SOC_TEMPERATURE_LABELLED_CELSIUS
+#if defined(SOC_TEMPERATURE_LABELLED_CELSIUS) || defined(SOC_TEMPERATURE_FIELD)
         page.appendf(T(S_STATUS_SOC_AVERAGE),soc_temperature < 0 ? "-" : "",absolute / 1000);
 #else
         page.appendf(T(S_STATUS_SOC_AVERAGE),
@@ -5146,7 +5151,10 @@ static char *render_live_page(size_t *page_len)
     if (APCAM_NUM_STREAMS >= 2)
         snprintf(secondary, sizeof(secondary), "<option value=1>%s</option>", T(S_LIVE_SECONDARY));
     webroot.render(page, "live-video.html", {T(S_LIVE_STREAM), T(S_LIVE_MAIN), secondary, T(S_LIVE_STARTING), T(S_LIVE_HELP), T(S_LIVE_PTZ), T(S_LIVE_ENABLE_MANUAL), T(S_LIVE_MANUAL_NOTICE)});
-    webroot.render(page, "live-controls.html", {T(S_LIVE_CENTRE), T(S_LIVE_RATE), T(S_LIVE_ZOOM), APC_TemplateValue("%g", (double)APC_Camera::get_singleton().zoom_control_max()), T(S_LIVE_NO_COMMANDS), T(S_LIVE_ATTITUDE), T(S_LIVE_ATTITUDE_UNAVAILABLE), T(S_LIVE_YAW), T(S_LIVE_ROLL), T(S_LIVE_PITCH), T(S_LIVE_YAW), T(S_LIVE_ROLL_RATE), T(S_LIVE_PITCH_RATE), T(S_LIVE_YAW_RATE), T(S_LIVE_WAITING_GIMBAL), csrf_token});
+    webroot.render(page, "live-controls.html", {T(S_LIVE_CENTRE), T(S_LIVE_RATE), T(S_LIVE_ZOOM), APC_TemplateValue("%g", (double)APC_Camera::get_singleton().zoom_control_max()), T(S_LIVE_NO_COMMANDS), T(S_LIVE_ATTITUDE), T(S_LIVE_ATTITUDE_UNAVAILABLE), T(S_LIVE_YAW), T(S_LIVE_ROLL), T(S_LIVE_PITCH), T(S_LIVE_YAW), T(S_LIVE_ROLL_RATE), T(S_LIVE_PITCH_RATE), T(S_LIVE_YAW_RATE), T(S_LIVE_WAITING_GIMBAL), csrf_token, APCAM_HAVE_GIMBAL ? "1" : "0"});
+#if !APCAM_HAVE_GIMBAL
+    page.append("<style>.card:has(#manual-enable){display:none}</style>");
+#endif
 #if !APCAM_HAVE_ZOOM
     page.append("<style>.zoom-row:has(#live-zoom){display:none}</style>");
 #endif
@@ -5293,12 +5301,14 @@ static char *render_parameter_page(const char *message, bool message_is_error,
 #endif
         webroot.render(page, "parameters-form.html", {T(S_APP_PARAMETERS_NOTICE), csrf_token, T(S_PARAMS_CATEGORIES)});
         for (unsigned tab = 0; tab < TAB_COUNT; tab++) {
+            if (!APCAM_HAVE_GIMBAL && tab == TAB_SURVEY) continue;
             page.appendf("<button type=button role=tab id=tab-%s aria-controls=parameters-%s "
                              "aria-selected=false tabindex=-1>%s</button>",
                        parameter_tabs[tab].name, parameter_tabs[tab].name, T(parameter_tabs[tab].label));
         }
         page.append("</div>");
         for (unsigned tab = 0; tab < TAB_COUNT; tab++) {
+            if (!APCAM_HAVE_GIMBAL && tab == TAB_SURVEY) continue;
             page.appendf("<section class=\"card parameter-panel\" id=parameters-%s "
                              "aria-labelledby=tab-%s><h2>%s</h2><div class=fields>",
                        parameter_tabs[tab].name, parameter_tabs[tab].name, T(parameter_tabs[tab].label));

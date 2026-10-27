@@ -88,12 +88,16 @@ static float cpu_temperature(void)
     return value;
 #elif !defined(CAMERA_APP_SITL) && !defined(CAMERA_APP_HOST) && defined(SOC_TEMPERATURE_PATH)
     int value=0;
+#ifdef SOC_TEMPERATURE_FIELD
+    return apcam_read_soc_temperature_field(SOC_TEMPERATURE_PATH,SOC_TEMPERATURE_FIELD,&value) ? value / 1000.0f : NAN;
+#else
 #ifdef SOC_TEMPERATURE_LABELLED_CELSIUS
     constexpr bool labelled=true;
 #else
     constexpr bool labelled=false;
 #endif
     return apcam_read_soc_temperature(SOC_TEMPERATURE_PATH,labelled,&value) ? value / 1000.0f : NAN;
+#endif
 #else
     /* Other cameras have no supported reader. SITL must not access camera
      * registers or mislabel a host motherboard sensor as CPU temperature. */
