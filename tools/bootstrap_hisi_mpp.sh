@@ -1,10 +1,11 @@
 #!/bin/sh
 set -eu
 
-# Hi3519DV500/Hi3516DV500 MPP sample tree (headers, static libs, sample_comm,
-# scene_auto, xop RTSP) for the hisi backend. Only the paths the camera
-# application builds against are checked out; prebuilt .so files, OpenCV and
-# the OP-TEE sources are not needed for the static firmware link.
+# Hi3519DV500/Hi3516DV500 MPP sample tree for the hisi backend. The camera
+# application only takes sample_comm and the 3rdparty headers from it; its
+# MPP headers and shared libraries come from the B040 tree
+# (tools/bootstrap_hisi_b040.sh), which matches the camera's kernel drivers.
+# OpenCV and the OP-TEE sources are not checked out.
 mpp_root=${1:-build/deps/hi3516dv500-mpp}
 mpp_url=https://gitee.com/e-hi3519dv500/Hi3519DV500_SDK_V2.0.2.0_MPP_Sample.git
 mpp_commit=f7ac4db68d139de4006f4c32c91c80a94235ba04

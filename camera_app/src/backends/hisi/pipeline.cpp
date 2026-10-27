@@ -14,12 +14,10 @@
 #define VI_VB_COUNT 6U
 #define VPSS_VB_COUNT 8U
 
+// the B040 IMX678 driver is 4-lane only
 sample_sns_type ca_hisi_sensor_type(void)
 {
-    const char *two_lane = getenv("CA_HISI_SENSOR_2LANE");
-    return two_lane != NULL && strcmp(two_lane, "1") == 0
-               ? SONY_IMX678_2L_MIPI_8M_30FPS_10BIT
-               : SONY_IMX678_MIPI_8M_30FPS_12BIT;
+    return SONY_IMX678_MIPI_8M_30FPS_12BIT;
 }
 
 static void channel_attributes(ot_vpss_chn_attr *attr, unsigned channel,
@@ -97,9 +95,7 @@ void ca_hisi_configure_vi(sample_vi_cfg *vi_cfg)
             ca_log("ignoring invalid CA_HISI_SENSOR_BUS=%s", bus);
         }
     }
-    ca_log("IMX678 %s-lane mode on I2C bus %u",
-           sensor == SONY_IMX678_MIPI_8M_30FPS_12BIT ? "4" : "2",
-           vi_cfg->sns_info.bus_id);
+    ca_log("IMX678 4-lane mode on I2C bus %u", vi_cfg->sns_info.bus_id);
 }
 
 td_s32 ca_hisi_vpss_start(const struct ca_hisi_output_sizes *sizes)

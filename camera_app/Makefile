@@ -26,11 +26,11 @@ CROSS_COMPILE ?= arm-linux-
 LDFLAGS ?=
 TARGET := build/$(CAMERA_BACKEND)/camera-app
 else ifeq ($(CAMERA_BACKEND),hisi)
-# HiSilicon Hi3516DV500: aarch64 glibc, static link against the "ot" MPP SDK
-# (same ss_mpi SDK family as the mt11 backend / ss928v100). The SDK lives at
-# HISI_MPP_ROOT (tools/bootstrap_hisi_mpp.sh) and is never committed.
-CROSS_COMPILE ?= aarch64-linux-gnu-
-LDFLAGS ?= -static
+# HiSilicon Hi3516DV500: aarch64 musl, linked against the B040 "ot" MPP shared
+# libraries the camera's kernel drivers match (tools/bootstrap_hisi_b040.sh),
+# loaded at run time from HISI_RUNTIME_LIB_DIR. Nothing SDK-side is committed.
+CROSS_COMPILE ?= aarch64-linux-
+LDFLAGS ?=
 TARGET := build/hisi/camera-app
 else
 TARGET := camera-app
@@ -160,24 +160,33 @@ MEDIA_LIBS := $(VENDOR_LIB_DIR)/libss_mpi.a $(VENDOR_LIB_DIR)/libsecurec.a \
 	$(SS928_MPP_ROOT)/lib/linux/3rdparty/libiniparser.a \
 	$(XOP_COMPAT_LIB)
 ifeq ($(CAMERA_BACKEND),hisi)
-# Hi3516DV500 ships as the Hi3519DV500 SDK: one chip define, a flat lib dir,
-# and no scene_auto (the factory firmware has no IQ files to load).
-VENDOR_LIB_DIR := $(HISI_MPP_ROOT)/lib/hisilicon
+# Hi3516DV500 ships as the Hi3519DV500 SDK: one chip define and no scene_auto
+# (the factory firmware has no IQ files to load). The V2.0.2.0 tree supplies
+# only sources (sample_comm, xop); its B050 headers and libraries do not match
+# the camera's B040 ot_*.ko ioctl structs, so headers, libraries and the
+# IMX678 driver come from the B040 tree.
+HISI_B040_ROOT ?= $(abspath ../build/deps/hi3519dv500-b040)
+HISI_B040_INCLUDE := $(HISI_B040_ROOT)/openhisilicon/kernel/include/hi3519dv500
+HISI_B040_ISP_INCLUDE := $(HISI_B040_ROOT)/openhisilicon/libraries/isp/include/hi3519dv500
+HISI_B040_LIB_DIR := $(HISI_B040_ROOT)/openipc/general/package/hisilicon-osdrv-hi3519dv500/files/lib
+HISI_SENSOR_ROOT := $(HISI_B040_ROOT)/imx678
+HISI_RUNTIME_LIB_DIR ?= /appfs/ap_cameragimbal/lib
 MEDIA_DEFINES := -Dhi3519dv500 -DOT_XXXX -DISP_V2 -DOT_RELEASE -DVDEC_IP_VEDU \
 	-DUSER_BIT_64 -DKERNEL_BIT_64 -fsigned-char
-HISI_SDK_CPPFLAGS := $(MEDIA_DEFINES) -I$(HISI_MPP_ROOT)/include/hisilicon \
+HISI_SDK_CPPFLAGS := $(MEDIA_DEFINES) -include $(abspath src/backends/hisi/sdk_compat.h) \
+	-I$(HISI_B040_INCLUDE) -I$(HISI_B040_ISP_INCLUDE) -I$(HISI_B040_ISP_INCLUDE)/3a \
 	-I$(SAMPLE_COMMON) -I$(HISI_MPP_ROOT)/include/3rdparty
-ISP_LIB_NAMES := ss_mpi_ae ss_mpi_isp ot_mpi_isp ss_mpi_awb dehaze extend_stats \
-	drc ldci bnr calcflicker ir_auto acs ss_mpi_thermo
-# sample_comm_isp.c references every sensor object it can select.
-SENSOR_LIB_NAMES := sns_imx678 sns_imx678_2l sns_os08a20 sns_imx347_slave \
-	sns_os04a10 sns_os04a10_slave sns_imx515 sns_imx335 sns_imx662 \
-	sns_imx662_2l sns_sc233hgs sns_sc233hgs_2l sns_sc4336p sns_sc450ai \
-	sns_sc450ai_2l sns_sc850sl sns_gst412c
-MEDIA_LIBS := $(addprefix $(VENDOR_LIB_DIR)/lib,$(addsuffix .a,ss_mpi \
-	ss_mpi_sysbind ss_mpi_sysmem $(ISP_LIB_NAMES) $(SENSOR_LIB_NAMES) \
-	ot_osal securec))
-HISI_LINK_LIBS := -Wl,--start-group $(MEDIA_LIBS) -Wl,--end-group
+# The vendor libraries resolve each other's symbols without DT_NEEDED entries,
+# so every one must be loaded by the executable itself.
+HISI_MPP_LIBS := ss_mpi ss_mpi_sysbind ss_mpi_sysmem ss_mpi_ae ss_mpi_isp \
+	ot_mpi_isp ss_mpi_awb dehaze extend_stats drc ldci bnr calcflicker ir_auto \
+	acs securec
+HISI_LINK_LIBS := -L$(HISI_B040_LIB_DIR) -Wl,--no-as-needed \
+	-Wl,--export-dynamic-symbol=ioctl -Wl,--export-dynamic-symbol=ss_mpi_sys_mmap_cached \
+	-Wl,--export-dynamic-symbol=ot_mpi_sys_mmap_cached \
+	$(addprefix -l,$(HISI_MPP_LIBS)) \
+	-Wl,--dynamic-linker=$(HISI_RUNTIME_LIB_DIR)/ld-musl-aarch64.so.1 \
+	-Wl,-rpath,$(HISI_RUNTIME_LIB_DIR)
 endif
 
 COMMON_SOURCES := $(if $(filter z1mini,$(CAMERA_BACKEND)),src/protocol/xfrobot_server.cpp) src/main.cpp \
@@ -323,14 +332,16 @@ A8_XOP_OBJECTS := $(patsubst $(RTSP_ROOT)/%.cpp,build/$(CAMERA_BACKEND)/xop/%.o,
 ARM_APP_OBJECTS := $(patsubst %.cpp,build/$(CAMERA_BACKEND)/c/%.o,$(COMMON_SOURCES) \
 	src/streaming/live_video_server.cpp src/recording/mp4_minimp4.cpp \
 	$(BACKEND_DIR)/media.cpp $(BACKEND_DIR)/pipeline.cpp $(if $(filter rpi_libcam_caddx,$(CAMERA_BACKEND)),$(BACKEND_DIR)/jpeg.cpp) $(if $(filter a8 zr10,$(CAMERA_BACKEND)),src/backends/siyi/overlay.cpp) $(if $(filter a8 hisi,$(CAMERA_BACKEND)),$(BACKEND_DIR)/isp.cpp) $(if $(filter hisi,$(CAMERA_BACKEND)),src/backends/mt11/overlay.cpp) $(if $(filter zr10,$(CAMERA_BACKEND)),src/compat/zr10_uclibc.cpp) $(if $(filter z1mini,$(CAMERA_BACKEND)),$(BACKEND_DIR)/glibc_compat.cpp $(BACKEND_DIR)/native.cpp))
-HISI_SDK_OBJECTS := $(if $(filter hisi,$(CAMERA_BACKEND)),$(patsubst %,build/hisi/sdk/sample_comm_%.o,sys isp vi vpss))
+HISI_SDK_OBJECTS := $(if $(filter hisi,$(CAMERA_BACKEND)),$(patsubst %,build/hisi/sdk/sample_comm_%.o,sys isp vi vpss) \
+	build/hisi/sdk/imx678_cmos.o build/hisi/sdk/imx678_sensor_ctl.o build/hisi/sdk/sensor_stubs.o \
+	build/hisi/sdk/b040_compat.o)
 OBJECTS := $(ARM_APP_OBJECTS) build/$(CAMERA_BACKEND)/rtsp_xop.o $(A8_XOP_OBJECTS) $(HISI_SDK_OBJECTS)
 
 $(TARGET): Makefile $(OBJECTS)
 	mkdir -p $(dir $@)
 	$(call progress,Linking $@)
 	$(CXX) $(APP_CXXFLAGS) $(LDFLAGS) -o $@ $(OBJECTS) -Wl,--gc-sections $(HISI_LINK_LIBS) \
-		-Wl,--no-as-needed -lpthread -lm -ldl $(TARGET_LINK_FLAGS) $(if $(filter a8 zr10 z1mini,$(CAMERA_BACKEND)),-static-libstdc++ -static-libgcc) \
+		-Wl,--no-as-needed -lpthread -lm -ldl $(TARGET_LINK_FLAGS) $(if $(filter a8 zr10 z1mini hisi,$(CAMERA_BACKEND)),-static-libstdc++ -static-libgcc) \
 		$(if $(filter rpi_libcam_caddx,$(CAMERA_BACKEND)),$(LIBCAMERA_LIBS) $(LIBJPEG_LIBS))
 
 ifeq ($(CAMERA_BACKEND),hisi)
@@ -343,6 +354,22 @@ build/hisi/sdk/sample_comm_%.o: $(SAMPLE_COMMON)/sample_comm_%.c
 	$(call progress,Compiling $(notdir $<))
 	$(CC) $(DEPFLAGS) $(HISI_SDK_CPPFLAGS) $(CFLAGS) -Wno-error -fno-aggressive-loop-optimizations \
 		-ffunction-sections -fdata-sections $(if $(filter sample_comm_isp.c,$(notdir $<)),,-D_GNU_SOURCE) -c $< -o $@
+
+build/hisi/sdk/imx678_%.o: $(HISI_SENSOR_ROOT)/imx678_%.c
+	mkdir -p $(dir $@)
+	$(call progress,Compiling $(notdir $<))
+	$(CC) $(DEPFLAGS) $(HISI_SDK_CPPFLAGS) -I$(HISI_SENSOR_ROOT) $(CFLAGS) -Wno-error \
+		-ffunction-sections -fdata-sections -D_GNU_SOURCE -c $< -o $@
+
+build/hisi/sdk/sensor_stubs.o: $(BACKEND_DIR)/sensor_stubs.c
+	mkdir -p $(dir $@)
+	$(call progress,Compiling $(notdir $<))
+	$(CC) $(DEPFLAGS) $(HISI_SDK_CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+build/hisi/sdk/b040_compat.o: $(BACKEND_DIR)/b040_compat.c
+	mkdir -p $(dir $@)
+	$(call progress,Compiling $(notdir $<))
+	$(CC) $(DEPFLAGS) $(CFLAGS) -c $< -o $@
 endif
 
 build/rpi_libcam_caddx/c/src/backends/rpi_libcam/pipeline.o: CPPFLAGS += $(LIBCAMERA_CFLAGS)
