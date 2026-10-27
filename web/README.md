@@ -347,3 +347,17 @@ page uses the usual authentication, CSRF checks and atomic firmware installer.
 Only the upload JavaScript is also compiled into the Z1 server, generated from
 the normal source; no CSS, templates or external JavaScript files are needed.
 The normal UI returns automatically when all assets are installed.
+
+## 4K Cam Manager (Hi3516DV500)
+
+On the Hi3516DV500 camera, the web server also answers Blue Robotics'
+[4K Cam Manager](https://github.com/bluerobotics/br4kcam-manager) BlueOS
+extension and MAVLink Camera Manager as the original firmware does:
+WS-Discovery, ONVIF (`POST /onvif/device_service`, user `admin`) and the
+`POST /action/<name>` control protocol. Both routes skip the web login, so the
+extension works unchanged. **Allow 4K Cam Manager** (`[compat]
+fourkcam_manager`) turns it all off; **ONVIF password** (`[compat]
+onvif_password`, default `blue`, which the extension uses) and **One-push
+water** (`[image] wb_water`) are on the parameters page. If `camera.ini` can't
+be read, all of it stays off. Design and mapping:
+[`docs/4kcam-manager-compat.md`](../docs/4kcam-manager-compat.md).
