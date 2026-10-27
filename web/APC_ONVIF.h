@@ -231,4 +231,165 @@ inline bool probe_message_id(const char *xml, char *out, size_t capacity)
     return element_text(xml, "MessageID", out, capacity);
 }
 
+inline void element(APC_StringBuffer &out, const char *tag, const char *text)
+{
+    out.appendf("<%s>", tag);
+    out.append_html(text);
+    out.appendf("</%s>", tag);
+}
+
+inline void envelope_begin(APC_StringBuffer &out)
+{
+    out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+               "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\""
+               " xmlns:ter=\"http://www.onvif.org/ver10/error\""
+               " xmlns:tds=\"http://www.onvif.org/ver10/device/wsdl\""
+               " xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\""
+               " xmlns:tt=\"http://www.onvif.org/ver10/schema\"><s:Body>");
+}
+
+inline void envelope_end(APC_StringBuffer &out)
+{
+    out.append("</s:Body></s:Envelope>");
+}
+
+inline void fault(APC_StringBuffer &out, const char *code, const char *subcode, const char *reason)
+{
+    envelope_begin(out);
+    out.appendf("<s:Fault><s:Code><s:Value>s:%s</s:Value><s:Subcode><s:Value>ter:%s</s:Value>"
+                "</s:Subcode></s:Code><s:Reason><s:Text xml:lang=\"en\">", code, subcode);
+    out.append_html(reason);
+    out.append("</s:Text></s:Reason></s:Fault>");
+    envelope_end(out);
+}
+
+struct DeviceInformation {
+    const char *manufacturer;
+    const char *model;
+    const char *firmware_version;
+    const char *serial_number;
+    const char *hardware_id;
+};
+
+inline void device_information(APC_StringBuffer &out, const DeviceInformation &info)
+{
+    envelope_begin(out);
+    out.append("<tds:GetDeviceInformationResponse>");
+    element(out, "tds:Manufacturer", info.manufacturer);
+    element(out, "tds:Model", info.model);
+    element(out, "tds:FirmwareVersion", info.firmware_version);
+    element(out, "tds:SerialNumber", info.serial_number);
+    element(out, "tds:HardwareId", info.hardware_id);
+    out.append("</tds:GetDeviceInformationResponse>");
+    envelope_end(out);
+}
+
+/* Device management and media share one endpoint: MCM requires every service
+ * address to be within the one it discovered. */
+inline void services(APC_StringBuffer &out, const char *xaddr)
+{
+    static const char *const namespaces[] = {
+        "http://www.onvif.org/ver10/device/wsdl", "http://www.onvif.org/ver10/media/wsdl"};
+    envelope_begin(out);
+    out.append("<tds:GetServicesResponse>");
+    for (const char *name : namespaces) {
+        out.append("<tds:Service>");
+        element(out, "tds:Namespace", name);
+        element(out, "tds:XAddr", xaddr);
+        out.append("<tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>");
+    }
+    out.append("</tds:GetServicesResponse>");
+    envelope_end(out);
+}
+
+struct Profile {
+    const char *token;  // "main" or "sub", also the names
+    unsigned width;
+    unsigned height;
+    unsigned frame_rate;
+    unsigned bitrate_kbps;
+    bool h265;
+};
+
+/* MCM skips profiles without a video encoder configuration, and takes the
+ * codec from the RTSP stream itself. */
+inline void profiles(APC_StringBuffer &out, const Profile *items, size_t count)
+{
+    envelope_begin(out);
+    out.append("<trt:GetProfilesResponse>");
+    for (size_t i = 0; i < count; i++) {
+        const Profile &p = items[i];
+        out.appendf("<trt:Profiles token=\"%s\" fixed=\"true\"><tt:Name>%s</tt:Name>"
+                    "<tt:VideoEncoderConfiguration token=\"%s_encoder\"><tt:Name>%s</tt:Name>"
+                    "<tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding>"
+                    "<tt:Resolution><tt:Width>%u</tt:Width><tt:Height>%u</tt:Height></tt:Resolution>"
+                    "<tt:Quality>5</tt:Quality><tt:RateControl><tt:FrameRateLimit>%u</tt:FrameRateLimit>"
+                    "<tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>%u</tt:BitrateLimit>"
+                    "</tt:RateControl><tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type>"
+                    "<tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port>"
+                    "<tt:TTL>0</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>"
+                    "<tt:SessionTimeout>PT60S</tt:SessionTimeout></tt:VideoEncoderConfiguration></trt:Profiles>",
+                    p.token, p.token, p.token, p.token, p.h265 ? "H265" : "H264", p.width, p.height,
+                    p.frame_rate, p.bitrate_kbps);
+    }
+    out.append("</trt:GetProfilesResponse>");
+    envelope_end(out);
+}
+
+inline void stream_uri(APC_StringBuffer &out, const char *uri)
+{
+    envelope_begin(out);
+    out.append("<trt:GetStreamUriResponse><trt:MediaUri>");
+    element(out, "tt:Uri", uri);
+    out.append("<tt:InvalidAfterConnect>false</tt:InvalidAfterConnect>"
+               "<tt:InvalidAfterReboot>false</tt:InvalidAfterReboot>"
+               "<tt:Timeout>PT0S</tt:Timeout></trt:MediaUri></trt:GetStreamUriResponse>");
+    envelope_end(out);
+}
+
+inline void system_date_and_time(APC_StringBuffer &out, const struct tm &utc)
+{
+    envelope_begin(out);
+    out.appendf("<tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime>"
+                "<tt:DateTimeType>Manual</tt:DateTimeType><tt:DaylightSavings>false</tt:DaylightSavings>"
+                "<tt:TimeZone><tt:TZ>UTC0</tt:TZ></tt:TimeZone><tt:UTCDateTime>"
+                "<tt:Time><tt:Hour>%d</tt:Hour><tt:Minute>%d</tt:Minute><tt:Second>%d</tt:Second></tt:Time>"
+                "<tt:Date><tt:Year>%d</tt:Year><tt:Month>%d</tt:Month><tt:Day>%d</tt:Day></tt:Date>"
+                "</tt:UTCDateTime></tds:SystemDateAndTime></tds:GetSystemDateAndTimeResponse>",
+                utc.tm_hour, utc.tm_min, utc.tm_sec, utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday);
+    envelope_end(out);
+}
+
+/* The vendor's scopes: 4K Cam Manager keeps devices named "hd" with hardware
+ * HW0100302 or HW20200610. */
+inline void probe_match(APC_StringBuffer &out, const char *message_id, const char *relates_to,
+                        const char *endpoint, const char *xaddr)
+{
+    out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+               "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\""
+               " xmlns:a=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\""
+               " xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\""
+               " xmlns:dn=\"http://www.onvif.org/ver10/network/wsdl\"><s:Header>");
+    element(out, "a:MessageID", message_id);
+    element(out, "a:RelatesTo", relates_to);
+    out.append("<a:To>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:To>"
+               "<a:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches</a:Action>"
+               "</s:Header><s:Body><d:ProbeMatches><d:ProbeMatch><a:EndpointReference>");
+    element(out, "a:Address", endpoint);
+    out.append("</a:EndpointReference><d:Types>dn:NetworkVideoTransmitter</d:Types><d:Scopes>"
+               "onvif://www.onvif.org/type/video_encoder onvif://www.onvif.org/hardware/HW0100302 "
+               "onvif://www.onvif.org/name/hd onvif://www.onvif.org/Profile/Streaming "
+               "onvif://www.onvif.org/location/country</d:Scopes>");
+    element(out, "d:XAddrs", xaddr);
+    out.append("<d:MetadataVersion>1</d:MetadataVersion></d:ProbeMatch></d:ProbeMatches></s:Body></s:Envelope>");
+}
+
+/* The camera's WS-Discovery endpoint, stable across boots: a fixed prefix and
+ * the MAC as the node field. */
+inline void uuid_from_mac(const unsigned char mac[6], char out[37])
+{
+    snprintf(out, 37, "41504341-4d00-4000-8000-%02x%02x%02x%02x%02x%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 }  // namespace apc_onvif
