@@ -101,7 +101,7 @@
 #else
 #define WEB_INSTALLS_FIRMWARE 0
 #endif
-#if APCAM_HAVE_THERMAL || WEB_INSTALLS_FIRMWARE
+#if APCAM_HAVE_THERMAL || WEB_INSTALLS_FIRMWARE || APCAM_TARGET == APCAM_TARGET_HISI
 #define WEB_UPGRADE_REBOOTS_JS "true"
 #else
 #define WEB_UPGRADE_REBOOTS_JS "false"
@@ -1422,6 +1422,14 @@ static uint64_t monotonic_seconds(void)
 
     if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) return 0U;
     return (uint64_t)now.tv_sec;
+}
+
+static int64_t monotonic_milliseconds(void)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) return 0;
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
 /* Login sessions are shared between the forked HTTP workers through a
@@ -4992,6 +5000,8 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     // Actual pending trials are shown by append_zt30_bundle_status().
 #elif WEB_INSTALLS_FIRMWARE
     page.append(T(S_STATUS_UPGRADE_INSTALL_Z1));
+#elif APCAM_TARGET == APCAM_TARGET_HISI
+    page.append(T(S_STATUS_UPGRADE_INSTALL_HISI));
 #elif APCAM_TARGET == APCAM_TARGET_MT11
     page.append(T(S_STATUS_UPGRADE_SYNC_MT11));
 #else
@@ -6196,10 +6206,19 @@ static const char *upgrade_script = "upgrade.js";
 #define UPGRADE_CONFIRM_STRING S_JS_FW_CONFIRM_Z1
 #define UPGRADE_UPLOADED_STRING S_JS_FW_INSTALLED
 #define UPGRADE_WRITE_ROOT RUNTIME_DIR
+#elif APCAM_TARGET == APCAM_TARGET_HISI
+#define UPGRADE_CONFIRM_STRING S_JS_FW_CONFIRM_Z1
+#define UPGRADE_UPLOADED_STRING S_JS_FW_FLASHING_HISI
+#define UPGRADE_WRITE_ROOT RUNTIME_DIR
 #else
 #define UPGRADE_CONFIRM_STRING TARGET_TEXT(S_JS_FW_CONFIRM, S_JS_FW_CONFIRM_A8)
 #define UPGRADE_UPLOADED_STRING S_JS_FW_UPLOADED
 #define UPGRADE_WRITE_ROOT MEDIA_ROOT
+#endif
+#if APCAM_TARGET == APCAM_TARGET_HISI
+#define UPGRADE_SIZE_STRING S_E_FW_SIZE_HISI
+#else
+#define UPGRADE_SIZE_STRING S_JS_FW_SIZE
 #endif
 #ifndef FIRMWARE_INSTALL_NAME
 #define FIRMWARE_INSTALL_NAME_JS ""
@@ -6214,6 +6233,8 @@ static void send_upgrade_script(int fd)
 #ifdef ZT30_WEB_NATIVE
         {"applicationUpdate", "true"}, {"maxSize", "33554432"}, {"appFailed", T(S_APP_UPDATE_FAILED)},
         {"confirmRollback", T(S_APP_ROLLBACK)},
+#elif APCAM_TARGET == APCAM_TARGET_HISI
+        {"maxSize", "37748980"},
 #endif
         {"mediaRoot", UPGRADE_WRITE_ROOT}, {"reboots", WEB_UPGRADE_REBOOTS_JS},
         {"prefix", FIRMWARE_PREFIX}, {"suffix", FIRMWARE_SUFFIX},
@@ -6222,7 +6243,7 @@ static void send_upgrade_script(int fd)
         {"back", T(S_JS_FW_BACK)}, {"backAlert", T(S_JS_FW_BACK_ALERT)},
         {"backLogin", T(S_JS_FW_BACK_LOGIN)},
         {"rebooting", T(S_JS_FW_REBOOTING)}, {"waitingUpdater", T(S_JS_FW_WAITING_UPDATER)},
-        {"badName", bad_name}, {"badSize", T(S_JS_FW_SIZE)},
+        {"badName", bad_name}, {"badSize", T(UPGRADE_SIZE_STRING)},
         {"confirmUpload", T(UPGRADE_CONFIRM_STRING)},
         {"writing", T(S_JS_FW_WRITING)},
         {"httpStatus", T(S_JS_FW_HTTP)}, {"uploaded", T(UPGRADE_UPLOADED_STRING)},
@@ -6283,11 +6304,7 @@ static bool receive_upload_body(int fd, const APC_HTTPRequest *request, int outp
                                 size_t *received, unsigned duration_ms = 0)
 {
     char expect[64];
-#ifdef ZT30_WEB_NATIVE
-    const int64_t deadline = duration_ms ? apcam::probe_milliseconds()+duration_ms : 0;
-#else
-    (void)duration_ms;
-#endif
+    const int64_t deadline = duration_ms ? monotonic_milliseconds() + duration_ms : 0;
     *received = 0;
     if (find_header(request, "Expect", expect, sizeof(expect)) != NULL &&
         strcasecmp(expect, "100-continue") == 0) {
@@ -6302,13 +6319,14 @@ static bool receive_upload_body(int fd, const APC_HTTPRequest *request, int outp
         char buffer[64 * 1024];
         size_t wanted = request->content_length - *received;
         if (wanted > sizeof(buffer)) wanted = sizeof(buffer);
-#ifdef ZT30_WEB_NATIVE
         if (deadline) {
-            const int64_t left = deadline-apcam::probe_milliseconds();
-            pollfd wait{fd, POLLIN, 0};
-            if (left <= 0 || poll(&wait, 1, int(left)) <= 0) {errno = ETIMEDOUT; return false;}
+            const int64_t left = deadline - monotonic_milliseconds();
+            struct pollfd wait = {fd, POLLIN, 0};
+            if (left <= 0 || poll(&wait, 1, (int)left) <= 0) {
+                errno = ETIMEDOUT;
+                return false;
+            }
         }
-#endif
         ssize_t got = recv(fd, buffer, wanted, 0);
         if (got < 0) {
             if (errno == EINTR) continue;
@@ -6912,6 +6930,9 @@ done:
 #ifdef ZT30_WEB_NATIVE
 #include "zt30-upgrade.h"
 #endif
+#if APCAM_TARGET == APCAM_TARGET_HISI && !defined(__CYGWIN__) && !defined(__APPLE__)
+#include "hisi-upgrade.h"
+#endif
 
 static void handle_firmware_upload(int fd, const APC_HTTPRequest *request,
                                    const char *peer)
@@ -6920,6 +6941,8 @@ static void handle_firmware_upload(int fd, const APC_HTTPRequest *request,
     handle_zt30_upgrade(fd, request, peer);
 #elif WEB_INSTALLS_FIRMWARE
     handle_firmware_install(fd, request, peer);
+#elif APCAM_TARGET == APCAM_TARGET_HISI && !defined(__CYGWIN__) && !defined(__APPLE__)
+    handle_hisi_firmware_install(fd, request, peer);
 #else
     char filename[256];
     char temporary[272];
@@ -7923,6 +7946,9 @@ static int create_listener(unsigned port)
 int main(int argc, char **argv)
 {
     static char webroot_path[PATH_MAX];
+#if APCAM_TARGET == APCAM_TARGET_HISI && !defined(__CYGWIN__) && !defined(__APPLE__)
+    if (argc == 3 && strcmp(argv[1], HISI_FLASH_ARG) == 0) return hisi_flash_forward(argv[2]);
+#endif
 #ifdef WEB_PORTABLE_SITL
     if (portable_paths_init() < 0) { fprintf(stderr, "Invalid portable SITL paths\n"); return 2; }
 #endif

@@ -216,7 +216,7 @@ $(RPI_HOST_CHECK): mt11-web.cpp gcu_manifest.h z1mini_mavlink.h $(VERSION_HEADER
 # nor camera-app's library directory. MAVLink headers come from the camera_app
 # build.
 HISI_CROSS_COMPILE ?= aarch64-linux-
-hisi-web: mt11-web.cpp gcu_manifest.h z1mini_mavlink.h $(VERSION_HEADER) $(ICON_HEADER) $(WEBROOT_HEADER) $(APCAM_HEADERS) $(wildcard APC_*.h) $(RPI_MAVLINK)/all/mavlink.h Makefile
+hisi-web: mt11-web.cpp hisi-upgrade.h gcu_manifest.h z1mini_mavlink.h $(VERSION_HEADER) $(ICON_HEADER) $(WEBROOT_HEADER) $(APCAM_HEADERS) $(wildcard APC_*.h) $(RPI_MAVLINK)/all/mavlink.h Makefile
 	$(call progress,Linking $@)
 	$(HISI_CROSS_COMPILE)g++ -static $(WEB_CXXFLAGS) -Wno-unused-function -Wno-address-of-packed-member -DAPCAM_TARGET=APCAM_TARGET_HISI -isystem $(RPI_MAVLINK) -o $@ $< -lm
 
