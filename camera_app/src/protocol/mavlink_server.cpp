@@ -187,6 +187,7 @@ struct ca_mavlink_server {
     float tracking_integral[2];
     float tracking_rate[2];
     uint64_t config_check_ms;
+    uint64_t wb_command_check_ms;
     struct stat config_stat;
     bool config_seen, config_pending;
     char config_status_path[4096];
@@ -2434,6 +2435,83 @@ static int apply_camera_config(struct ca_mavlink_server *server, size_t index, f
     return 0;
 }
 
+#if APCAM_HAVE_WB_TUNING
+/* Measure the scene, then apply and save the result as manual gains, so the
+ * web page and GCS show it and it survives a restart. */
+static int one_push_white_balance(struct ca_mavlink_server *server, unsigned water,
+                                  char *message, size_t message_size)
+{
+    struct ca_wb_gains gains;
+    if (water != CA_WB_WATER_GREEN && water != CA_WB_WATER_BLUE) {
+        snprintf(message, message_size, "Unknown one-push white balance %u", water);
+        errno = EINVAL;
+        return -1;
+    }
+    if (ca_media_measure_white_balance(server->media, (enum ca_wb_water)water, &gains) < 0) {
+        snprintf(message, message_size, "White balance not measured: %s",
+                 errno == ERANGE ? "the scene is too dark" : strerror(errno));
+        parameter_status(server, message);
+        return -1;
+    }
+    struct ca_config next = server->settings;
+    next.white_balance = CA_WB_MANUAL;
+    next.wb_red = gains.red;
+    next.wb_green = gains.green;
+    next.wb_blue = gains.blue;
+    if (apply_runtime_config(server, &next) < 0) {
+        snprintf(message, message_size, "White balance not applied: %s", strerror(errno));
+        parameter_status(server, message);
+        return -1;
+    }
+    // the mode last, so a failed save never pairs "manual" with old gains
+    const struct { const char *name; unsigned value; } saved[] = {
+        {"IMG_WB_RED", gains.red}, {"IMG_WB_GREEN", gains.green},
+        {"IMG_WB_BLUE", gains.blue}, {"IMG_WHITE_BAL", CA_WB_MANUAL},
+    };
+    for (const auto &entry : saved) {
+        int index = ca_config_param_find(entry.name);
+        if (index < 0 || ca_config_param_save(&server->parameters, server->config_path,
+                                              (size_t)index, (float)entry.value) < 0) {
+            snprintf(message, message_size, "White balance applied but not saved: %s",
+                     strerror(errno));
+            parameter_status(server, message);
+            return -1;
+        }
+        ca_binlog_parameter(entry.name, (int)entry.value, false);
+    }
+    snprintf(message, message_size, "White balance set: R %.2f G %.2f B %.2f",
+             gains.red / 256.0, gains.green / 256.0, gains.blue / 256.0);
+    parameter_status(server, message);
+    return 0;
+}
+
+/* The web UI asks through <config>.wb.command ("1" green or "2" blue water)
+ * and reads the outcome from <config>.wb.status: "ok" or "error", then the
+ * message. Unlike MAVLink this works before any vehicle is heard. */
+static void white_balance_command(struct ca_mavlink_server *server, uint64_t now)
+{
+    char path[4096], status[4096], temporary[4100], message[160];
+    if (now - server->wb_command_check_ms < 500U) return;
+    server->wb_command_check_ms = now;
+    snprintf(path, sizeof(path), "%s.wb.command", server->config_path);
+    FILE *input = fopen(path, "r");
+    if (!input) return;
+    unsigned water = 0;
+    bool parsed = fscanf(input, "%u", &water) == 1;
+    fclose(input);
+    unlink(path);
+    bool ok = parsed && one_push_white_balance(server, water, message, sizeof(message)) == 0;
+    if (!parsed) snprintf(message, sizeof(message), "Unreadable white balance request");
+    snprintf(status, sizeof(status), "%s.wb.status", server->config_path);
+    snprintf(temporary, sizeof(temporary), "%s.tmp", status);
+    FILE *output = fopen(temporary, "w");
+    if (!output) return;
+    bool written = fprintf(output, "%s\n%s\n", ok ? "ok" : "error", message) > 0;
+    if (fclose(output) == 0 && written && rename(temporary, status) == 0) return;
+    unlink(temporary);
+}
+#endif
+
 static bool same_config_file(const struct stat *a, const struct stat *b)
 {
     return a->st_ino == b->st_ino && a->st_dev == b->st_dev && a->st_size == b->st_size &&
@@ -2672,6 +2750,7 @@ static bool camera_parameter_get(struct ca_mavlink_server *server,
          * Reply with NaN so reads and fetch-all complete; writes still fail. */
         return true;
     case CA_CAMERA_AUTOFOCUS: *value = 0; return true;
+    case CA_CAMERA_WB_ONEPUSH: *value = 0; return true;
     case CA_CAMERA_LENS: *value = (float)ca_media_lens(server->media); return true;
     case CA_CAMERA_SOURCE: *value = ca_media_thermal_main(server->media) ? 1 : 0; return true;
     case CA_CAMERA_PALETTE:
@@ -2793,6 +2872,16 @@ static int camera_parameter_set(struct ca_mavlink_server *server,
     case CA_CAMERA_SOURCE: return ca_media_set_thermal_main(server->media, value != 0);
     case CA_CAMERA_PALETTE: return ca_media_set_thermal_palette(server->media, (uint8_t)value);
     case CA_CAMERA_GAIN: return ca_media_set_thermal_gain(server->media, (uint8_t)value);
+    case CA_CAMERA_WB_ONEPUSH: {
+#if APCAM_HAVE_WB_TUNING
+        char message[160];
+        return value == 0 ||
+            one_push_white_balance(server, (unsigned)value, message, sizeof(message)) == 0 ? 0 : -1;
+#else
+        errno = ENOTSUP;
+        return -1;
+#endif
+    }
     }
     return -1;
 }
@@ -3350,6 +3439,9 @@ int ca_mavlink_server_open(struct ca_mavlink_server **result,
     if(!server->survey) goto fail;
     server->survey->session=realtime_us();
     { char path[4096]; snprintf(path,sizeof(path),"%s.survey.command",server->config_path); unlink(path); }
+#if APCAM_HAVE_WB_TUNING
+    { char path[4096]; snprintf(path,sizeof(path),"%s.wb.command",server->config_path); unlink(path); }
+#endif
     server->camera_mode = APCAM_HAVE_PHOTO ? 0 : 1;
     for (unsigned i = 0; i < APCAM_NUM_STREAMS; i++) server->stream_enabled[i] = true;
 #if APCAM_HAVE_THERMAL
@@ -3466,6 +3558,9 @@ void ca_mavlink_server_periodic(struct ca_mavlink_server *server)
     uint64_t now = monotonic_ms();
     flush_mcu(server, now);
     reload_config(server, now);
+#if APCAM_HAVE_WB_TUNING
+    white_balance_command(server, now);
+#endif
     const uint32_t tracking_interval=server->image_tracking_interval_ms?server->image_tracking_interval_ms:200;
     if(ca_media_tracking_available(server->media) && have_peer(server) &&
        tracking_interval!=UINT32_MAX && now-server->last_image_tracking_ms>=tracking_interval) {

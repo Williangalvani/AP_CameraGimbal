@@ -161,6 +161,9 @@ private:
         {"auto", CA_WB_AUTO}, {"daylight", CA_WB_DAYLIGHT},
         {"cloudy", CA_WB_CLOUDY}, {"fluorescent", CA_WB_FLUORESCENT},
         {"incandescent", CA_WB_INCANDESCENT},
+#if APCAM_HAVE_WB_TUNING
+        {"manual", CA_WB_MANUAL}, {"temperature", CA_WB_TEMPERATURE},
+#endif
     };
 
     inline static constexpr ca_config_option tracking_options[] = {
@@ -296,6 +299,16 @@ private:
          offsetof(struct ca_config, white_balance),
          sizeof(((struct ca_config *)0)->white_balance), wb_options,
          sizeof(wb_options) / sizeof(wb_options[0]), 0, 0, "IMG_WHITE_BAL"},
+#if APCAM_HAVE_WB_TUNING
+        {"image", "wb_red", Kind::Uint, offsetof(struct ca_config, wb_red),
+         sizeof(((struct ca_config *)0)->wb_red), NULL, 0U, 128, 4095, "IMG_WB_RED"},
+        {"image", "wb_green", Kind::Uint, offsetof(struct ca_config, wb_green),
+         sizeof(((struct ca_config *)0)->wb_green), NULL, 0U, 128, 4095, "IMG_WB_GREEN"},
+        {"image", "wb_blue", Kind::Uint, offsetof(struct ca_config, wb_blue),
+         sizeof(((struct ca_config *)0)->wb_blue), NULL, 0U, 128, 4095, "IMG_WB_BLUE"},
+        {"image", "wb_temp", Kind::Uint, offsetof(struct ca_config, wb_temp),
+         sizeof(((struct ca_config *)0)->wb_temp), NULL, 0U, 1500, 15000, "IMG_WB_TEMP"},
+#endif
         {"mavlink", "position_targeting", Kind::Bool,
          offsetof(struct ca_config, position_targeting),
          sizeof(((struct ca_config *)0)->position_targeting), NULL, 0U, 0, 0, "MAV_POS_TARGET"},

@@ -81,6 +81,10 @@ void ca_config_defaults(struct ca_config *config)
     config->shutter = CA_SHUTTER_AUTO;
     config->metering = CA_METERING_AVERAGE;
     config->white_balance = CA_WB_AUTO;
+    config->wb_red = APCAM_DEFAULT_WB_RED;
+    config->wb_green = APCAM_DEFAULT_WB_GREEN;
+    config->wb_blue = APCAM_DEFAULT_WB_BLUE;
+    config->wb_temp = APCAM_DEFAULT_WB_TEMP;
     config->position_targeting = APCAM_DEFAULT_POSITION_TARGETING;
     config->osd_recording = !APCAM_HAVE_OVERLAY_RECORDING_SELECT;
     config->tracking_method = CA_TRACK_ANGLE;
@@ -537,7 +541,8 @@ int ca_config_param_save(struct ca_config *config, const char *path,
 #define ENCODER_FIELDS(X)
 #endif
 #define IMAGE_FIELDS(X) X(brightness) X(saturation) X(contrast) X(exposure_compensation) \
-    X(iso) X(shutter) X(metering) X(white_balance) PHOTO_FIELDS(X) ENCODER_FIELDS(X)
+    X(iso) X(shutter) X(metering) X(white_balance) X(wb_red) X(wb_green) X(wb_blue) \
+    X(wb_temp) PHOTO_FIELDS(X) ENCODER_FIELDS(X)
 
 bool ca_config_image_equal(const struct ca_config *a, const struct ca_config *b)
 {

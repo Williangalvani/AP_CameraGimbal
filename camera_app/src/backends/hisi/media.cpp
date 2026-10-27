@@ -58,6 +58,8 @@ struct APC_Media_HiSi_State {
     pthread_mutex_t lock;
     pthread_mutex_t venc_lock;
     pthread_mutex_t photo_lock;
+    // ISP attributes and statistics; when both are held, lock comes first
+    pthread_mutex_t isp_lock;
     td_bool sys_started;
     td_bool vi_started;
     td_bool vi_vpss_bound;
@@ -121,6 +123,7 @@ public:
     int set_thermal_palette(uint8_t) override { return unsupported(); }
     int set_inverted(bool inverted) override;
     int exposure(unsigned lens, struct ca_exposure *sample) override;
+    int measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains) override;
     int apply_overlay(const struct ca_config *settings) override;
     int apply_image(const struct ca_config *settings) override;
 private:
@@ -432,6 +435,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     pthread_mutex_init(&media->lock, NULL);
     pthread_mutex_init(&media->venc_lock, NULL);
     pthread_mutex_init(&media->photo_lock, NULL);
+    pthread_mutex_init(&media->isp_lock, NULL);
     ca_hisi_configure_vi(&media->vi_cfg);
     stage = "SYS/VB initialization";
     if (ca_hisi_system_init(sizes) != TD_SUCCESS) goto fail;
@@ -528,6 +532,7 @@ void APC_Media_HiSi::shutdown()
     auto *media = _state;
     if (media == NULL) return;
     media_cleanup(media, this);
+    pthread_mutex_destroy(&media->isp_lock);
     pthread_mutex_destroy(&media->photo_lock);
     pthread_mutex_destroy(&media->venc_lock);
     pthread_mutex_destroy(&media->lock);
@@ -748,7 +753,9 @@ int APC_Media_HiSi::apply_image(const struct ca_config *settings)
 {
     auto *media = _state;
     pthread_mutex_lock(&media->lock);
+    pthread_mutex_lock(&media->isp_lock);
     int result = ca_hisi_apply_isp_config(settings, true);
+    pthread_mutex_unlock(&media->isp_lock);
     const unsigned bit_rate = main_bitrate(media, settings);
     if (result == 0 && bit_rate != main_bitrate(media, &media->config.settings)) {
         result = ca_hisi_set_bitrate(CA_HISI_MAIN_VENC, bit_rate);
@@ -764,9 +771,24 @@ int APC_Media_HiSi::apply_image(const struct ca_config *settings)
 int APC_Media_HiSi::exposure(unsigned lens, struct ca_exposure *s)
 {
     auto *media = _state;
-    pthread_mutex_lock(&media->lock);
+    pthread_mutex_lock(&media->isp_lock);
     int result = ca_hisi_exposure(lens, s);
-    pthread_mutex_unlock(&media->lock);
+    pthread_mutex_unlock(&media->isp_lock);
+    return result;
+}
+
+// Not under lock: the measurement sleeps across frames, and the capture
+// thread takes lock for every recorded frame.
+int APC_Media_HiSi::measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains)
+{
+    auto *media = _state;
+    if (media == NULL) {
+        errno = ENODEV;
+        return -1;
+    }
+    pthread_mutex_lock(&media->isp_lock);
+    int result = ca_hisi_measure_white_balance(water, gains);
+    pthread_mutex_unlock(&media->isp_lock);
     return result;
 }
 

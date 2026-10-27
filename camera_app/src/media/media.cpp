@@ -610,6 +610,12 @@ int APC_Media::set_inverted(bool inverted)
     return 0;
 }
 
+int APC_Media::measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains)
+{
+    REQUIRE_IMPL;
+    return _backend->measure_white_balance(water, gains);
+}
+
 // Legacy protocol entry points; new services can use APC_Media directly.
 bool ca_media_tracking_available(ca_media *media)
 { return media && media->tracking().available() &&
@@ -753,6 +759,12 @@ int ca_media_set_inverted(struct ca_media *media, bool inverted)
 {
     if (!media) { errno = ENODEV; return -1; }
     return media->set_inverted(inverted);
+}
+int ca_media_measure_white_balance(struct ca_media *media, enum ca_wb_water water,
+                                   struct ca_wb_gains *gains)
+{
+    if (!media) { errno = ENODEV; return -1; }
+    return media->measure_white_balance(water, gains);
 }
 void ca_media_close(struct ca_media *media) { delete media; }
 

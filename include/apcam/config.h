@@ -102,6 +102,9 @@ enum ca_white_balance {
     CA_WB_CLOUDY,
     CA_WB_FLUORESCENT,
     CA_WB_INCANDESCENT,
+    /* APCAM_HAVE_WB_TUNING only */
+    CA_WB_MANUAL,
+    CA_WB_TEMPERATURE,
 };
 
 enum ca_autorecord_mode {
@@ -214,6 +217,12 @@ struct ca_config {
     enum ca_shutter_mode shutter;
     enum ca_metering_mode metering;
     enum ca_white_balance white_balance;
+    /* CA_WB_MANUAL gains in 1/256 (256 = 1x) and the CA_WB_TEMPERATURE
+     * colour temperature in kelvin */
+    unsigned wb_red;
+    unsigned wb_green;
+    unsigned wb_blue;
+    unsigned wb_temp;
     bool position_targeting;
     enum ca_tracking_method tracking_method;
     bool log_disarmed;

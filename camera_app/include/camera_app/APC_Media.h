@@ -52,6 +52,7 @@ public:
     int get_thermal_palette(uint8_t *palette);
     int set_thermal_palette(uint8_t palette);
     int set_inverted(bool inverted);
+    int measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains);
     APC_Tracking &tracking() { return _tracking; }
 private:
     bool _autorecord_pending=false;
