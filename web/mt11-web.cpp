@@ -1900,8 +1900,10 @@ static bool span_equal(const char *start, const char *end, const char *text)
     return strlen(text) == length && memcmp(start, text, length) == 0;
 }
 
-static bool ini_get_value(const char *config, const char *wanted_section,
-                          const char *wanted_key, char *output, size_t output_size)
+enum ini_lookup { INI_ABSENT, INI_FOUND, INI_TOO_LONG };
+
+static enum ini_lookup ini_find_value(const char *config, const char *wanted_section,
+                                      const char *wanted_key, char *output, size_t output_size)
 {
     const char *p = config;
     char section[80] = "";
@@ -1945,16 +1947,22 @@ static bool ini_get_value(const char *config, const char *wanted_section,
                             trim_span(&value_start, &value_end);
                     }
                     length = (size_t)(value_end - value_start);
-                    if (length >= output_size) return false;
+                    if (length >= output_size) return INI_TOO_LONG;
                     memcpy(output, value_start, length);
                     output[length] = '\0';
-                    return true;
+                    return INI_FOUND;
                 }
             }
         }
         p = *line_end == '\n' ? line_end + 1 : line_end;
     }
-    return false;
+    return INI_ABSENT;
+}
+
+static bool ini_get_value(const char *config, const char *wanted_section,
+                          const char *wanted_key, char *output, size_t output_size)
+{
+    return ini_find_value(config, wanted_section, wanted_key, output, output_size) == INI_FOUND;
 }
 
 static struct ini_update *find_update(struct ini_update *updates, size_t count,
@@ -4722,18 +4730,31 @@ static bool restarted_config_ok(char *error, size_t error_size)
 static_assert(APCAM_HAVE_VIDEO_BITRATE && APCAM_HAVE_VIDEO_FRAME_RATE && APCAM_HAVE_WB_TUNING,
               "the 4K Cam Manager mapping uses bitrate, frame rate and one-push white balance");
 
-/* A camera.ini value, or the web's default for it when the key is absent. */
-static void effective_value(const char *config, const char *section, const char *key,
+/* A camera.ini value, or the web's default for it when the key is absent.
+ * False, with value empty, when camera.ini wasn't read or the value doesn't
+ * fit: callers guarding access must refuse rather than use the default. */
+static bool effective_value(const char *config, const char *section, const char *key,
                             char *value, size_t size)
 {
-    if (config != NULL && ini_get_value(config, section, key, value, size)) return;
     value[0] = '\0';
+    if (config == NULL) return false;
+    switch (ini_find_value(config, section, key, value, size)) {
+    case INI_FOUND:
+        return true;
+    case INI_TOO_LONG:
+        value[0] = '\0';
+        return false;
+    case INI_ABSENT:
+        break;
+    }
     for (size_t i = 0; i < sizeof(replacement_parameters) / sizeof(replacement_parameters[0]); i++) {
         if (!strcmp(replacement_parameters[i].section, section) && !strcmp(replacement_parameters[i].key, key)) {
-            snprintf(value, size, "%s", replacement_defaults[i]);
-            return;
+            if ((size_t)snprintf(value, size, "%s", replacement_defaults[i]) < size) return true;
+            value[0] = '\0';
+            return false;
         }
     }
+    return true;
 }
 
 static bool fourkcam_enabled(void)
@@ -4741,9 +4762,9 @@ static bool fourkcam_enabled(void)
     size_t length;
     char *config = read_file(config_path(CAMERA_REPLACEMENT), MAX_CONFIG, &length);
     char value[16];
-    effective_value(config, "compat", "fourkcam_manager", value, sizeof(value));
+    const bool read = effective_value(config, "compat", "fourkcam_manager", value, sizeof(value));
     free(config);
-    return strcmp(value, "false") != 0;
+    return read && strcmp(value, "false") != 0;
 }
 
 /* Not read_file(): sysfs reports every attribute as 4096 bytes long. */
@@ -4838,11 +4859,36 @@ static bool fourkcam_save(const char *config, const apc_fourkcam::Changes &chang
     return ok;
 }
 
+/* Held from reading camera.ini to saving it, so overlapping /action sets
+ * (each in its own forked child) can't drop each other's changes. */
+static int lock_fourkcam_config(char *error, size_t error_size)
+{
+    char path[PATH_MAX];
+    int lock = -1;
+    if (snprintf(path, sizeof(path), "%s/fourkcam.lock", RUNTIME_DIR) >= (int)sizeof(path)) errno = ENAMETOOLONG;
+    else lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lock < 0 || flock(lock, LOCK_EX) < 0) {
+        snprintf(error, error_size, "cannot lock %s: %s", path, strerror(errno));
+        if (lock >= 0) close(lock);
+        return -1;
+    }
+    return lock;
+}
+
 static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const char *peer)
 {
     const char *name = request->path + strlen("/action/");
+    char logged_name[64];
+    size_t used = 0;
+    for (const char *p = name; *p != '\0' && used + 1 < sizeof(logged_name); p++)
+        logged_name[used++] = (unsigned char)*p < 0x20U || *p == 0x7f ? '?' : *p;
+    logged_name[used] = '\0';
+    char message[512] = "";
+    int code = 0;
+    const bool sets = strncmp(name, "set", 3) == 0;
+    const int lock = sets ? lock_fourkcam_config(message, sizeof(message)) : -1;
     size_t config_length = 0;
-    char *config = read_file(config_path(CAMERA_REPLACEMENT), MAX_CONFIG, &config_length);
+    char *config = !sets || lock >= 0 ? read_file(config_path(CAMERA_REPLACEMENT), MAX_CONFIG, &config_length) : NULL;
     apc_fourkcam::Field fields[64];
     size_t field_count = 0;
     apc_fourkcam::Image image;
@@ -4854,10 +4900,10 @@ static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const
     const size_t sub_count = sizeof(sub_names) / sizeof(sub_names[0]);
     for (size_t i = 0; i < main_count; i++) main_names[i] = main_resolution_options[i].value;
     for (size_t i = 0; i < sub_count; i++) sub_names[i] = sub_resolution_options[i].value;
-    char message[512] = "";
-    int code = 0;
 
-    if (config == NULL) {
+    if (sets && lock < 0) {
+        code = -1;
+    } else if (config == NULL) {
         code = -1;
         snprintf(message, sizeof(message), T(S_E_CANNOT_READ), config_path(CAMERA_REPLACEMENT), strerror(errno));
     } else if (!apc_fourkcam::parse_object(request->body, request->body_len, fields,
@@ -4897,13 +4943,14 @@ static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const
         if (!restart_camera(message, sizeof(message))) code = -1;
     } else {
         code = -1;
-        snprintf(message, sizeof(message), "unsupported action %s", name);
+        snprintf(message, sizeof(message), "unsupported action %s", logged_name);
     }
     if (code == 0 && changes.count > 0 && !fourkcam_save(config, changes, message, sizeof(message))) code = -1;
     if (code == 0 && changes.one_push &&
         !start_white_balance(image.blue_water ? '2' : '1', message, sizeof(message))) code = -1;
-    if (code != 0) log_message("4K Cam Manager %s from %s failed: %s", name, peer, message);
-    else if (changes.count > 0 || changes.one_push) log_message("4K Cam Manager %s by %s", name, peer);
+    if (lock >= 0) close(lock);
+    if (code != 0) log_message("4K Cam Manager %s from %s failed: %s", logged_name, peer, message);
+    else if (changes.count > 0 || changes.one_push) log_message("4K Cam Manager %s by %s", logged_name, peer);
 
     unsigned char mac[6] = {0};
     char mac_text[18], serial[13], address[INET_ADDRSTRLEN];
@@ -4927,7 +4974,8 @@ static void handle_onvif(int fd, const APC_HTTPRequest *request)
     size_t config_length = 0;
     char *config = read_file(config_path(CAMERA_REPLACEMENT), MAX_CONFIG, &config_length);
     char operation[64] = "", password[128], address[INET_ADDRSTRLEN], text[160];
-    effective_value(config, "compat", "onvif_password", password, sizeof(password));
+    const bool have_password = effective_value(config, "compat", "onvif_password", password, sizeof(password)) &&
+                               password[0] != '\0';
     local_address(fd, address, sizeof(address));
     APC_StringBuffer reply;
     int status = 200;
@@ -4940,7 +4988,7 @@ static void handle_onvif(int fd, const APC_HTTPRequest *request)
         struct tm utc;
         gmtime_r(&now, &utc);
         apc_onvif::system_date_and_time(reply, utc);
-    } else if (apc_onvif::check_username_token(body, "admin", password) != apc_onvif::Auth::ok) {
+    } else if (!have_password || apc_onvif::check_username_token(body, "admin", password) != apc_onvif::Auth::ok) {
         status = 400;
         apc_onvif::fault(reply, "Sender", "NotAuthorized", "Sender not authorized");
     } else if (!strcmp(operation, "GetDeviceInformation")) {
@@ -7831,7 +7879,7 @@ static void handle_request(int fd, const char *peer)
         (strncmp(request.path, "/action/", strlen("/action/")) == 0 ||
          strcmp(request.path, "/onvif/device_service") == 0)) {
         if (!fourkcam_enabled()) send_text_errorf(fd, 404, "Not Found", S_NOT_FOUND);
-        else if (request.path[1] == 'a') handle_fourkcam_action(fd, &request, peer);
+        else if (strncmp(request.path, "/action/", strlen("/action/")) == 0) handle_fourkcam_action(fd, &request, peer);
         else handle_onvif(fd, &request);
         goto done;
     }

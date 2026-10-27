@@ -2,8 +2,9 @@
 """Checks a camera running this firmware the way MAVLink Camera Manager and
 4K Cam Manager talk to it, and saves its ONVIF replies for onvif-check.
 
-camera.ini is backed up over telnet (tools/camsh.py) before the first change
-and restored at the end, then camera-app is restarted through /action/restart.
+camera.ini and the web's camera.ini.web.bak are backed up over telnet
+(tools/camsh.py) before the first change and restored with their modes at the
+end, then camera-app is restarted through /action/restart.
 """
 import argparse
 import base64
@@ -22,6 +23,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKUP = '/run/4kcam-check.ini'
+BACKUP_WEB_BAK = '/run/4kcam-check.ini.web.bak'
 
 U8 = range(256)
 U16 = range(65536)
@@ -65,6 +67,21 @@ def post(url, body, content_type):
             return reply.status, reply.read().decode()
     except urllib.error.HTTPError as error:
         return error.code, error.read().decode()
+
+
+def get(url):
+    try:
+        with urllib.request.urlopen(url, timeout=30) as reply:
+            return reply.status, reply.read().decode(errors='replace')
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode(errors='replace')
+
+
+def is_action_reply(text):
+    try:
+        return 'device_mac' in json.loads(text)
+    except (ValueError, TypeError):
+        return False
 
 
 def action(args, name, fields=None):
@@ -147,6 +164,11 @@ def check_actions(args, check):
     status, reply = action(args, 'getSysConfig')
     check(status == 200 and reply['code'] == 0 and all(key in reply for key in IDENTITY)
           and reply['device_ip'] == args.camera, 'getSysConfig identity')
+    check(status == 200 and re.fullmatch(r'[0-9a-f]{2}(-[0-9a-f]{2}){5}', reply['device_mac'])
+          and reply['device_mac'] != '00-00-00-00-00-00' and reply['device_id'].strip('0') != '',
+          f"getSysConfig MAC {reply and reply['device_mac']} and ID {reply and reply['device_id']} are set")
+    status, text = get(f'http://{args.camera}/action/getSysConfig')
+    check(not (status == 200 and is_action_reply(text)), f'GET /action needs a login ({status})')
     status, reply = action(args, 'noSuchAction', {})
     check(status == 200 and reply['code'] == -1, 'an unknown action is code -1')
     status, image = action(args, 'getImageAdjustment')
@@ -176,6 +198,10 @@ def check_actions(args, check):
                {'bitrate': 8000})
     status, reply = action(args, 'setVencConf', {'channel': 2, 'bitrate': 32})
     check(status == 200 and reply['code'] == 0, 'setVencConf channel 2 is accepted')
+    _, sub = action(args, 'getVencConf', {'channel': 1})
+    sub_settings = {key: sub[key] for key in VENC_TYPES}
+    round_trip(args, check, 'setVencConf', {'channel': 1, 'bitrate': sub['bitrate'] // 2 + 1, 'frame_rate': 15, 'gop': 15},
+               'getVencConf', {'channel': 1}, sub_settings)
 
     round_trip(args, check, 'setImageAdjustment', {'auto_awb': 0}, 'getImageAdjustment', None, {'auto_awb': 0})
     started = time.time()
@@ -203,12 +229,18 @@ def main():
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
     check = Check()
-    camsh(args, f'cp {args.ini} {BACKUP}')
+    web_bak = f'{args.ini}.web.bak'
+    camsh(args, f'cp -p {args.ini} {BACKUP} && '
+                f'if [ -e {web_bak} ]; then cp -p {web_bak} {BACKUP_WEB_BAK}; else rm -f {BACKUP_WEB_BAK}; fi')
     try:
         check_onvif(args, check)
         check_actions(args, check)
     finally:
-        camsh(args, f'cp {BACKUP} {args.ini}.restore && mv {args.ini}.restore {args.ini}')
+        # a pending one-push would save its gains over the restored file
+        camsh(args, f'rm -f {args.ini}.wb.command {args.ini}.wb.status && '
+                    f'cp -p {BACKUP} {args.ini}.restore && mv {args.ini}.restore {args.ini} && '
+                    f'if [ -e {BACKUP_WEB_BAK} ]; then cp -p {BACKUP_WEB_BAK} {web_bak}.restore && '
+                    f'mv {web_bak}.restore {web_bak}; else rm -f {web_bak}; fi')
     status, reply = action(args, 'restart', {})
     check(status == 200 and reply['code'] == 0, 'restart restarts camera-app')
     status, reply = action(args, 'getSysConfig')
