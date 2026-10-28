@@ -4857,6 +4857,20 @@ static void fourkcam_image(const char *config, apc_fourkcam::Image &image)
     effective_value(config, "image", "wb_water", value, sizeof(value));
     image.blue_water = strcmp(value, "blue") == 0;
     effective_value(config, "image", "shutter", image.shutter, sizeof(image.shutter));
+    for (const auto &level : apc_fourkcam::raw_levels) {
+        effective_value(config, "image", level.key, value, sizeof(value));
+        image.*level.value = strtol(value, NULL, 10);
+    }
+    for (const auto &item : apc_fourkcam::switches) {
+        effective_value(config, "image", item.key, value, sizeof(value));
+        image.*item.value = strcmp(value, item.on) == 0;
+    }
+    for (const auto &item : apc_fourkcam::ex_switches) {
+        effective_value(config, "image", item.key, value, sizeof(value));
+        image.*item.value = strcmp(value, item.on) == 0;
+    }
+    effective_value(config, "image", "max_exposure", value, sizeof(value));
+    image.max_exposure = strtol(value, NULL, 10);
     effective_value(config, "mount", "orientation", value, sizeof(value));
     image.inverted = strcmp(value, "inverted") == 0;
 }

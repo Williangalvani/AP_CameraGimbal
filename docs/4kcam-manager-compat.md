@@ -140,11 +140,20 @@ Field mapping:
 | `brightness`, `contrast`, `saturation` (0–255) | `image.*` (0–100), scaled and rounded |
 | `auto_awb` 0 / 1 | `white_balance` `auto` / `manual`. Reads report 1 for every non-auto mode; 1 switches only from `auto`, so a preset or colour temperature stays unless the gains change. Gains sent with `auto_awb` 0 are saved, but white balance stays `auto` |
 | `awb_red`, `awb_green`, `awb_blue` (0–255) | `wb_red` = r×15+256, `wb_green` = (g+32)×8, `wb_blue` = (b+32)×8, the vendor's slider formula, and `white_balance` `manual`. Reads invert it and clamp to 0–255 |
-| `awb_auto_mode` 0 / 1 | new `image.wb_water` `green` / `blue` |
+| `awb_auto_mode` 0 / 1 | `image.wb_water` `green` / `blue`: the auto white balance calibration and colour matrices for that water, and the one-push target |
+| `hue`, `sharpness`, `gamma` (0–255) | `image.*`, the same value. On the ISP: hue × 100 / 255 (128 is neutral); sharpness moves each ISO step's detail by sharpness / 2 − 64 around the vendor's tuning; gamma picks one of three tone curves by gamma / 32 (224–255 keep the current one) |
+| `blc_level` (0–255) | `image.backlight`: the auto-exposure brightness target (the vendor's name aside, not black level) |
+| `awb_style_red`, `awb_style_green`, `awb_style_blue` (0–255) | `image.wb_style_*`: a gain of 1 + value / 512 on that colour after colour correction |
 | `onceAWB` 1 | one-push with `wb_water`, through the same `camera.ini.wb.command` as the Photos page. The reply comes back at once; the extension then polls `getImageAdjustment` until the manual gains change and settle. Nothing reads the result, so camera-app's `camera.ini.wb.status` stays until the next one-push |
 | `auto_exposureEx` 0 / 1, `exposure_time` | `shutter` `auto` / the nearest manual shutter |
+| `max_exposure` (1/x s) | `image.max_exposure`, one of the extension's 13 values (others snap to the nearest); the longest automatic exposure. Reads report the nearest of them |
+| `max_sys_gain`, `auto_AGain_max`, `auto_DGain_max` (0–255) | `image.max_gain`, `max_again`, `max_dgain`: automatic gain limits of (48 × value + 1)×, 0.75 × value and value × (each at least 1×) |
+| `auto_gain_mode` 0 / 1 | `image.gain_mode` `auto` / `manual`. Manual lets the two enables below fix those gains; exposure time stays automatic unless `auto_exposureEx` is 1. A fixed `iso` (Photos page, MAVLink) overrides it |
+| `manual_AGain_enable`, `manual_AGain`, `manual_DGain_enable`, `manual_DGain` | `image.manual_again`, `again`, `manual_dgain`, `dgain`: with `gain_mode` manual, analog or ISP digital gain fixed at value / 4 in whole steps (at least 1×) |
+| `AE_strategy_mode` 0 / 1 | `image.ae_strategy` `highlight` / `lowlight` priority |
+| `low_farme_rate` 0 / 1 (`setImageAdjustmentEx`) | `image.slow_shutter`: auto exposure may lower the frame rate in the dark |
 | `mirror`, `flip` | `mount.orientation`, which only has a 180° rotation: reads report both as 1 for `inverted` and both as 0 otherwise. The extension sends one of them alone; any one sent that differs from the current state sets `inverted` (1) or `upright` (0), and otherwise nothing changes |
-| `set_default` 1 (`setImageAdjustment`) | resets `brightness`, `contrast`, `saturation`, `white_balance`, `wb_red`, `wb_green`, `wb_blue`, `wb_water` and `shutter`, the keys this action maps, to the web's defaults; the request's other fields are ignored. The extension sends it for the image parameters' **Restore defaults** and with its recommended settings |
+| `set_default` 1 (`setImageAdjustment`) | resets every `[image]` key above that `setImageAdjustment` maps (not `slow_shutter` or orientation) to the web's defaults; the request's other fields are ignored. The extension sends it for the image parameters' **Restore defaults** and with its recommended settings |
 | `encode_type` 1 / 5 | `codec` `h264` / `h265` |
 | `pic_width` × `pic_height`, `pixel_list` | `resolution`, from the target's resolution list: the requested size, else one of the same height (the extension's recommended sub stream is 640×480) |
 | `bitrate` (kbps) | `[stream.main] bitrate_kbps`, 1–20000. Reads of 0 (automatic), and of the sub stream, report the automatic rate for the resolution |
@@ -165,7 +174,8 @@ before it carries on.
 |---|---|---|
 | `[compat] fourkcam_manager` | **Allow 4K Cam Manager** | `true` |
 | `[compat] onvif_password` | **ONVIF password** | `blue` |
-| `[image] wb_water` | **One-push water** (green / blue) | `green` |
+| `[image] wb_water` | **One-push water** (green / blue), which also sets the auto white balance calibration | `green` |
+| `[image] hue`, `sharpness`, `gamma`, `backlight`, `wb_style_*`, `max_gain`, `gain_mode`, `max_again`, `max_dgain`, `manual_again`, `again`, `manual_dgain`, `dgain`, `ae_strategy`, `max_exposure`, `slow_shutter` | Video tab, in the units above | vendor defaults: 128, 128, 20, 50, 0, 12, auto, 32, 0, false, 128, false, 128, highlight, 25, false |
 
 With **Allow 4K Cam Manager** off, discovery doesn't answer and
 `POST /onvif/device_service` and `POST /action/*` return 404. These are the

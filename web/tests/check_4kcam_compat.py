@@ -33,10 +33,14 @@ IMAGE_TYPES = {
     'brightness': U8, 'contrast': U8, 'saturation': U8, 'antiFog': {0, 1},
     'frameTurbo_pro': {0, 1, 2}, 'AE_strategy_mode': {0, 1}, 'auto_exposureEx': {0, 1},
     'exposure_time': {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000, 10000, 34464},
+    'max_exposure': {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000},
     'auto_awb': {0, 1}, 'awb_red': U8, 'awb_green': U8, 'awb_blue': U8, 'awb_auto_mode': {0, 1},
-    'rotate': {0, 1, 2, 3},
+    'rotate': {0, 1, 2, 3}, 'hue': U8, 'sharpness': U8, 'gamma': U8, 'blc_level': U8,
+    'awb_style_red': U8, 'awb_style_green': U8, 'awb_style_blue': U8, 'max_sys_gain': U8,
+    'auto_gain_mode': {0, 1}, 'auto_AGain_max': U8, 'auto_DGain_max': U8, 'manual_AGain_enable': {0, 1},
+    'manual_AGain': U8, 'manual_DGain_enable': {0, 1}, 'manual_DGain': U8,
 }
-IMAGE_EX_TYPES = {'mirror': {0, 1}, 'flip': {0, 1}, 'onceAWB': U8}
+IMAGE_EX_TYPES = {'mirror': {0, 1}, 'flip': {0, 1}, 'onceAWB': U8, 'low_farme_rate': {0, 1}}
 VENC_TYPES = {
     'channel': {0, 1, 2}, 'encode_profile': {0, 1, 2}, 'encode_type': {1, 5}, 'pic_width': U16,
     'pic_height': U16, 'rc_mode': {0, 1}, 'bitrate': U16, 'max_framerate': U16, 'frame_rate': U16, 'gop': U16,
@@ -240,6 +244,16 @@ def check_actions(args, check):
     round_trip(args, check, 'setVencConf', {'channel': 1, 'bitrate': sub['bitrate'] // 2 + 1, 'frame_rate': 15, 'gop': 15},
                'getVencConf', {'channel': 1}, sub_settings)
 
+    vendor = {'hue': 140, 'sharpness': 200, 'gamma': 40, 'blc_level': 70, 'awb_style_red': 30,
+              'awb_style_green': 0, 'awb_style_blue': 60, 'max_sys_gain': 4, 'auto_gain_mode': 1,
+              'auto_AGain_max': 40, 'auto_DGain_max': 2, 'manual_AGain_enable': 1, 'manual_AGain': 20,
+              'manual_DGain_enable': 0, 'manual_DGain': 8, 'AE_strategy_mode': 1, 'max_exposure': 50}
+    round_trip(args, check, 'setImageAdjustment', vendor, 'getImageAdjustment', None, vendor)
+    round_trip(args, check, 'setImageAdjustmentEx', {'low_farme_rate': 1}, 'getImageAdjustmentEx', None,
+               {'low_farme_rate': 1})
+    round_trip(args, check, 'setImageAdjustmentEx', {'low_farme_rate': 0}, 'getImageAdjustmentEx', None,
+               {'low_farme_rate': 0})
+
     # set_default restores the web's defaults (50 %, auto) and ignores the other fields
     round_trip(args, check, 'setImageAdjustment', {'brightness': 204, 'contrast': 51, 'auto_awb': 1, 'awb_red': 40,
                                                    'awb_auto_mode': 1, 'auto_exposureEx': 1, 'exposure_time': 400},
@@ -247,7 +261,11 @@ def check_actions(args, check):
                                             'auto_exposureEx': 1})
     round_trip(args, check, 'setImageAdjustment', {'set_default': 1, 'brightness': 10}, 'getImageAdjustment', None,
                {'brightness': 128, 'contrast': 128, 'saturation': 128, 'auto_awb': 0, 'awb_auto_mode': 0,
-                'auto_exposureEx': 0})
+                'auto_exposureEx': 0, 'hue': 128, 'sharpness': 128, 'gamma': 20, 'blc_level': 50,
+                'awb_style_red': 0, 'awb_style_green': 0, 'awb_style_blue': 0, 'max_sys_gain': 12,
+                'auto_gain_mode': 0, 'auto_AGain_max': 32, 'auto_DGain_max': 0, 'manual_AGain_enable': 0,
+                'manual_AGain': 128, 'manual_DGain_enable': 0, 'manual_DGain': 128, 'AE_strategy_mode': 0,
+                'max_exposure': 25})
 
     round_trip(args, check, 'setImageAdjustment', {'auto_awb': 0}, 'getImageAdjustment', None, {'auto_awb': 0})
     started = time.time()

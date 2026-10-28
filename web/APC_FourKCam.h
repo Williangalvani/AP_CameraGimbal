@@ -179,6 +179,8 @@ inline long green_blue_level(unsigned gain) { return clamp(((long)gain + 4) / 8 
 constexpr unsigned vendor_exposures[] = {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000, 10000, 34464};
 /* [image] shutter's manual choices, 1/x s. */
 constexpr unsigned shutters[] = {30, 50, 100, 250, 500, 750, 1000, 2000};
+/* [image] max_exposure as the extension's BaseMaxExposureValue, 1/x s. */
+constexpr unsigned vendor_max_exposures[] = {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000};
 
 template <size_t N>
 inline unsigned nearest(long value, const unsigned (&choices)[N])
@@ -216,7 +218,71 @@ struct Image {
     bool blue_water = false;
     char shutter[16] = "auto";
     bool inverted = false;
+    long hue = 128;
+    long sharpness = 128;
+    long gamma = 20;
+    long backlight = 50;
+    long wb_style_red = 0;
+    long wb_style_green = 0;
+    long wb_style_blue = 0;
+    long max_gain = 12;
+    long max_again = 32;
+    long max_dgain = 0;
+    long again = 128;
+    long dgain = 128;
+    bool manual_gain = false;
+    bool manual_again = false;
+    bool manual_dgain = false;
+    bool lowlight = false;
+    long max_exposure = 25;
+    bool slow_shutter = false;
 };
+
+/* Vendor 0–255 fields kept as the [image] key of the same value. */
+struct Level {
+    const char *field;
+    const char *key;
+    long Image::*value;
+};
+constexpr Level raw_levels[] = {
+    {"hue", "hue", &Image::hue},
+    {"sharpness", "sharpness", &Image::sharpness},
+    {"gamma", "gamma", &Image::gamma},
+    {"blc_level", "backlight", &Image::backlight},
+    {"awb_style_red", "wb_style_red", &Image::wb_style_red},
+    {"awb_style_green", "wb_style_green", &Image::wb_style_green},
+    {"awb_style_blue", "wb_style_blue", &Image::wb_style_blue},
+    {"max_sys_gain", "max_gain", &Image::max_gain},
+    {"auto_AGain_max", "max_again", &Image::max_again},
+    {"auto_DGain_max", "max_dgain", &Image::max_dgain},
+    {"manual_AGain", "again", &Image::again},
+    {"manual_DGain", "dgain", &Image::dgain},
+};
+
+/* Vendor 0/1 fields kept as an [image] key with two values. */
+struct Switch {
+    const char *field;
+    const char *key;
+    bool Image::*value;
+    const char *off;
+    const char *on;
+};
+constexpr Switch switches[] = {
+    {"auto_gain_mode", "gain_mode", &Image::manual_gain, "auto", "manual"},
+    {"manual_AGain_enable", "manual_again", &Image::manual_again, "false", "true"},
+    {"manual_DGain_enable", "manual_dgain", &Image::manual_dgain, "false", "true"},
+    {"AE_strategy_mode", "ae_strategy", &Image::lowlight, "highlight", "lowlight"},
+};
+/* setImageAdjustmentEx's */
+constexpr Switch ex_switches[] = {
+    {"low_farme_rate", "slow_shutter", &Image::slow_shutter, "false", "true"},
+};
+
+template <size_t N>
+inline void append_switches(APC_StringBuffer &out, const Image &image, const Switch (&list)[N])
+{
+    for (const Switch &item : list) out.appendf("\"%s\":%d,", item.field, image.*item.value ? 1 : 0);
+}
 
 struct Stream {
     unsigned width = 0;
@@ -243,7 +309,7 @@ struct Update {
 };
 
 struct Changes {
-    Update updates[16];
+    Update updates[32];
     size_t count = 0;
     bool one_push = false;
 
@@ -283,19 +349,23 @@ inline void append_json_string(APC_StringBuffer &out, const char *text)
 inline void image_adjustment(APC_StringBuffer &out, const Image &image)
 {
     out.appendf("\"brightness\":%ld,\"contrast\":%ld,\"saturation\":%ld,"
-                "\"auto_exposureEx\":%d,\"exposure_time\":%u,"
+                "\"auto_exposureEx\":%d,\"exposure_time\":%u,\"max_exposure\":%u,"
                 "\"auto_awb\":%d,\"awb_red\":%ld,\"awb_green\":%ld,\"awb_blue\":%ld,\"awb_auto_mode\":%d,"
-                "\"antiFog\":0,\"frameTurbo_pro\":0,\"AE_strategy_mode\":0,\"rotate\":0,",
+                "\"antiFog\":0,\"frameTurbo_pro\":0,\"rotate\":0,",
                 level_from_percent(image.brightness), level_from_percent(image.contrast),
                 level_from_percent(image.saturation), strcmp(image.shutter, "auto") != 0,
-                exposure_time(image.shutter), strcmp(image.white_balance, "auto") != 0,
+                exposure_time(image.shutter), nearest(image.max_exposure, vendor_max_exposures),
+                strcmp(image.white_balance, "auto") != 0,
                 red_level(image.wb_red), green_blue_level(image.wb_green), green_blue_level(image.wb_blue),
                 image.blue_water);
+    for (const Level &level : raw_levels) out.appendf("\"%s\":%ld,", level.field, clamp(image.*level.value, 0, 255));
+    append_switches(out, image, switches);
 }
 
 inline void image_adjustment_ex(APC_StringBuffer &out, const Image &image)
 {
     out.appendf("\"mirror\":%d,\"flip\":%d,\"onceAWB\":0,", image.inverted, image.inverted);
+    append_switches(out, image, ex_switches);
 }
 
 /* channel is the extension's 0–2 enum and the sizes and rates its u16s, so
@@ -324,6 +394,17 @@ inline void finish(APC_StringBuffer &out, int code, const char *log, const Ident
                 code, identity.mac, identity.id, identity.ip);
     append_json_string(out, log);
     out.append(",\"sign_tby\":\"\"}");
+}
+
+template <size_t N>
+inline void switch_changes(const Field *fields, size_t count, const Image &image, const Switch (&list)[N],
+                           Changes &changes)
+{
+    for (const Switch &item : list) {
+        const Field *field = find_flag(fields, count, item.field);
+        if (field != NULL && (field->value == 1) != image.*item.value)
+            changes.set("image", item.key, field->value == 1 ? item.on : item.off);
+    }
 }
 
 inline void image_adjustment_changes(const Field *fields, size_t count, const Image &image, Changes &changes)
@@ -378,11 +459,32 @@ inline void image_adjustment_changes(const Field *fields, size_t count, const Im
         if (!was_manual || (wanted != (long)exposure_time(image.shutter) && strcmp(shutter, image.shutter) != 0))
             changes.set("image", "shutter", shutter);
     }
+
+    for (const Level &level : raw_levels) {
+        const Field *field = find(fields, count, level.field);
+        if (field != NULL && clamp(field->value, 0, 255) != image.*level.value)
+            changes.set_number("image", level.key, clamp(field->value, 0, 255));
+    }
+    switch_changes(fields, count, image, switches, changes);
+
+    const Field *max_exposure = find(fields, count, "max_exposure");
+    if (max_exposure != NULL) {
+        const unsigned wanted = nearest(max_exposure->value, vendor_max_exposures);
+        if ((long)wanted != image.max_exposure &&
+            max_exposure->value != (long)nearest(image.max_exposure, vendor_max_exposures))
+            changes.set_number("image", "max_exposure", wanted);
+    }
 }
 
 /* The [image] keys image_adjustment_changes writes; set_default 1 resets them. */
-constexpr const char *image_adjustment_keys[] = {"brightness", "contrast", "saturation", "white_balance", "wb_red",
-                                                 "wb_green", "wb_blue", "wb_water", "shutter"};
+constexpr const char *image_adjustment_keys[] = {
+    "brightness", "contrast", "saturation", "white_balance", "wb_red", "wb_green", "wb_blue", "wb_water",
+    "shutter", "hue", "sharpness", "gamma", "backlight", "wb_style_red", "wb_style_green", "wb_style_blue",
+    "max_gain", "gain_mode", "max_again", "max_dgain", "manual_again", "again", "manual_dgain", "dgain",
+    "ae_strategy", "max_exposure"};
+static_assert(sizeof(image_adjustment_keys) / sizeof(image_adjustment_keys[0]) <=
+                  sizeof(Changes::updates) / sizeof(Changes::updates[0]),
+              "a reset fits in one Changes");
 
 inline bool resets(const Field *fields, size_t count)
 {
@@ -402,6 +504,7 @@ inline void image_adjustment_ex_changes(const Field *fields, size_t count, const
     if ((mirror != NULL && (mirror->value == 1) != image.inverted) ||
         (flip != NULL && (flip->value == 1) != image.inverted))
         changes.set("mount", "orientation", image.inverted ? "upright" : "inverted");
+    switch_changes(fields, count, image, ex_switches, changes);
 }
 
 /* A resolution from the target's list: the requested size, else one of the

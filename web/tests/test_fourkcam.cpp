@@ -9,6 +9,11 @@ static bool parse(const char *text, Field *fields, size_t *count)
     return parse_object(text, strlen(text), fields, 16, count);
 }
 
+static bool parse_wide(const char *text, Field *fields, size_t *count)
+{
+    return parse_object(text, strlen(text), fields, 64, count);
+}
+
 static const Update *change(const Changes &changes, const char *key)
 {
     for (size_t i = 0; i < changes.count; i++)
@@ -238,7 +243,7 @@ static void test_image_ex_changes()
 
 static void test_reset()
 {
-    Field fields[16];
+    Field fields[64];
     size_t count;
     assert(parse("{\"set_default\":1,\"brightness\":0}", fields, &count) && resets(fields, count));
     assert(parse("{\"set_default\":0}", fields, &count) && !resets(fields, count));
@@ -249,8 +254,12 @@ static void test_reset()
     Image image = test_image();
     strcpy(image.white_balance, "daylight");
     Changes changes;
-    assert(parse("{\"brightness\":0,\"contrast\":0,\"saturation\":0,\"awb_red\":1,\"awb_green\":1,\"awb_blue\":1,"
-                 "\"awb_auto_mode\":1,\"auto_exposureEx\":1,\"exposure_time\":30}", fields, &count));
+    assert(parse_wide("{\"brightness\":0,\"contrast\":0,\"saturation\":0,\"awb_red\":1,\"awb_green\":1,\"awb_blue\":1,"
+                      "\"awb_auto_mode\":1,\"auto_exposureEx\":1,\"exposure_time\":30,\"hue\":1,\"sharpness\":1,"
+                      "\"gamma\":1,\"blc_level\":1,\"awb_style_red\":1,\"awb_style_green\":1,\"awb_style_blue\":1,"
+                      "\"max_sys_gain\":1,\"auto_gain_mode\":1,\"auto_AGain_max\":1,\"auto_DGain_max\":1,"
+                      "\"manual_AGain_enable\":1,\"manual_AGain\":1,\"manual_DGain_enable\":1,\"manual_DGain\":1,"
+                      "\"AE_strategy_mode\":1,\"max_exposure\":12}", fields, &count));
     image_adjustment_changes(fields, count, image, changes);
     assert(changes.count == sizeof(image_adjustment_keys) / sizeof(image_adjustment_keys[0]));
     for (size_t i = 0; i < changes.count; i++) {
@@ -365,7 +374,7 @@ static void test_replies()
     assert(strstr(out.data(), "\"channel\":0,"));
 }
 
-/* A client echoing a whole reply back parses at capacity 16 and changes nothing. */
+/* A client echoing a whole reply back parses at the server's capacity (64) and changes nothing. */
 static void test_echo()
 {
     const Identity identity = {"aa-bb-cc-dd-ee-ff", "AABBCCDDEEFF", "192.168.2.10"};
@@ -385,10 +394,10 @@ static void test_echo()
         out.append("{");
         image_adjustment(out, image);
         finish(out, 0, "ok", identity);
-        Field fields[16];
+        Field fields[64];
         size_t count;
         Changes changes;
-        assert(out.valid() && parse_object(out.data(), out.size(), fields, 16, &count));
+        assert(out.valid() && parse_object(out.data(), out.size(), fields, 64, &count));
         image_adjustment_changes(fields, count, image, changes);
         assert(changes.count == 0);
 
@@ -396,7 +405,7 @@ static void test_echo()
         out.append("{");
         image_adjustment_ex(out, image);
         finish(out, 0, "", identity);
-        assert(out.valid() && parse_object(out.data(), out.size(), fields, 16, &count));
+        assert(out.valid() && parse_object(out.data(), out.size(), fields, 64, &count));
         image_adjustment_ex_changes(fields, count, image, changes);
         assert(changes.count == 0 && !changes.one_push);
     }
@@ -413,13 +422,107 @@ static void test_echo()
         out.append("{");
         venc(out, 0, stream, main_names, 5);
         finish(out, 0, "", identity);
-        Field fields[16];
+        Field fields[64];
         size_t count;
         Changes changes;
-        assert(out.valid() && parse_object(out.data(), out.size(), fields, 16, &count));
+        assert(out.valid() && parse_object(out.data(), out.size(), fields, 64, &count));
         venc_changes(fields, count, stream, main_names, 5, "stream.main", changes);
         assert(changes.count == 0);
     }
+}
+
+static void test_vendor_image_fields()
+{
+    Field fields[64];
+    size_t count;
+    Image image = test_image();
+
+    // reads report the stored values in the extension's types
+    APC_StringBuffer out;
+    image.hue = 300;
+    image.lowlight = true;
+    image.max_exposure = 500;
+    image_adjustment(out, image);
+    const char *text = out.data();
+    assert(out.valid() && strstr(text, "\"hue\":255,") && strstr(text, "\"sharpness\":128,"));
+    assert(strstr(text, "\"gamma\":20,") && strstr(text, "\"blc_level\":50,") && strstr(text, "\"max_sys_gain\":12,"));
+    assert(strstr(text, "\"auto_AGain_max\":32,") && strstr(text, "\"auto_DGain_max\":0,"));
+    assert(strstr(text, "\"awb_style_red\":0,") && strstr(text, "\"manual_AGain\":128,") && strstr(text, "\"manual_DGain\":128,"));
+    assert(strstr(text, "\"auto_gain_mode\":0,") && strstr(text, "\"manual_AGain_enable\":0,"));
+    assert(strstr(text, "\"manual_DGain_enable\":0,") && strstr(text, "\"max_exposure\":400,"));
+    const char *strategy = strstr(text, "\"AE_strategy_mode\":1,");
+    assert(strategy != NULL && strstr(strategy + 1, "\"AE_strategy_mode\"") == NULL);
+
+    // levels are saved as sent, clamped to 0–255
+    image = test_image();
+    Changes changes;
+    assert(parse("{\"hue\":200,\"blc_level\":60,\"awb_style_blue\":999,\"manual_DGain\":-5,\"sharpness\":128}",
+                 fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == 4 && !strcmp(change(changes, "hue")->value, "200"));
+    assert(!strcmp(change(changes, "backlight")->value, "60") && !strcmp(change(changes, "wb_style_blue")->value, "255"));
+    assert(!strcmp(change(changes, "dgain")->value, "0"));
+
+    // switches count only when 0 or 1
+    changes = Changes();
+    assert(parse("{\"auto_gain_mode\":1,\"manual_AGain_enable\":1,\"manual_DGain_enable\":0,\"AE_strategy_mode\":1}",
+                 fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == 3 && !strcmp(change(changes, "gain_mode")->value, "manual"));
+    assert(!strcmp(change(changes, "manual_again")->value, "true"));
+    assert(!strcmp(change(changes, "ae_strategy")->value, "lowlight"));
+    changes = Changes();
+    assert(parse("{\"auto_gain_mode\":2,\"AE_strategy_mode\":-1,\"manual_AGain_enable\":7}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == 0);
+
+    // max_exposure takes the extension's values
+    changes = Changes();
+    assert(parse("{\"max_exposure\":30}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(!strcmp(change(changes, "max_exposure")->value, "30"));
+    changes = Changes();
+    assert(parse("{\"max_exposure\":3}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(!strcmp(change(changes, "max_exposure")->value, "12"));
+    changes = Changes();
+    image.max_exposure = 500;
+    assert(parse("{\"max_exposure\":400}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == 0);
+    assert(parse("{\"max_exposure\":8000}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(!strcmp(change(changes, "max_exposure")->value, "8000"));
+
+    // slow shutter is an advanced field
+    image = test_image();
+    changes = Changes();
+    assert(parse("{\"low_farme_rate\":1}", fields, &count));
+    image_adjustment_ex_changes(fields, count, image, changes);
+    assert(changes.count == 1 && !strcmp(change(changes, "slow_shutter")->value, "true"));
+    image.slow_shutter = true;
+    changes = Changes();
+    image_adjustment_ex_changes(fields, count, image, changes);
+    assert(changes.count == 0);
+    out.reset();
+    image_adjustment_ex(out, image);
+    assert(strstr(out.data(), "\"low_farme_rate\":1,"));
+
+    // a whole reply with every new field set echoes back unchanged
+    image = test_image();
+    image.sharpness = 7;
+    image.wb_style_green = 99;
+    image.manual_gain = true;
+    image.manual_dgain = true;
+    image.max_exposure = 500;
+    out.reset();
+    out.append("{");
+    image_adjustment(out, image);
+    finish(out, 0, "", {"aa-bb-cc-dd-ee-ff", "AABBCCDDEEFF", "192.168.2.10"});
+    changes = Changes();
+    assert(out.valid() && parse_object(out.data(), out.size(), fields, 64, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == 0);
 }
 
 int main()
@@ -432,6 +535,7 @@ int main()
     test_venc();
     test_replies();
     test_echo();
+    test_vendor_image_fields();
     puts("test_fourkcam: ok");
     return 0;
 }
