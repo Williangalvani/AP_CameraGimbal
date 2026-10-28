@@ -158,7 +158,7 @@ Field mapping:
 | `set_default` 1 (`setImageAdjustment`) | resets every `[image]` key above that `setImageAdjustment` maps (not `slow_shutter` or orientation) to the web's defaults; the request's other fields are ignored. The extension sends it for the image parameters' **Restore defaults** and with its recommended settings |
 | `encode_type` 1 / 5 | `codec` `h264` / `h265` |
 | `pic_width` × `pic_height`, `pixel_list` | `resolution`, from the target's resolution list: the requested size, else one of the same height (the extension's recommended sub stream is 640×480) |
-| `bitrate` (kbps) | `[stream.main] bitrate_kbps`, 1–20000. Reads of 0 (automatic), and of the sub stream, report the automatic rate for the resolution |
+| `bitrate` (kbps) | `[stream.main] bitrate_kbps`, 1–50000. Reads of 0 (automatic), and of the sub stream, report the automatic rate for the resolution |
 | `frame_rate` | `[stream.main] frame_rate`, 5–30; the sub stream reports 30 |
 | `max_framerate` | 30 |
 | anything else, including `setImageAdjustmentEx`'s `set_default` | accepted and ignored; reads report the vendor's defaults |

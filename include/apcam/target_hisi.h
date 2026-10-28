@@ -88,6 +88,7 @@ static inline unsigned apcam_hisi_auto_bitrate_kbps(unsigned width, unsigned hei
     return 2048U;
 }
 #define APCAM_MAIN_BITRATE_MIN_KBPS 0
+#define APCAM_MAIN_BITRATE_MAX_KBPS 50000
 #define APCAM_HAVE_VIDEO_FRAME_RATE 1
 /* IMX678 4K@30 (10/12-bit); 60 fps mode exists but 30 is the qualified default. */
 #define APCAM_FRAME_RATE 30
