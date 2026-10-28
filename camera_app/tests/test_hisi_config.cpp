@@ -53,6 +53,15 @@ int main()
     assert(ca_config_image_equal(&config, &other));
     assert(other.slow_shutter && other.max_exposure == 8000 && other.wb_water == CA_WATER_BLUE);
 
+    // a reload copies MAVLink parameters one by one, and these have none
+    struct ca_config running;
+    ca_config_defaults(&running);
+    config.brightness = running.brightness + 1;
+    ca_config_copy_4kcam(&running, &config);
+    assert(running.hue == 200 && running.wb_water == CA_WATER_BLUE && running.slow_shutter);
+    assert(running.max_exposure == 8000 && running.gain_mode == CA_GAIN_MANUAL);
+    assert(running.brightness + 1 == config.brightness);
+
     const APC_Config::Field *hue = APC_Config::find("image", "hue");
     assert(hue != NULL && hue->param_name == NULL);
 

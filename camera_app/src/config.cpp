@@ -580,6 +580,15 @@ void ca_config_copy_image(struct ca_config *destination, const struct ca_config 
 #undef COPY
 }
 
+void ca_config_copy_4kcam(struct ca_config *destination, const struct ca_config *source)
+{
+    (void)destination;
+    (void)source;
+#define COPY(field) destination->field = source->field;
+    FOURKCAM_FIELDS(COPY)
+#undef COPY
+}
+
 int ca_config_param_assign(struct ca_config *config, size_t index, float value)
 {
     const APC_Config::Field *field = param_field(index);

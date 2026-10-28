@@ -273,6 +273,8 @@ struct ca_config {
 
 bool ca_config_image_equal(const struct ca_config *a, const struct ca_config *b);
 void ca_config_copy_image(struct ca_config *destination, const struct ca_config *source);
+/* The 4K Cam Manager's image settings, which have no MAVLink parameter. */
+void ca_config_copy_4kcam(struct ca_config *destination, const struct ca_config *source);
 /* Validate and update a copy of the configuration without writing the INI. */
 int ca_config_param_assign(struct ca_config *config, size_t index, float value);
 void ca_config_defaults(struct ca_config *config);

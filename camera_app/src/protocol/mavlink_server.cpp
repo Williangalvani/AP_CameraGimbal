@@ -2595,6 +2595,7 @@ static void reload_config(struct ca_mavlink_server *server, uint64_t now)
         if (live_config_parameter(i))
             (void)ca_config_param_assign(&next, i, (float)ca_config_param_get(&desired, i));
     }
+    ca_config_copy_4kcam(&next, &desired);
     memcpy(next.timezone, desired.timezone, sizeof(next.timezone));
     next.network_capture = desired.network_capture;
     memcpy(next.video1_uri, desired.video1_uri, sizeof(next.video1_uri));
