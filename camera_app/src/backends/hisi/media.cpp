@@ -486,6 +486,12 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     if (ca_rtsp_add_video(media->rtsp, "video2", settings->sub_codec,
                           APCAM_FRAME_RATE, &media->sub_rtsp_stream) < 0) goto fail;
     ca_rtsp_add_config_aliases(media->rtsp, settings);
+#if APCAM_HAVE_4KCAM_COMPAT
+    /* 4K Cam Manager only streams a source whose URL ends in the vendor's
+     * stream_0; a configured alias of the same name already serves it. */
+    (void)ca_rtsp_add_alias(media->rtsp, 0, "stream_0");
+    (void)ca_rtsp_add_alias(media->rtsp, 1, "stream_1");
+#endif
     if (ca_rtsp_support_proxy(media->rtsp, &settings->support) < 0)
         ca_log("SupportProxy video startup failed: %s", strerror(errno));
     stage = "native live-video startup";

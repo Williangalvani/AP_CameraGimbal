@@ -5033,7 +5033,7 @@ static void handle_onvif(int fd, const APC_HTTPRequest *request)
     } else if (!strcmp(operation, "GetStreamUri")) {
         char token[16] = "";
         (void)apc_onvif::element_text(body, "ProfileToken", token, sizeof(token));
-        snprintf(text, sizeof(text), "rtsp://%s:%u/%s", address, rtsp_port(), strcmp(token, "sub") ? "video1" : "video2");
+        snprintf(text, sizeof(text), "rtsp://%s:%u/%s", address, rtsp_port(), strcmp(token, "sub") ? "stream_0" : "stream_1");
         apc_onvif::stream_uri(reply, text);
     } else {
         status = 400;

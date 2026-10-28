@@ -121,6 +121,16 @@ def soap(args, operation, password, origin=None):
     return post(f'http://{args.camera}/onvif/device_service', envelope, 'application/soap+xml; charset=utf-8', origin)
 
 
+def rtsp_describe(host, port, path):
+    try:
+        with socket.create_connection((host, port), timeout=5) as sock:
+            sock.sendall(f'DESCRIBE rtsp://{host}:{port}/{path} RTSP/1.0\r\nCSeq: 1\r\n'
+                         'Accept: application/sdp\r\n\r\n'.encode())
+            return sock.recv(4096).decode(errors='replace')
+    except OSError as error:
+        return str(error)
+
+
 def save(args, kind, text):
     with open(os.path.join(args.out, kind + '.xml'), 'w') as file:
         file.write(text)
@@ -148,13 +158,14 @@ def check_onvif(args, check):
     status, text = soap(args, '<trt:GetProfiles/>', args.password)
     check(status == 200 and 'token="main"' in text and 'token="sub"' in text, 'GetProfiles')
     save(args, 'profiles', text)
-    for token, path in (('main', 'video1'), ('sub', 'video2')):
+    for token, path in (('main', 'stream_0'), ('sub', 'stream_1')):
         status, text = soap(args, '<trt:GetStreamUri><trt:StreamSetup><tt:Stream>RTP-Unicast</tt:Stream>'
                                   '<tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup>'
                                   f'<trt:ProfileToken>{token}</trt:ProfileToken></trt:GetStreamUri>', args.password)
         check(status == 200 and f'<tt:Uri>rtsp://{args.camera}:8554/{path}</tt:Uri>' in text, f'GetStreamUri {token}')
         if token == 'main':
             save(args, 'stream-uri', text)
+        check(rtsp_describe(args.camera, 8554, path).startswith('RTSP/1.0 200'), f'RTSP serves /{path}')
     status, text = soap(args, '<tds:GetCapabilities/>', args.password)
     check(status == 400 and 'ter:ActionNotSupported' in text, 'an unsupported operation is ActionNotSupported')
 
