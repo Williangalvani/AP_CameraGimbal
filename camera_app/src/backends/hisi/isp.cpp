@@ -1,5 +1,6 @@
 #include "isp.h"
 #include "pipeline.h"
+#include "image_tuning.h"
 
 #include "camera_app/log.h"
 
@@ -12,6 +13,14 @@
 #include <string.h>
 #include <time.h>
 
+static_assert(APCAM_HAVE_4KCAM_COMPAT, "the ISP applies the 4K Cam Manager's image settings");
+static_assert(OT_ISP_AUTO_ISO_NUM == ca_hisi_tuning::iso_bins &&
+              OT_ISP_SHARPEN_LUMA_NUM == ca_hisi_tuning::luma_bins &&
+              OT_ISP_GAMMA_NODE_NUM == ca_hisi_tuning::gamma_nodes &&
+              OT_ISP_CCM_MATRIX_SIZE == 9 && OT_ISP_CCM_MATRIX_NUM >= 4 &&
+              OT_ISP_BAYER_CHN_NUM == 4 && OT_ISP_AWB_CURVE_PARA_NUM == 6,
+              "SDK table sizes");
+
 static td_s32 set_csc(ot_vi_pipe pipe, const struct ca_config *config)
 {
     ot_isp_csc_attr attr;
@@ -20,6 +29,7 @@ static td_s32 set_csc(ot_vi_pipe pipe, const struct ca_config *config)
     attr.luma = (td_u8)config->brightness;
     attr.satu = (td_u8)config->saturation;
     attr.contr = (td_u8)config->contrast;
+    attr.hue = ca_hisi_tuning::csc_hue(config->hue);
     return ss_mpi_isp_set_csc_attr(pipe, &attr);
 }
 
@@ -31,6 +41,7 @@ static td_u16 ev_bias(int tenths)
 
 static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
 {
+    using namespace ca_hisi_tuning;
     static const td_u32 exposure_us[] = {
         0U, 33333U, 20000U, 10000U, 4000U, 2000U, 1333U, 1000U, 500U,
     };
@@ -38,13 +49,27 @@ static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
     td_s32 result = ss_mpi_isp_get_exposure_attr(pipe, &attr);
     if (result != TD_SUCCESS) return result;
 
-    attr.op_type = config->iso == CA_ISO_AUTO && config->shutter == CA_SHUTTER_AUTO
-        ? OT_OP_MODE_AUTO : OT_OP_MODE_MANUAL;
+    // a fixed ISO fixes every gain, whatever the gain mode
+    const bool manual_gains = config->iso == CA_ISO_AUTO && config->gain_mode == CA_GAIN_MANUAL;
+    attr.op_type = config->iso != CA_ISO_AUTO || config->shutter != CA_SHUTTER_AUTO || manual_gains
+        ? OT_OP_MODE_MANUAL : OT_OP_MODE_AUTO;
     attr.auto_attr.ev_bias = ev_bias(config->exposure_compensation);
+    attr.auto_attr.compensation = (td_u8)config->backlight;
+    attr.auto_attr.sys_gain_range.max = sys_gain_max(config->max_gain);
+    attr.auto_attr.a_gain_range.max = again_max(config->max_again);
+    attr.auto_attr.ispd_gain_range.max = ispd_gain_max(config->max_dgain);
+    attr.auto_attr.ae_strategy_mode = config->ae_strategy == CA_AE_PRIOR_LOWLIGHT
+        ? OT_ISP_AE_EXP_LOWLIGHT_PRIOR : OT_ISP_AE_EXP_HIGHLIGHT_PRIOR;
+    attr.auto_attr.ae_mode = config->slow_shutter ? OT_ISP_AE_MODE_SLOW_SHUTTER : OT_ISP_AE_MODE_FIX_FRAME_RATE;
     if (config->iso == CA_ISO_AUTO) {
-        attr.manual_attr.a_gain_op_type = OT_OP_MODE_AUTO;
-        attr.manual_attr.d_gain_op_type = OT_OP_MODE_AUTO;
-        attr.manual_attr.ispd_gain_op_type = OT_OP_MODE_AUTO;
+        const bool again = manual_gains && config->manual_again;
+        const bool dgain = manual_gains && config->manual_dgain;
+        attr.manual_attr.a_gain_op_type = again ? OT_OP_MODE_MANUAL : OT_OP_MODE_AUTO;
+        attr.manual_attr.d_gain_op_type = dgain ? OT_OP_MODE_MANUAL : OT_OP_MODE_AUTO;
+        attr.manual_attr.ispd_gain_op_type = dgain ? OT_OP_MODE_MANUAL : OT_OP_MODE_AUTO;
+        attr.manual_attr.a_gain = manual_gain(config->again);
+        attr.manual_attr.d_gain = 1024U;
+        attr.manual_attr.isp_d_gain = manual_gain(config->dgain);
     } else {
         td_u32 gain = 1024U << ((unsigned)config->iso - 1U);
         attr.manual_attr.a_gain_op_type = OT_OP_MODE_MANUAL;
@@ -56,6 +81,7 @@ static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
     }
     if (config->shutter == CA_SHUTTER_AUTO) {
         attr.manual_attr.exp_time_op_type = OT_OP_MODE_AUTO;
+        attr.auto_attr.exp_time_range.max = exposure_max_us(config->max_exposure);
     } else {
         attr.manual_attr.exp_time_op_type = OT_OP_MODE_MANUAL;
         attr.manual_attr.exp_time = exposure_us[config->shutter];
@@ -82,13 +108,6 @@ static td_s32 set_metering(ot_vi_pipe pipe, enum ca_metering_mode mode)
     return ss_mpi_isp_set_stats_cfg(pipe, &stats);
 }
 
-/* Auto-WB calibration of this camera's IMX678 and lens, as tuned by the vendor
- * firmware. Its colour matrix table is the sensor driver's, so it needs no change. */
-static const td_u16 calibrated_static_wb[OT_ISP_BAYER_CHN_NUM] = {500, 256, 256, 504};
-static const td_s32 calibrated_curve[OT_ISP_AWB_CURVE_PARA_NUM] = {
-    106, -5, -154, 268831, 128, -230203,
-};
-
 static td_u16 preset_kelvin(enum ca_white_balance mode, unsigned custom)
 {
     switch (mode) {
@@ -109,8 +128,9 @@ static td_s32 set_white_balance(ot_vi_pipe pipe, const struct ca_config *config)
     ot_isp_wb_attr attr;
     td_s32 result = ss_mpi_isp_get_wb_attr(pipe, &attr);
     if (result != TD_SUCCESS) return result;
-    memcpy(attr.auto_attr.static_wb, calibrated_static_wb, sizeof(calibrated_static_wb));
-    memcpy(attr.auto_attr.curve_para, calibrated_curve, sizeof(calibrated_curve));
+    const ca_hisi_tuning::Water &water = ca_hisi_tuning::waters[config->wb_water == CA_WATER_BLUE ? 1 : 0];
+    for (unsigned i = 0; i < OT_ISP_BAYER_CHN_NUM; i++) attr.auto_attr.static_wb[i] = water.static_wb[i];
+    for (unsigned i = 0; i < OT_ISP_AWB_CURVE_PARA_NUM; i++) attr.auto_attr.curve_para[i] = water.curve[i];
     attr.op_type = OT_OP_MODE_AUTO;
     attr.auto_attr.rg_strength = 128U;
     attr.auto_attr.bg_strength = 128U;
@@ -210,30 +230,112 @@ int ca_hisi_measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *ga
     return 0;
 }
 
-td_s32 ca_hisi_apply_isp_config(const struct ca_config *config, bool live)
+static td_s32 set_colour_matrices(ot_vi_pipe pipe, enum ca_water colour)
+{
+    const ca_hisi_tuning::Water &water = ca_hisi_tuning::waters[colour == CA_WATER_BLUE ? 1 : 0];
+    ot_isp_color_matrix_attr attr;
+    td_s32 result = ss_mpi_isp_get_ccm_attr(pipe, &attr);
+    if (result != TD_SUCCESS) return result;
+    attr.op_type = OT_OP_MODE_AUTO;
+    attr.auto_attr.ccm_tab_num = 4U;
+    for (unsigned t = 0; t < 4U; t++) {
+        attr.auto_attr.ccm_tab[t].color_temp = water.temps[t];
+        for (unsigned i = 0; i < OT_ISP_CCM_MATRIX_SIZE; i++) attr.auto_attr.ccm_tab[t].ccm[i] = water.ccm[t][i];
+    }
+    for (unsigned i = 0; i < OT_ISP_CCM_MATRIX_SIZE; i++) attr.manual_attr.ccm[i] = water.ccm[1][i];
+    return ss_mpi_isp_set_ccm_attr(pipe, &attr);
+}
+
+static td_s32 set_colour_tone(ot_vi_pipe pipe, const struct ca_config *config)
+{
+    const ot_isp_color_tone_attr attr = {ca_hisi_tuning::cast_gain(config->wb_style_red),
+                                         ca_hisi_tuning::cast_gain(config->wb_style_green),
+                                         ca_hisi_tuning::cast_gain(config->wb_style_blue)};
+    return ss_mpi_isp_set_color_tone_attr(pipe, &attr);
+}
+
+static td_s32 set_gamma(ot_vi_pipe pipe, unsigned gamma)
+{
+    const int curve = ca_hisi_tuning::gamma_curve(gamma);
+    if (curve < 0) return TD_SUCCESS;
+    static ot_isp_gamma_attr attr;  // 2 KB, called under the ISP lock
+    td_s32 result = ss_mpi_isp_get_gamma_attr(pipe, &attr);
+    if (result != TD_SUCCESS) return result;
+    attr.enable = TD_TRUE;
+    attr.curve_type = OT_ISP_GAMMA_CURVE_USER_DEFINE;
+    ca_hisi_tuning::gamma_table(curve, attr.table);
+    return ss_mpi_isp_set_gamma_attr(pipe, &attr);
+}
+
+static td_s32 set_sharpen(ot_vi_pipe pipe, unsigned sharpness)
+{
+    using namespace ca_hisi_tuning;
+    static ot_isp_sharpen_attr attr;  // about 17 KB, called under the ISP lock
+    td_s32 result = ss_mpi_isp_get_sharpen_attr(pipe, &attr);
+    if (result != TD_SUCCESS) return result;
+    attr.enable = TD_TRUE;
+    for (unsigned bin = 0; bin < iso_bins; bin++) {
+        attr.auto_attr.texture_freq[bin] = sharpen_texture_freq[bin];
+        attr.auto_attr.edge_freq[bin] = sharpen_edge_freq[bin];
+        attr.auto_attr.over_shoot[bin] = sharpen_over_shoot[bin];
+        attr.auto_attr.under_shoot[bin] = sharpen_under_shoot[bin];
+        attr.auto_attr.shoot_sup_strength[bin] = 0U;
+        attr.auto_attr.shoot_sup_adj[bin] = sharpen_shoot_sup_adj[bin];
+        attr.auto_attr.max_sharp_gain[bin] = sharpen_max_gain[bin];
+        attr.auto_attr.detail_ctrl[bin] = sharpen_detail(sharpness, bin);
+        for (unsigned luma = 0; luma < luma_bins; luma++)
+            attr.auto_attr.luma_wgt[luma][bin] = sharpen_luma_weight[luma];
+    }
+    return ss_mpi_isp_set_sharpen_attr(pipe, &attr);
+}
+
+/* The picture's look: a value the SDK refuses keeps the previous one and is
+ * logged, rather than stopping the video. */
+static void set_tuning(ot_vi_pipe pipe, const struct ca_config *config)
+{
+    const struct {
+        const char *name;
+        td_s32 result;
+    } steps[] = {
+        {"colour matrices", set_colour_matrices(pipe, config->wb_water)},
+        {"colour tone", set_colour_tone(pipe, config)},
+        {"gamma", set_gamma(pipe, config->gamma)},
+        {"sharpening", set_sharpen(pipe, config->sharpness)},
+    };
+    for (const auto &step : steps)
+        if (step.result != TD_SUCCESS) ca_log("ISP %s failed: 0x%x", step.name, (unsigned)step.result);
+}
+
+td_s32 ca_hisi_apply_isp_config(const struct ca_config *config)
 {
     const ot_vi_pipe pipe = CA_HISI_PIPE;
     td_s32 result;
-    bool custom_exposure;
 
     if (config == NULL) return TD_FAILURE;
-    custom_exposure = config->exposure_compensation != 0 ||
-                      config->iso != CA_ISO_AUTO ||
-                      config->shutter != CA_SHUTTER_AUTO;
     if ((result = set_csc(pipe, config)) != TD_SUCCESS ||
-        ((custom_exposure || live) &&
-         (result = set_exposure(pipe, config)) != TD_SUCCESS) ||
+        (result = set_exposure(pipe, config)) != TD_SUCCESS ||
         (result = set_metering(pipe, config->metering)) != TD_SUCCESS ||
         (result = set_white_balance(pipe, config)) != TD_SUCCESS) {
         ca_log("ISP configuration failed for pipe %d: 0x%x", pipe, (unsigned)result);
         return result;
     }
+    set_tuning(pipe, config);
     ca_log("ISP configured brightness=%d saturation=%d contrast=%d ev=%d "
            "iso=%d shutter=%d metering=%d white_balance=%d (R %u G %u B %u, %u K)",
            config->brightness, config->saturation, config->contrast,
            config->exposure_compensation, config->iso, config->shutter,
            config->metering, config->white_balance, config->wb_red, config->wb_green,
            config->wb_blue, config->wb_temp);
+    ca_log("ISP tuning hue=%u sharpness=%u gamma=%u backlight=%u style=%u/%u/%u water=%s "
+           "max_gain=%u gain_mode=%s max_again=%u max_dgain=%u again=%s:%u dgain=%s:%u "
+           "ae=%s max_exposure=1/%u slow_shutter=%s",
+           config->hue, config->sharpness, config->gamma, config->backlight, config->wb_style_red,
+           config->wb_style_green, config->wb_style_blue, config->wb_water == CA_WATER_BLUE ? "blue" : "green",
+           config->max_gain, config->gain_mode == CA_GAIN_MANUAL ? "manual" : "auto", config->max_again,
+           config->max_dgain, config->manual_again ? "on" : "off", config->again,
+           config->manual_dgain ? "on" : "off", config->dgain,
+           config->ae_strategy == CA_AE_PRIOR_LOWLIGHT ? "lowlight" : "highlight", config->max_exposure,
+           config->slow_shutter ? "on" : "off");
     return TD_SUCCESS;
 }
 

@@ -443,7 +443,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     if (sample_comm_vi_bind_vpss(CA_HISI_PIPE, 0, CA_HISI_GROUP, 0) != TD_SUCCESS) goto fail;
     media->vi_vpss_bound = TD_TRUE;
     stage = "ISP configuration";
-    if (ca_hisi_apply_isp_config(settings, false) != TD_SUCCESS) goto fail;
+    if (ca_hisi_apply_isp_config(settings) != TD_SUCCESS) goto fail;
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_MAIN_VENC], settings->main_codec,
                              sizes->width[CA_HISI_MAIN_CHN], sizes->height[CA_HISI_MAIN_CHN],
                              config->frame_rate, main_bitrate(media, settings));
@@ -757,7 +757,7 @@ int APC_Media_HiSi::apply_image(const struct ca_config *settings)
     auto *media = _state;
     pthread_mutex_lock(&media->lock);
     pthread_mutex_lock(&media->isp_lock);
-    int result = ca_hisi_apply_isp_config(settings, true);
+    int result = ca_hisi_apply_isp_config(settings);
     pthread_mutex_unlock(&media->isp_lock);
     const unsigned bit_rate = main_bitrate(media, settings);
     if (result == 0 && bit_rate != main_bitrate(media, &media->config.settings)) {
