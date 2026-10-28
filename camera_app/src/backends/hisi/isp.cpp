@@ -258,7 +258,7 @@ static td_s32 set_gamma(ot_vi_pipe pipe, unsigned gamma)
 {
     const int curve = ca_hisi_tuning::gamma_curve(gamma);
     if (curve < 0) return TD_SUCCESS;
-    static ot_isp_gamma_attr attr;  // 2 KB, called under the ISP lock
+    static ot_isp_gamma_attr attr;  // 2 KB; ISP applies are serialised
     td_s32 result = ss_mpi_isp_get_gamma_attr(pipe, &attr);
     if (result != TD_SUCCESS) return result;
     attr.enable = TD_TRUE;
@@ -270,7 +270,7 @@ static td_s32 set_gamma(ot_vi_pipe pipe, unsigned gamma)
 static td_s32 set_sharpen(ot_vi_pipe pipe, unsigned sharpness)
 {
     using namespace ca_hisi_tuning;
-    static ot_isp_sharpen_attr attr;  // about 17 KB, called under the ISP lock
+    static ot_isp_sharpen_attr attr;  // about 17 KB; ISP applies are serialised
     td_s32 result = ss_mpi_isp_get_sharpen_attr(pipe, &attr);
     if (result != TD_SUCCESS) return result;
     attr.enable = TD_TRUE;
