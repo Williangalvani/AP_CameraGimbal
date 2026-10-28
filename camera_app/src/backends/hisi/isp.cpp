@@ -39,6 +39,13 @@ static td_u16 ev_bias(int tenths)
     return (td_u16)((10240 + tenths * 3072) / 10);
 }
 
+/* A range whose maximum is below its minimum is refused, and a refused
+ * exposure stops the video at start-up. */
+static td_u32 range_max(td_u32 wanted, td_u32 minimum)
+{
+    return wanted < minimum ? minimum : wanted;
+}
+
 static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
 {
     using namespace ca_hisi_tuning;
@@ -55,9 +62,12 @@ static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
         ? OT_OP_MODE_MANUAL : OT_OP_MODE_AUTO;
     attr.auto_attr.ev_bias = ev_bias(config->exposure_compensation);
     attr.auto_attr.compensation = (td_u8)config->backlight;
-    attr.auto_attr.sys_gain_range.max = sys_gain_max(config->max_gain);
-    attr.auto_attr.a_gain_range.max = again_max(config->max_again);
-    attr.auto_attr.ispd_gain_range.max = ispd_gain_max(config->max_dgain);
+    attr.auto_attr.sys_gain_range.max =
+        range_max(sys_gain_max(config->max_gain), attr.auto_attr.sys_gain_range.min);
+    attr.auto_attr.a_gain_range.max =
+        range_max(again_max(config->max_again), attr.auto_attr.a_gain_range.min);
+    attr.auto_attr.ispd_gain_range.max =
+        range_max(ispd_gain_max(config->max_dgain), attr.auto_attr.ispd_gain_range.min);
     attr.auto_attr.ae_strategy_mode = config->ae_strategy == CA_AE_PRIOR_LOWLIGHT
         ? OT_ISP_AE_EXP_LOWLIGHT_PRIOR : OT_ISP_AE_EXP_HIGHLIGHT_PRIOR;
     attr.auto_attr.ae_mode = config->slow_shutter ? OT_ISP_AE_MODE_SLOW_SHUTTER : OT_ISP_AE_MODE_FIX_FRAME_RATE;
@@ -81,7 +91,8 @@ static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
     }
     if (config->shutter == CA_SHUTTER_AUTO) {
         attr.manual_attr.exp_time_op_type = OT_OP_MODE_AUTO;
-        attr.auto_attr.exp_time_range.max = exposure_max_us(config->max_exposure);
+        attr.auto_attr.exp_time_range.max =
+            range_max(exposure_max_us(config->max_exposure), attr.auto_attr.exp_time_range.min);
     } else {
         attr.manual_attr.exp_time_op_type = OT_OP_MODE_MANUAL;
         attr.manual_attr.exp_time = exposure_us[config->shutter];
