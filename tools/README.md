@@ -12,7 +12,8 @@
 - `bootstrap_dependencies.sh` downloads and verifies the pinned public SS928
   MPP sample tree and minimp4 header used by target and SITL builds.
 - `prepare_xop.py` applies `xop_warnings.patch` to a private RTSP source copy,
-  fixing buffer ownership, TCP_NODELAY and compiler warnings. Its default mode
+  fixing buffer ownership, TCP_NODELAY, the TCP send queue size and compiler
+  warnings. Its default mode
   also prepares Cygwin/macOS sockets; `--native` retains Linux epoll. Unchanged
   files retain their timestamps. Compiler warning checks remain enabled.
 - `prebuilt_mt11_tools.py` verifies and unpacks the stripped, compressed MT11

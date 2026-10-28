@@ -146,6 +146,18 @@
 
      int GetId() const
      { return id_; }
+--- a/net/TcpConnection.cpp
++++ b/net/TcpConnection.cpp
+@@ -6,7 +6,8 @@
+ TcpConnection::TcpConnection(TaskScheduler *task_scheduler, SOCKET sockfd)
+     : task_scheduler_(task_scheduler)
+     , read_buffer_(new BufferReader)
+-    , write_buffer_(new BufferWriter(500))
++    // A 4K keyframe at 50 Mbit/s is ~800 RTP packets; a full queue drops them silently.
++    , write_buffer_(new BufferWriter(4096))
+     , channel_(new Channel(sockfd))
+ {
+     is_closed_ = false;
 --- a/net/TcpSocket.cpp
 +++ b/net/TcpSocket.cpp
 @@ -27,7 +27,7 @@

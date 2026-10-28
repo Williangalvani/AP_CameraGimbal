@@ -865,8 +865,10 @@ fetches and verifies both pinned public dependencies under `build/deps`.
 The build leaves downloaded sources untouched and prepares an XOP copy under
 `camera_app/build/xop`, applying the reviewed fixes in
 `tools/xop_warnings.patch`. This corrects copied-buffer array ownership and
-socket options, and removes unused declarations and incomplete C++ aggregate
-initializers. The same buffer/socket implementations replace the corresponding
+socket options, enlarges each TCP client's send queue from 500 to 4096 RTP
+packets (a 4K keyframe above about 35 Mbit/s overflowed it, and the overflow
+was dropped silently), and removes unused declarations and incomplete C++
+aggregate initializers. The same buffer/socket implementations replace the corresponding
 objects in the MT11 vendor archive. `make -C camera_app xop-test` checks buffer
 release with AddressSanitizer and verifies TCP_NODELAY. The minimp4 patch also
 annotates intentional fall-throughs and checks signed file sizes before
