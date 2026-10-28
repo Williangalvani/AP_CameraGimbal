@@ -56,7 +56,7 @@ the vendor firmware's.
 | `manual_dgain` | `manual_DGain_enable` | bool | false |
 | `dgain` | `manual_DGain` | 0–255 | 128 |
 | `ae_strategy` | `AE_strategy_mode` | `highlight` / `lowlight` | `highlight` |
-| `max_exposure` | `max_exposure` | the extension's 13 values, 1/x s | 25 |
+| `max_exposure` | `max_exposure` | 12–8000, x in 1/x s; the extension sends 13 of these | 25 |
 | `slow_shutter` | `low_farme_rate` (setImageAdjustmentEx) | bool | false |
 
 The existing web-only `[image] wb_water` (`green` / `blue`) moves into the
@@ -104,8 +104,9 @@ B040 ones we already build against; no ABI bridging is needed.
   - `exp_time_range.max = 1000000/max_exposure` µs, when the shutter is auto.
   - `ae_mode` = slow shutter when `slow_shutter`, else fixed frame rate.
 - **Boot**: the pipeline start applies all of the above (today exposure is only
-  applied at boot when it differs from auto). Gamma, sharpening and colour
-  matrices are re-applied only when their inputs change.
+  applied at boot when it differs from auto). camera-app only re-applies image
+  settings when one of them changes, and every call sets them all, as the
+  vendor's sensor hook does; the calls are idempotent.
 
 ## Web (`APC_FourKCam.h`, `mt11-web.cpp`)
 
