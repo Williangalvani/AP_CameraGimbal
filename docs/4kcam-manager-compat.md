@@ -119,7 +119,9 @@ The body is parsed strictly as one flat JSON object; an empty body is an empty
 object. Only numbers are used: strings, nested values and literals are checked
 and skipped. A malformed number, string or bracket rejects the whole request
 with `code` −1. Fields that are 0 / 1 enums (`auto_awb`, `awb_auto_mode`,
-`auto_exposureEx`, `mirror`, `flip`) count only when 0 or 1. A field sent with
+`auto_exposureEx`, `auto_gain_mode`, `manual_AGain_enable`,
+`manual_DGain_enable`, `AE_strategy_mode`, `low_farme_rate`, `mirror`, `flip`)
+count only when 0 or 1. A field sent with
 the value reads report changes nothing, so echoing a whole reply back, as a
 client may, doesn't move settings that don't map exactly. Read replies clamp
 each value to the extension's type (0–255, the enums, u16), so they always
