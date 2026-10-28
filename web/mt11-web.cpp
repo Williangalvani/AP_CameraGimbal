@@ -653,6 +653,12 @@ static const struct option replacement_wb_options[] = {
 static const struct option wb_water_options[] = {
     {"green", S_OPT_WATER_GREEN}, {"blue", S_OPT_WATER_BLUE},
 };
+static const struct option gain_mode_options[] = {
+    {"auto", S_OPT_AUTO}, {"manual", S_OPT_MANUAL},
+};
+static const struct option ae_strategy_options[] = {
+    {"highlight", S_OPT_AE_HIGHLIGHT}, {"lowlight", S_OPT_AE_LOWLIGHT},
+};
 #endif
 
 
@@ -779,6 +785,28 @@ static const struct parameter replacement_parameters[] = {
 #endif
 #if APCAM_HAVE_4KCAM_COMPAT
     {"wb_water", "image", "wb_water", S_P_WB_WATER, S_H_WB_WATER, PARAM_ENUM, 0, 0, 0, wb_water_options, 2},
+    {"hue", "image", "hue", S_P_HUE, S_H_FOURKCAM_LEVEL, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"sharpness", "image", "sharpness", S_P_SHARPNESS, S_H_FOURKCAM_LEVEL, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"gamma", "image", "gamma", S_P_GAMMA, S_H_GAMMA, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"backlight", "image", "backlight", S_P_BACKLIGHT, S_H_BACKLIGHT, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"wb_style_red", "image", "wb_style_red", S_P_WB_STYLE_RED, S_H_WB_STYLE, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"wb_style_green", "image", "wb_style_green", S_P_WB_STYLE_GREEN, S_H_WB_STYLE, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"wb_style_blue", "image", "wb_style_blue", S_P_WB_STYLE_BLUE, S_H_WB_STYLE, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"max_gain", "image", "max_gain", S_P_MAX_GAIN, S_H_MAX_GAIN, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"gain_mode", "image", "gain_mode", S_P_GAIN_MODE, S_H_GAIN_MODE, PARAM_ENUM, 0, 0, 0, gain_mode_options, 2},
+    {"max_again", "image", "max_again", S_P_MAX_AGAIN, S_H_MAX_AGAIN, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"max_dgain", "image", "max_dgain", S_P_MAX_DGAIN, S_H_MAX_DGAIN, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"manual_again", "image", "manual_again", S_P_MANUAL_AGAIN, S_H_MANUAL_GAIN,
+     PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
+    {"again", "image", "again", S_P_AGAIN, S_H_GAIN_VALUE, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"manual_dgain", "image", "manual_dgain", S_P_MANUAL_DGAIN, S_H_MANUAL_GAIN,
+     PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
+    {"dgain", "image", "dgain", S_P_DGAIN, S_H_GAIN_VALUE, PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"ae_strategy", "image", "ae_strategy", S_P_AE_STRATEGY, S_H_AE_STRATEGY,
+     PARAM_ENUM, 0, 0, 0, ae_strategy_options, 2},
+    {"max_exposure", "image", "max_exposure", S_P_MAX_EXPOSURE, S_H_MAX_EXPOSURE, PARAM_INTEGER, 12, 8000, 1, NULL, 0},
+    {"slow_shutter", "image", "slow_shutter", S_P_SLOW_SHUTTER, S_H_SLOW_SHUTTER,
+     PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
     {"fourkcam_manager", "compat", "fourkcam_manager", S_P_FOURKCAM, S_H_FOURKCAM,
      PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
     {"onvif_password", "compat", "onvif_password", S_P_ONVIF_PASSWORD, S_H_ONVIF_PASSWORD,
@@ -906,7 +934,8 @@ static const char *replacement_defaults[] = {
     APCAM_STRING_VALUE(APCAM_DEFAULT_WB_BLUE), APCAM_STRING_VALUE(APCAM_DEFAULT_WB_TEMP),
 #endif
 #if APCAM_HAVE_4KCAM_COMPAT
-    "green", "true", "blue",
+    "green", "128", "128", "20", "50", "0", "0", "0", "12", "auto", "32", "0", "false", "128", "false", "128",
+    "highlight", "25", "false", "true", "blue",
 #endif
     "false", "", "10001", "false", "", "1", "0", "video1", "0", "video2",
 #if APCAM_HAVE_RAW_THERMAL

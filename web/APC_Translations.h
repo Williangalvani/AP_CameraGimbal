@@ -92,6 +92,9 @@ enum string_id {
     S_OPT_WB_TEMPERATURE,
     S_OPT_WATER_GREEN,
     S_OPT_WATER_BLUE,
+    S_OPT_MANUAL,
+    S_OPT_AE_HIGHLIGHT,
+    S_OPT_AE_LOWLIGHT,
     S_OPT_SCOPE_THERMAL,
     S_OPT_SCOPE_ALL,
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -139,6 +142,24 @@ enum string_id {
     S_P_WB_BLUE,
     S_P_WB_TEMP,
     S_P_WB_WATER,
+    S_P_HUE,
+    S_P_SHARPNESS,
+    S_P_GAMMA,
+    S_P_BACKLIGHT,
+    S_P_WB_STYLE_RED,
+    S_P_WB_STYLE_GREEN,
+    S_P_WB_STYLE_BLUE,
+    S_P_MAX_GAIN,
+    S_P_GAIN_MODE,
+    S_P_MAX_AGAIN,
+    S_P_MAX_DGAIN,
+    S_P_MANUAL_AGAIN,
+    S_P_AGAIN,
+    S_P_MANUAL_DGAIN,
+    S_P_DGAIN,
+    S_P_AE_STRATEGY,
+    S_P_MAX_EXPOSURE,
+    S_P_SLOW_SHUTTER,
     S_P_FOURKCAM,
     S_P_ONVIF_PASSWORD,
     S_H_CARDV_BRIGHTNESS,
@@ -264,6 +285,19 @@ enum string_id {
     S_H_WB_GAIN,
     S_H_WB_TEMP,
     S_H_WB_WATER,
+    S_H_FOURKCAM_LEVEL,
+    S_H_GAMMA,
+    S_H_BACKLIGHT,
+    S_H_WB_STYLE,
+    S_H_MAX_GAIN,
+    S_H_GAIN_MODE,
+    S_H_MAX_AGAIN,
+    S_H_MAX_DGAIN,
+    S_H_MANUAL_GAIN,
+    S_H_GAIN_VALUE,
+    S_H_AE_STRATEGY,
+    S_H_MAX_EXPOSURE,
+    S_H_SLOW_SHUTTER,
     S_H_FOURKCAM,
     S_H_ONVIF_PASSWORD,
     S_E_CONFIG_SIZE,
@@ -751,6 +785,9 @@ static constexpr Translations translations = [] {
     result[S_OPT_WB_TEMPERATURE] = {"Colour temperature", "色温", "色温度"};
     result[S_OPT_WATER_GREEN] = {"Green water", "绿色水体", "緑色の水"};
     result[S_OPT_WATER_BLUE] = {"Blue water", "蓝色水体", "青色の水"};
+    result[S_OPT_MANUAL] = {"Manual", "手动", "手動"};
+    result[S_OPT_AE_HIGHLIGHT] = {"Highlights", "高光优先", "ハイライト優先"};
+    result[S_OPT_AE_LOWLIGHT] = {"Low light", "低照度优先", "低照度優先"};
     result[S_OPT_SCOPE_THERMAL] = {"Thermal only", "仅热成像", "サーマルのみ"};
     result[S_OPT_SCOPE_ALL] = {"All lenses", "全部镜头", "すべてのレンズ"};
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -798,6 +835,24 @@ static constexpr Translations translations = [] {
     result[S_P_WB_BLUE] = {"Manual blue gain", "手动蓝色增益", "手動の青ゲイン"};
     result[S_P_WB_TEMP] = {"Colour temperature (K)", "色温（K）", "色温度（K）"};
     result[S_P_WB_WATER] = {"One-push water", "一键白平衡水色", "ワンプッシュの水の色"};
+    result[S_P_HUE] = {"Hue", "色调", "色相"};
+    result[S_P_SHARPNESS] = {"Sharpness", "锐度", "シャープネス"};
+    result[S_P_GAMMA] = {"Gamma", "伽马", "ガンマ"};
+    result[S_P_BACKLIGHT] = {"Backlight compensation", "背光补偿", "逆光補正"};
+    result[S_P_WB_STYLE_RED] = {"White balance style red", "白平衡风格红", "ホワイトバランス スタイル 赤"};
+    result[S_P_WB_STYLE_GREEN] = {"White balance style green", "白平衡风格绿", "ホワイトバランス スタイル 緑"};
+    result[S_P_WB_STYLE_BLUE] = {"White balance style blue", "白平衡风格蓝", "ホワイトバランス スタイル 青"};
+    result[S_P_MAX_GAIN] = {"Maximum system gain", "最大系统增益", "最大システムゲイン"};
+    result[S_P_GAIN_MODE] = {"Gain mode", "增益模式", "ゲインモード"};
+    result[S_P_MAX_AGAIN] = {"Maximum analog gain", "最大模拟增益", "最大アナログゲイン"};
+    result[S_P_MAX_DGAIN] = {"Maximum digital gain", "最大数字增益", "最大デジタルゲイン"};
+    result[S_P_MANUAL_AGAIN] = {"Manual analog gain", "手动模拟增益", "手動アナログゲイン"};
+    result[S_P_AGAIN] = {"Analog gain", "模拟增益", "アナログゲイン"};
+    result[S_P_MANUAL_DGAIN] = {"Manual digital gain", "手动数字增益", "手動デジタルゲイン"};
+    result[S_P_DGAIN] = {"Digital gain", "数字增益", "デジタルゲイン"};
+    result[S_P_AE_STRATEGY] = {"Exposure priority", "曝光优先", "露出優先"};
+    result[S_P_MAX_EXPOSURE] = {"Maximum exposure", "最长曝光", "最大露出時間"};
+    result[S_P_SLOW_SHUTTER] = {"Slow shutter", "慢快门", "スローシャッター"};
     result[S_P_FOURKCAM] = {"Allow 4K Cam Manager", "允许 4K Cam Manager", "4K Cam Manager を許可"};
     result[S_P_ONVIF_PASSWORD] = {"ONVIF password", "ONVIF 密码", "ONVIF パスワード"};
     result[S_H_CARDV_BRIGHTNESS] = {"ISP brightness.", "ISP 亮度。", "ISP の明るさ。"};
@@ -953,7 +1008,53 @@ static constexpr Translations translations = [] {
     result[S_H_WB_TUNING] = {"Automatic, a light-source preset, the manual gains below, or the colour temperature below. One-push white balance on the Photos page sets manual gains.", "自动、光源预设、下方的手动增益或下方的色温。照片页面的一键白平衡会设置手动增益。", "オート、光源プリセット、下の手動ゲイン、または下の色温度。写真ページのワンプッシュホワイトバランスは手動ゲインを設定します。"};
     result[S_H_WB_GAIN] = {"Used when white balance is Manual gains. 256 is 1x.", "白平衡为手动增益时使用。256 表示 1 倍。", "ホワイトバランスが手動ゲインのときに使用します。256 が 1 倍です。"};
     result[S_H_WB_TEMP] = {"Used when white balance is Colour temperature: the light source's temperature in kelvin.", "白平衡为色温时使用：光源的色温，单位为开尔文。", "ホワイトバランスが色温度のときに使用します。光源の色温度（ケルビン）。"};
-    result[S_H_WB_WATER] = {"Water that 4K Cam Manager's one-push white balance measures for. The Photos page asks each time.", "4K Cam Manager 一键白平衡所针对的水色。照片页面每次单独选择。", "4K Cam Manager のワンプッシュ ホワイトバランスが対象とする水の色。写真ページでは毎回選びます。"};
+    result[S_H_WB_WATER] = {"Water that auto white balance and 4K Cam Manager's one-push are tuned for. The Photos page asks each time.",
+                            "自动白平衡和 4K Cam Manager 一键白平衡所针对的水色。照片页面每次单独选择。",
+                            "自動ホワイトバランスと 4K Cam Manager のワンプッシュが対象とする水の色。写真ページでは毎回選びます。"};
+    result[S_H_FOURKCAM_LEVEL] = {"0–255, as 4K Cam Manager sets it; 128 is the default.",
+                                  "0–255，与 4K Cam Manager 的设置相同；默认 128。",
+                                  "0–255。4K Cam Manager と同じ値で、既定値は 128 です。"};
+    result[S_H_GAMMA] = {"Tone curve, 0–255 in steps of 32: 0–31, 128–159 and 192–223 give the default curve, "
+                         "32–63, 96–127 and 160–191 lift the shadows most, 64–95 a little; 224–255 keep the current curve.",
+                         "色调曲线，0–255，每 32 为一档：0–31、128–159、192–223 为默认曲线；32–63、96–127、160–191 "
+                         "暗部提亮最多；64–95 稍微提亮；224–255 保持当前曲线。",
+                         "トーンカーブ。0–255 を 32 刻みで選びます。0–31、128–159、192–223 は既定のカーブ、32–63、"
+                         "96–127、160–191 は暗部を最も持ち上げ、64–95 は少し持ち上げます。224–255 は現在のカーブのままです。"};
+    result[S_H_BACKLIGHT] = {"Brightness that automatic exposure aims for, 0–255 (default 50).",
+                             "自动曝光的目标亮度，0–255（默认 50）。",
+                             "自動露出が目標とする明るさ。0–255（既定値 50）。"};
+    result[S_H_WB_STYLE] = {"Extra gain on this colour after colour correction: 0 is none, 255 is 1.5×.",
+                            "色彩校正后对该颜色的额外增益：0 为无，255 为 1.5 倍。",
+                            "色補正後にこの色へ加えるゲイン。0 はなし、255 は 1.5 倍です。"};
+    result[S_H_MAX_GAIN] = {"Limit on the total automatic gain: (48 × value + 1)×.",
+                            "自动总增益上限：(48 × 数值 + 1) 倍。",
+                            "自動総ゲインの上限：(48 × 値 + 1) 倍。"};
+    result[S_H_GAIN_MODE] = {"Manual lets the manual analog and digital gain settings fix those gains. A fixed ISO "
+                             "overrides both.",
+                             "手动时，可由手动模拟增益和手动数字增益固定相应增益。固定 ISO 优先于两者。",
+                             "手動にすると、手動アナログゲインと手動デジタルゲインでそれぞれのゲインを固定できます。ISO を固定すると両方より優先されます。"};
+    result[S_H_MAX_AGAIN] = {"Limit on automatic analog gain: 0.75 × value, at least 1×.",
+                             "自动模拟增益上限：0.75 × 数值，至少 1 倍。",
+                             "自動アナログゲインの上限：0.75 × 値、最低 1 倍。"};
+    result[S_H_MAX_DGAIN] = {"Limit on automatic ISP digital gain: value ×, at least 1×.",
+                             "自动 ISP 数字增益上限：数值倍，至少 1 倍。",
+                             "自動 ISP デジタルゲインの上限：値の倍数、最低 1 倍。"};
+    result[S_H_MANUAL_GAIN] = {"With gain mode manual, fix this gain at the value below.",
+                               "增益模式为手动时，将此增益固定为下方的数值。",
+                               "ゲインモードが手動のとき、このゲインを下の値に固定します。"};
+    result[S_H_GAIN_VALUE] = {"Fixed gain when enabled: value ÷ 4 in whole steps, at least 1×.",
+                              "启用时的固定增益：数值 ÷ 4（取整），至少 1 倍。",
+                              "有効時の固定ゲイン：値 ÷ 4（整数）、最低 1 倍。"};
+    result[S_H_AE_STRATEGY] = {"Which part of the picture automatic exposure keeps visible.",
+                               "自动曝光优先保留画面的哪一部分。",
+                               "自動露出が優先して見えるようにする部分。"};
+    result[S_H_MAX_EXPOSURE] = {"Longest automatic exposure, as x in 1/x s (12–8000). Exposures longer than a frame "
+                                "need slow shutter.",
+                                "自动曝光的最长时间，以 1/x 秒中的 x 表示（12–8000）。长于一帧的曝光需要开启慢快门。",
+                                "自動露出の最長時間。1/x 秒の x で指定します（12–8000）。1 フレームより長い露出にはスローシャッターが必要です。"};
+    result[S_H_SLOW_SHUTTER] = {"Let automatic exposure lower the frame rate in the dark, up to the maximum exposure.",
+                                "允许自动曝光在暗处降低帧率，最长到最长曝光。",
+                                "暗い場所で自動露出がフレームレートを下げられるようにします（最大露出時間まで）。"};
     result[S_H_FOURKCAM] = {"Lets Blue Robotics' 4K Cam Manager and MAVLink Camera Manager find and control this camera without the web login, as with the original firmware.", "允许 Blue Robotics 的 4K Cam Manager 和 MAVLink Camera Manager 无需网页登录即可发现并控制本相机，与原厂固件相同。", "Blue Robotics の 4K Cam Manager と MAVLink Camera Manager が、元のファームウェアと同様に Web ログインなしでこのカメラを検出・制御できるようにします。"};
     result[S_H_ONVIF_PASSWORD] = {"Password of the ONVIF user admin. 4K Cam Manager logs in with blue.", "ONVIF 用户 admin 的密码。4K Cam Manager 使用 blue 登录。", "ONVIF ユーザー admin のパスワード。4K Cam Manager は blue でログインします。"};
     result[S_E_CONFIG_SIZE] = {"Config size must be between 1 and %u bytes", "配置大小必须在 1 至 %u 字节之间", "設定のサイズは 1〜%u バイトである必要があります"};
