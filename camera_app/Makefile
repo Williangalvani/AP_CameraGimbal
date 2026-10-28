@@ -488,12 +488,17 @@ tests/test_timezone: tests/test_timezone.cpp $(APCAM_HEADERS)
 	$(HOST_CXX) $(CPPFLAGS) $(APP_CXXFLAGS) -o $@ $<
 
 .PHONY: hisi-image-test
-hisi-image-test: tests/test_hisi_tuning
+hisi-image-test: tests/test_hisi_tuning tests/test_hisi_config
 	./tests/test_hisi_tuning
+	./tests/test_hisi_config
 
 tests/test_hisi_tuning: tests/test_hisi_tuning.cpp src/backends/hisi/image_tuning.h
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $<
+
+tests/test_hisi_config: tests/test_hisi_config.cpp src/config.cpp include/camera_app/config.h $(APCAM_HEADERS)
+	$(call progress,Linking $@)
+	$(HOST_CXX) -I../include -Iinclude -DAPCAM_TARGET=APCAM_TARGET_HISI $(APP_CXXFLAGS) -o $@ $(filter %.cpp,$^) -lm
 
 $(CONFIG_TEST_TARGET): tests/test_config.cpp src/config.cpp include/camera_app/config.h $(APCAM_HEADERS)
 	$(call progress,Linking $@)

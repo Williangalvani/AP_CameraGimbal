@@ -107,6 +107,22 @@ enum ca_white_balance {
     CA_WB_TEMPERATURE,
 };
 
+/* The 4K Cam Manager's gain mode, exposure priority and water colour. */
+enum ca_gain_mode {
+    CA_GAIN_AUTO = 0,
+    CA_GAIN_MANUAL = 1,
+};
+
+enum ca_ae_priority {
+    CA_AE_PRIOR_HIGHLIGHT = 0,
+    CA_AE_PRIOR_LOWLIGHT = 1,
+};
+
+enum ca_water {
+    CA_WATER_GREEN = 0,
+    CA_WATER_BLUE = 1,
+};
+
 enum ca_autorecord_mode {
     CA_AUTORECORD_DISABLED = 0,
     CA_AUTORECORD_ENABLED = 1,
@@ -223,6 +239,29 @@ struct ca_config {
     unsigned wb_green;
     unsigned wb_blue;
     unsigned wb_temp;
+#if defined(APCAM_HAVE_4KCAM_COMPAT) && APCAM_HAVE_4KCAM_COMPAT
+    /* The 4K Cam Manager's image controls in its own units: levels 0–255,
+     * max_exposure x in 1/x s (docs/4kcam-manager-compat.md). */
+    unsigned hue;
+    unsigned sharpness;
+    unsigned gamma;
+    unsigned backlight;
+    unsigned wb_style_red;
+    unsigned wb_style_green;
+    unsigned wb_style_blue;
+    enum ca_water wb_water;
+    unsigned max_gain;
+    enum ca_gain_mode gain_mode;
+    unsigned max_again;
+    unsigned max_dgain;
+    bool manual_again;
+    unsigned again;
+    bool manual_dgain;
+    unsigned dgain;
+    enum ca_ae_priority ae_strategy;
+    unsigned max_exposure;
+    bool slow_shutter;
+#endif
     bool position_targeting;
     enum ca_tracking_method tracking_method;
     bool log_disarmed;

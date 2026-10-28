@@ -165,6 +165,17 @@ private:
         {"manual", CA_WB_MANUAL}, {"temperature", CA_WB_TEMPERATURE},
 #endif
     };
+#if APCAM_HAVE_4KCAM_COMPAT
+    inline static constexpr ca_config_option water_options[] = {
+        {"green", CA_WATER_GREEN}, {"blue", CA_WATER_BLUE},
+    };
+    inline static constexpr ca_config_option gain_mode_options[] = {
+        {"auto", CA_GAIN_AUTO}, {"manual", CA_GAIN_MANUAL},
+    };
+    inline static constexpr ca_config_option ae_strategy_options[] = {
+        {"highlight", CA_AE_PRIOR_HIGHLIGHT}, {"lowlight", CA_AE_PRIOR_LOWLIGHT},
+    };
+#endif
 
     inline static constexpr ca_config_option tracking_options[] = {
         {"angle", CA_TRACK_ANGLE}, {"rate", CA_TRACK_RATE},
@@ -308,6 +319,49 @@ private:
          sizeof(((struct ca_config *)0)->wb_blue), NULL, 0U, 128, 4095, "IMG_WB_BLUE"},
         {"image", "wb_temp", Kind::Uint, offsetof(struct ca_config, wb_temp),
          sizeof(((struct ca_config *)0)->wb_temp), NULL, 0U, 1500, 15000, "IMG_WB_TEMP"},
+#endif
+#if APCAM_HAVE_4KCAM_COMPAT
+        {"image", "hue", Kind::Uint, offsetof(struct ca_config, hue),
+         sizeof(((struct ca_config *)0)->hue), NULL, 0U, 0, 255, NULL},
+        {"image", "sharpness", Kind::Uint, offsetof(struct ca_config, sharpness),
+         sizeof(((struct ca_config *)0)->sharpness), NULL, 0U, 0, 255, NULL},
+        {"image", "gamma", Kind::Uint, offsetof(struct ca_config, gamma),
+         sizeof(((struct ca_config *)0)->gamma), NULL, 0U, 0, 255, NULL},
+        {"image", "backlight", Kind::Uint, offsetof(struct ca_config, backlight),
+         sizeof(((struct ca_config *)0)->backlight), NULL, 0U, 0, 255, NULL},
+        {"image", "wb_style_red", Kind::Uint, offsetof(struct ca_config, wb_style_red),
+         sizeof(((struct ca_config *)0)->wb_style_red), NULL, 0U, 0, 255, NULL},
+        {"image", "wb_style_green", Kind::Uint, offsetof(struct ca_config, wb_style_green),
+         sizeof(((struct ca_config *)0)->wb_style_green), NULL, 0U, 0, 255, NULL},
+        {"image", "wb_style_blue", Kind::Uint, offsetof(struct ca_config, wb_style_blue),
+         sizeof(((struct ca_config *)0)->wb_style_blue), NULL, 0U, 0, 255, NULL},
+        {"image", "wb_water", Kind::Enum, offsetof(struct ca_config, wb_water),
+         sizeof(((struct ca_config *)0)->wb_water), water_options,
+         sizeof(water_options) / sizeof(water_options[0]), 0, 0, NULL},
+        {"image", "max_gain", Kind::Uint, offsetof(struct ca_config, max_gain),
+         sizeof(((struct ca_config *)0)->max_gain), NULL, 0U, 0, 255, NULL},
+        {"image", "gain_mode", Kind::Enum, offsetof(struct ca_config, gain_mode),
+         sizeof(((struct ca_config *)0)->gain_mode), gain_mode_options,
+         sizeof(gain_mode_options) / sizeof(gain_mode_options[0]), 0, 0, NULL},
+        {"image", "max_again", Kind::Uint, offsetof(struct ca_config, max_again),
+         sizeof(((struct ca_config *)0)->max_again), NULL, 0U, 0, 255, NULL},
+        {"image", "max_dgain", Kind::Uint, offsetof(struct ca_config, max_dgain),
+         sizeof(((struct ca_config *)0)->max_dgain), NULL, 0U, 0, 255, NULL},
+        {"image", "manual_again", Kind::Bool, offsetof(struct ca_config, manual_again),
+         sizeof(((struct ca_config *)0)->manual_again), NULL, 0U, 0, 0, NULL},
+        {"image", "again", Kind::Uint, offsetof(struct ca_config, again),
+         sizeof(((struct ca_config *)0)->again), NULL, 0U, 0, 255, NULL},
+        {"image", "manual_dgain", Kind::Bool, offsetof(struct ca_config, manual_dgain),
+         sizeof(((struct ca_config *)0)->manual_dgain), NULL, 0U, 0, 0, NULL},
+        {"image", "dgain", Kind::Uint, offsetof(struct ca_config, dgain),
+         sizeof(((struct ca_config *)0)->dgain), NULL, 0U, 0, 255, NULL},
+        {"image", "ae_strategy", Kind::Enum, offsetof(struct ca_config, ae_strategy),
+         sizeof(((struct ca_config *)0)->ae_strategy), ae_strategy_options,
+         sizeof(ae_strategy_options) / sizeof(ae_strategy_options[0]), 0, 0, NULL},
+        {"image", "max_exposure", Kind::Uint, offsetof(struct ca_config, max_exposure),
+         sizeof(((struct ca_config *)0)->max_exposure), NULL, 0U, 12, 8000, NULL},
+        {"image", "slow_shutter", Kind::Bool, offsetof(struct ca_config, slow_shutter),
+         sizeof(((struct ca_config *)0)->slow_shutter), NULL, 0U, 0, 0, NULL},
 #endif
         {"mavlink", "position_targeting", Kind::Bool,
          offsetof(struct ca_config, position_targeting),

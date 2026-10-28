@@ -44,6 +44,7 @@ __pycache__/
 
 /camera_app/tests/test_timezone
 /camera_app/tests/test_hisi_tuning
+/camera_app/tests/test_hisi_config
 
 /camera_app/tests/test_survey
 /camera_app/tests/test_metadata_history
