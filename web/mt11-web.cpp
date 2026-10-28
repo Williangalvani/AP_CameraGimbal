@@ -184,6 +184,9 @@
 #ifndef RUNTIME_DIR
 #define RUNTIME_DIR "/run"
 #endif
+#if APCAM_HAVE_SDCARD && !defined(SDCARD_STATE_PATH)
+#define SDCARD_STATE_PATH RUNTIME_DIR "/sdcard.state"
+#endif
 #ifndef CAMERA_READY_PATH
 #define CAMERA_READY_PATH "/run/camera-app.ready"
 #endif
@@ -3851,34 +3854,40 @@ static bool request_white_balance(char water, char *message, size_t message_size
 }
 #endif
 
-#if APCAM_WEB_CONTROL_MAVLINK && APCAM_HAVE_PHOTO
-/* MAVLink-controlled cameras: send the command a GCS would, and report
- * the camera's COMMAND_ACK, which follows the saved photo. */
-static bool trigger_camera_photo(char *error, size_t error_size)
+#if APCAM_WEB_CONTROL_MAVLINK && (APCAM_HAVE_PHOTO || APCAM_HAVE_SDCARD)
+/* MAVLink-controlled cameras: send the command a GCS would, and return the
+ * result of the camera's first COMMAND_ACK for it (a photo's follows the
+ * saved file). -1 with error set if it could not be sent or was not
+ * acknowledged; send_failed and unconfirmed name those errors. */
+static int camera_mavlink_command(uint16_t command, float param1, float param2,
+                                  float param3, enum string_id send_failed,
+                                  enum string_id unconfirmed,
+                                  char *error, size_t error_size)
 {
     const struct timeval timeout = {.tv_sec = 10, .tv_usec = 0};
     mavlink_message_t message;
     mavlink_status_t status = {};
-    bool acknowledged = false, accepted = false;
+    bool acknowledged = false;
+    int result = -1;
 
 #ifndef MT11_WEB_TEST
     if (current_camera_kind() == CAMERA_NONE) {
         snprintf(error, error_size, "%s", T(S_E_CAMERA_NOT_RUNNING));
-        return false;
+        return -1;
     }
 #endif
     int fd = z1_web_socket(camera_api_port());
     if (fd < 0 || setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         snprintf(error, error_size, T(S_E_CAMERA_API), strerror(errno));
         if (fd >= 0) close(fd);
-        return false;
+        return -1;
     }
-    mavlink_msg_command_long_pack(255, 191, &message, 0, 0, MAV_CMD_IMAGE_START_CAPTURE, 0,
-                                  0, 0, 1, 0, 0, 0, 0);
+    mavlink_msg_command_long_pack(255, 191, &message, 0, 0, command, 0,
+                                  param1, param2, param3, 0, 0, 0, 0);
     if (!z1_web_send(fd, &message)) {
-        snprintf(error, error_size, T(S_E_SEND_SHUTTER), strerror(errno));
+        snprintf(error, error_size, T(send_failed), strerror(errno));
         close(fd);
-        return false;
+        return -1;
     }
     /* Heartbeats keep arriving, so the receive timeout alone never expires. */
     struct timespec deadline;
@@ -3897,21 +3906,90 @@ static bool trigger_camera_photo(char *error, size_t error_size)
                 message.msgid != MAVLINK_MSG_ID_COMMAND_ACK) continue;
             mavlink_command_ack_t ack;
             mavlink_msg_command_ack_decode(&message, &ack);
-            if (ack.command != MAV_CMD_IMAGE_START_CAPTURE) continue;
+            if (ack.command != command) continue;
             acknowledged = true;
-            accepted = ack.result == MAV_RESULT_ACCEPTED;
+            result = ack.result;
         }
     }
     close(fd);
-    if (!acknowledged) {
-        snprintf(error, error_size, "%s", T(S_E_SHUTTER_UNCONFIRMED));
-        return false;
+    if (!acknowledged) snprintf(error, error_size, "%s", T(unconfirmed));
+    return result;
+}
+#endif
+
+#if APCAM_HAVE_SDCARD
+static_assert(APCAM_WEB_CONTROL_MAVLINK, "recording and formatting are MAVLink commands");
+/* sdcard.sh's state word: absent, unformatted, error, formatting or ready. */
+static void sdcard_state(char *state, size_t size)
+{
+    FILE *file = fopen(SDCARD_STATE_PATH, "r");
+    char line[64];
+    snprintf(state, size, "absent");
+    if (file == NULL) return;
+    if (fgets(line, sizeof(line), file) != NULL) {
+        line[strcspn(line, " \n")] = '\0';
+        if (line[0] != '\0') snprintf(state, size, "%s", line);
     }
-    if (!accepted) {
-        snprintf(error, error_size, "%s", T(S_E_CAPTURE_FAILED));
-        return false;
-    }
-    return true;
+    fclose(file);
+}
+
+/* Why the card cannot be written now, or NULL. */
+static const char *sdcard_problem(void)
+{
+    char state[16];
+    sdcard_state(state, sizeof(state));
+    if (strcmp(state, "ready") == 0) return NULL;
+    if (strcmp(state, "unformatted") == 0) return T(S_E_SDCARD_UNFORMATTED);
+    if (strcmp(state, "formatting") == 0) return T(S_E_SDCARD_BUSY);
+    if (strcmp(state, "error") == 0) return T(S_E_SDCARD_ERROR);
+    return T(S_E_SDCARD_ABSENT);
+}
+
+/* A camera refusal explained by the card, if it is the cause. */
+static void command_refused(int result, enum string_id fallback, char *error, size_t error_size)
+{
+    const char *problem = result == MAV_RESULT_DENIED ||
+                          result == MAV_RESULT_TEMPORARILY_REJECTED ? sdcard_problem() : NULL;
+    snprintf(error, error_size, "%s", problem != NULL ? problem : T(fallback));
+}
+
+static bool camera_set_recording(bool active, char *error, size_t error_size)
+{
+    int result = camera_mavlink_command(active ? MAV_CMD_VIDEO_START_CAPTURE
+                                               : MAV_CMD_VIDEO_STOP_CAPTURE,
+                                        0, 0, 0, S_E_SEND_COMMAND, S_E_COMMAND_UNCONFIRMED,
+                                        error, error_size);
+    if (result < 0) return false;
+    if (result == MAV_RESULT_ACCEPTED) return true;
+    command_refused(result, S_E_RECORD_FAILED, error, error_size);
+    return false;
+}
+
+/* Starts a format; the camera finishes it in the background. */
+static bool camera_format_sdcard(char *error, size_t error_size)
+{
+    int result = camera_mavlink_command(MAV_CMD_STORAGE_FORMAT, 1, 1, 0, S_E_SEND_COMMAND,
+                                        S_E_COMMAND_UNCONFIRMED, error, error_size);
+    if (result < 0) return false;
+    if (result == MAV_RESULT_IN_PROGRESS || result == MAV_RESULT_ACCEPTED) return true;
+    command_refused(result, S_E_FORMAT_FAILED, error, error_size);
+    return false;
+}
+#endif
+
+#if APCAM_WEB_CONTROL_MAVLINK && APCAM_HAVE_PHOTO
+static bool trigger_camera_photo(char *error, size_t error_size)
+{
+    int result = camera_mavlink_command(MAV_CMD_IMAGE_START_CAPTURE, 0, 0, 1, S_E_SEND_SHUTTER,
+                                        S_E_SHUTTER_UNCONFIRMED, error, error_size);
+    if (result < 0) return false;
+    if (result == MAV_RESULT_ACCEPTED) return true;
+#if APCAM_HAVE_SDCARD
+    command_refused(result, S_E_CAPTURE_FAILED, error, error_size);
+#else
+    snprintf(error, error_size, "%s", T(S_E_CAPTURE_FAILED));
+#endif
+    return false;
 }
 #else
 static bool trigger_camera_photo(char *error, size_t error_size)
@@ -5557,7 +5635,18 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
 #ifdef SETTINGS_STORAGE_PATH
     append_filesystem_status(&page, T(S_STORAGE_SETTINGS), SETTINGS_STORAGE_PATH);
 #endif
-#if WEB_MEDIA_IS_MOUNT
+#if APCAM_HAVE_SDCARD
+    char card[16];
+    sdcard_state(card, sizeof(card));
+    if (strcmp(card, "ready") == 0) {
+        append_filesystem_status(&page, T(S_STORAGE_MICROSD), MEDIA_ROOT);
+    } else {
+        page.appendf("<tr><th>%s</th><td>%s</td></tr>", T(S_STORAGE_MICROSD),
+                     T(strcmp(card, "unformatted") == 0 ? S_SDCARD_UNFORMATTED :
+                       strcmp(card, "formatting") == 0 ? S_SDCARD_FORMATTING :
+                       strcmp(card, "error") == 0 ? S_SDCARD_ERROR : S_SDCARD_ABSENT));
+    }
+#elif WEB_MEDIA_IS_MOUNT
     append_filesystem_status(&page, T(S_STORAGE_MICROSD), MEDIA_ROOT);
 #else
     append_filesystem_status(&page, T(S_STORAGE_RECORDINGS), MEDIA_ROOT);
@@ -5565,6 +5654,10 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     webroot.render(page, "status-actions.html", {T(S_STATUS_REFRESH), T(S_STATUS_ACTIONS), csrf_token});
     page.append(T(S_STATUS_RESTART));
     page.append("</button></form>");
+#if APCAM_HAVE_SDCARD
+    if (strcmp(card, "ready") == 0 || strcmp(card, "unformatted") == 0)
+        webroot.render(page, "status-sdcard.html", {csrf_token, T(S_SDCARD_FORMAT_CONFIRM), T(S_SDCARD_FORMAT_BUTTON)});
+#endif
 #ifdef ZT30_WEB_NATIVE
     std::string previous_bundle, previous_error;
     if (apcam_zt30::link_slot(APP_DIR, "previous", previous_bundle, previous_error))
@@ -5682,6 +5775,10 @@ static char *render_sensors_page(const char *message, bool message_is_error,
     webroot.render(page, "sensors-values.html", {T(S_SENSORS_LIVE), T(S_SENSORS_LIDAR), T(S_LOADING), T(S_ENABLE), T(S_SENSORS_MIN), T(S_LOADING), T(S_SENSORS_MAX), T(S_LOADING), T(S_SENSORS_CPU), T(S_LOADING), T(S_SENSORS_UPDATING), T(S_SENSORS_LASER_NOTICE)});
 #endif
     webroot.render(page, "sensors-capture.html", {T(S_SENSORS_SHUTTER), T(S_SENSORS_SHUTTER_TEXT), csrf_token, T(S_SENSORS_CAPTURE)});
+#if APCAM_HAVE_SDCARD
+    const char *card_problem = sdcard_problem();
+    webroot.render(page, "sensors-record.html", {T(S_SENSORS_RECORD_TEXT), card_problem ? card_problem : "", csrf_token, T(S_SENSORS_RECORD_START), T(S_SENSORS_RECORD_STOP)});
+#endif
 #if APCAM_HAVE_THERMAL_VIDEO
     page.appendf("<p class=muted>%s</p>", T(S_SENSORS_SCOPE_NOTE));
 #endif
@@ -8254,6 +8351,7 @@ static void handle_request(int fd, const char *peer)
                 strcmp(request.path, "/sensors/lidar") == 0) {
                 send_text_errorf(fd, 403, "Forbidden", S_CSRF_INVALID);
             } else if (strcmp(request.path, "/sensors/capture") == 0 ||
+                       strcmp(request.path, "/sensors/record") == 0 ||
                        strcmp(request.path, "/sensors/white_balance") == 0) {
                 send_sensors_page(fd, T(S_CSRF_RELOAD), true);
             } else {
@@ -8345,6 +8443,38 @@ static void handle_request(int fd, const char *peer)
                 log_message("Sensors-page photo capture failed for %s: %s", peer, error);
                 send_sensors_page(fd, error, true);
             }
+#if APCAM_HAVE_SDCARD
+        } else if (strcmp(request.path, "/sensors/record") == 0) {
+            size_t length = 0;
+            char *action = form_value(&request, "action", &length);
+            bool start = action != NULL && length == 5U && memcmp(action, "start", 5U) == 0;
+            bool stop = action != NULL && length == 4U && memcmp(action, "stop", 4U) == 0;
+            free(action);
+            if (!start && !stop) {
+                send_sensors_page(fd, T(S_E_RECORD_ACTION), true);
+            } else if (camera_set_recording(start, error, sizeof(error))) {
+                log_message("recording %s from Sensors page by %s", start ? "started" : "stopped", peer);
+                send_sensors_page(fd, T(start ? S_RECORDING_STARTED : S_RECORDING_STOPPED), false);
+            } else {
+                log_message("Sensors-page recording %s failed for %s: %s",
+                            start ? "start" : "stop", peer, error);
+                send_sensors_page(fd, error, true);
+            }
+        } else if (strcmp(request.path, "/storage/format") == 0) {
+            size_t length = 0;
+            char *confirmation = form_value(&request, "confirm", &length);
+            bool confirmed = confirmation != NULL && length == 3 && memcmp(confirmation, "yes", 3) == 0;
+            free(confirmation);
+            if (!confirmed) {
+                send_page(fd, T(S_SDCARD_FORMAT_UNCONFIRMED), true);
+            } else if (camera_format_sdcard(error, sizeof(error))) {
+                log_message("microSD format requested by %s", peer);
+                send_page(fd, T(S_SDCARD_FORMAT_STARTED), false);
+            } else {
+                log_message("microSD format failed for %s: %s", peer, error);
+                send_page(fd, error, true);
+            }
+#endif
 #if APCAM_HAVE_WB_TUNING
         } else if (strcmp(request.path, "/sensors/white_balance") == 0) {
             size_t length = 0;

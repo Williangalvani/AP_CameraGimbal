@@ -1,8 +1,9 @@
 #!/bin/sh
 # Hi3516DV500 supervisor, started by /appfs/sh/start.sh instead of xipc.
-# Loads the MPP drivers and mounts the microSD card as xipc did, then runs
-# hisi-web and camera-app with the web's restart protocol: the web bumps
-# camera-app.request and waits for a ready file from a new camera-app.
+# Loads the MPP drivers as xipc did, keeps the microSD card mounted with
+# sdcard.sh, and runs hisi-web and camera-app with the web's restart protocol:
+# the web bumps camera-app.request and waits for a ready file from a new
+# camera-app.
 # A camera-app that exits or fails to start is restarted after 2, 10 and 30 s;
 # a fourth failure in a row (each run shorter than FAILURE_RESET_S) waits for
 # a restart from the web UI instead. After a crash ot_isp.ko stays
@@ -34,6 +35,8 @@ app_log_start=0
 app_pid=
 web_pid=
 log_pid=
+media_pid=
+SDCARD_STATE=/run/sdcard.state
 failures=0
 web_started=0
 web_delay=1
@@ -142,7 +145,7 @@ stop()
 {
     trap '' INT TERM
     stop_child
-    for child in "$web_pid" "$log_pid"; do
+    for child in "$web_pid" "$log_pid" "$media_pid"; do
         [ -n "$child" ] && kill "$child" 2>/dev/null || true
     done
     rm -f /run/hisi-service.pid "$STARTED"
@@ -150,20 +153,6 @@ stop()
     exit 0
 }
 trap stop INT TERM
-
-# xipc mounted the card's first FAT partition. Output directories are only
-# created on the card, never on the rootfs mount point.
-mount_media()
-{
-    if ! mountpoint -q "$MEDIA"; then
-        for device in /dev/mmcblk0p1 /dev/mmcblk1p1 /dev/mmcblk0 /dev/mmcblk1; do
-            [ -b "$device" ] || continue
-            mount -o noatime "$device" "$MEDIA" 2>/dev/null && break
-        done
-        mountpoint -q "$MEDIA" || return 0
-    fi
-    mkdir -p "$MEDIA/DCIM/record" "$MEDIA/DCIM/capture" "$MEDIA/logs"
-}
 
 load_module()
 {
@@ -253,6 +242,21 @@ export CAMERA_APP_RECORD_ROOT=$MEDIA/DCIM/record
 export CAMERA_APP_CAPTURE_ROOT=$MEDIA/DCIM/capture
 export CAMERA_APP_LOG_ROOT=$MEDIA/logs
 export CAMERA_APP_READY_PATH=$READY
+export SDCARD_MEDIA=$MEDIA SDCARD_STATE SDCARD_LOCK=/run/sdcard.lock
+export SDCARD_HOST=${SDCARD_HOST-10030000.SDIO}
+export CAMERA_APP_STORAGE_STATE=$SDCARD_STATE
+export CAMERA_APP_STORAGE_TOOL=$APP_ROOT/sdcard.sh
+# The microSD card is mounted when inserted and detached when removed, about
+# a second later; sdcard.sh publishes its state for camera-app and the web.
+# Its own loop: a failing card can block a mount in I/O for a long time.
+rm -f "$SDCARD_STATE"
+(
+    while :; do
+        "$APP_ROOT/sdcard.sh" mount
+        sleep 1
+    done
+) 9>&- &
+media_pid=$!
 start_web()
 {
     "$APP_ROOT/bin/hisi-web" -p "$WEB_PORT" >>"$WEB_LOG" 2>&1 9>&- &
@@ -300,7 +304,6 @@ while true; do
     mv "$STARTED.new" "$STARTED"
     flock -u 8
     exec 8>&-
-    mount_media
     if ! load_mpp; then
         echo 'MPP drivers failed to load; not starting camera-app' >&2
         wait_for_restart

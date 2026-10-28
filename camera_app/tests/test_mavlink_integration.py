@@ -711,6 +711,94 @@ def full_capability_test(connection, siyi_port, capture_root, recording_state,
     assert ack.result == mavutil.mavlink.MAV_RESULT_UNSUPPORTED
 
 
+STORAGE_TOOL = """#!/bin/sh
+echo "$*" >>"$0.log"
+echo formatting >"$CAMERA_APP_STORAGE_STATE"
+sleep 0.5
+if [ -e "$0.fail" ]; then
+    echo unformatted >"$CAMERA_APP_STORAGE_STATE"
+    exit 1
+fi
+echo ready >"$CAMERA_APP_STORAGE_STATE"
+"""
+
+
+def wait_ack(connection, command_id, timeout=8):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        message = connection.recv_match(type="COMMAND_ACK", blocking=True, timeout=1)
+        if message is None:
+            heartbeat(connection)
+        elif message.command == command_id:
+            return message
+    raise TimeoutError(f"no final ACK for command {command_id}")
+
+
+def managed_storage_test(connection, state, tool):
+    """A card mounted and formatted by a packaging helper (sdcard.sh)."""
+    mav = mavutil.mavlink
+
+    def storage():
+        return request_message(connection, CAMERA_COMPONENT,
+                               mav.MAVLINK_MSG_ID_STORAGE_INFORMATION,
+                               "STORAGE_INFORMATION")
+
+    def result(command_id, params=()):
+        return command(connection, CAMERA_COMPONENT, command_id, params)[0].result
+
+    # No card: reported empty; recording, stills and formatting are refused.
+    state.write_text("absent\n")
+    info = storage()
+    assert info.status == mav.STORAGE_STATUS_EMPTY and info.total_capacity == 0
+    assert result(mav.MAV_CMD_VIDEO_START_CAPTURE) == mav.MAV_RESULT_DENIED
+    assert result(mav.MAV_CMD_IMAGE_START_CAPTURE,
+                  [0.0, 0.0, 1.0]) == mav.MAV_RESULT_DENIED
+    assert result(mav.MAV_CMD_STORAGE_FORMAT, [1.0, 1.0]) == mav.MAV_RESULT_DENIED
+    assert not tool.with_suffix(".sh.log").exists()
+
+    # Inserted unformatted: broadcast without a request.
+    state.write_text("unformatted /dev/mmcblk0\n")
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        info = connection.recv_match(type="STORAGE_INFORMATION", blocking=True, timeout=1)
+        if info is not None and info.status == mav.STORAGE_STATUS_UNFORMATTED:
+            break
+    else:
+        raise AssertionError("unformatted card not broadcast")
+    assert result(mav.MAV_CMD_VIDEO_START_CAPTURE) == mav.MAV_RESULT_DENIED
+    assert result(mav.MAV_CMD_STORAGE_FORMAT, [2.0, 1.0]) == mav.MAV_RESULT_DENIED
+
+    # Ready: a format stops the recording and answers in progress, then done.
+    state.write_text("ready\n")
+    assert storage().status == mav.STORAGE_STATUS_READY
+    assert result(mav.MAV_CMD_VIDEO_START_CAPTURE) == mav.MAV_RESULT_ACCEPTED
+    assert result(mav.MAV_CMD_STORAGE_FORMAT,
+                  [1.0, 1.0, 1.0]) == mav.MAV_RESULT_IN_PROGRESS
+    assert result(mav.MAV_CMD_STORAGE_FORMAT,
+                  [1.0, 1.0]) == mav.MAV_RESULT_TEMPORARILY_REJECTED
+    assert result(mav.MAV_CMD_VIDEO_START_CAPTURE) == \
+        mav.MAV_RESULT_TEMPORARILY_REJECTED
+    status = request_message(connection, CAMERA_COMPONENT,
+                             mav.MAVLINK_MSG_ID_CAMERA_CAPTURE_STATUS,
+                             "CAMERA_CAPTURE_STATUS")
+    assert status.video_status == 0 and status.image_count == 0
+    final = wait_ack(connection, mav.MAV_CMD_STORAGE_FORMAT)
+    assert final.result == mav.MAV_RESULT_ACCEPTED
+    assert final.target_system == connection.mav.srcSystem
+    assert storage().status == mav.STORAGE_STATUS_READY
+    assert tool.with_suffix(".sh.log").read_text() == "format\n"
+
+    # A failed format leaves the card unformatted.
+    tool.with_suffix(".sh.fail").touch()
+    assert result(mav.MAV_CMD_STORAGE_FORMAT,
+                  [1.0, 1.0]) == mav.MAV_RESULT_IN_PROGRESS
+    assert wait_ack(connection, mav.MAV_CMD_STORAGE_FORMAT).result == \
+        mav.MAV_RESULT_FAILED
+    assert storage().status == mav.STORAGE_STATUS_UNFORMATTED
+    tool.with_suffix(".sh.fail").unlink()
+    state.write_text("ready\n")
+
+
 def pytest_approx(expected, tolerance):
     """Tiny equality helper to keep this test dependency-free."""
     class Approx:
@@ -783,6 +871,11 @@ def main():
         config_path = directory / "camera.ini"
         capture_root.mkdir()
         record_root.mkdir()
+        storage_state = directory / "storage.state"
+        storage_state.write_text("ready\n")
+        storage_tool = directory / "sdcard.sh"
+        storage_tool.write_text(STORAGE_TOOL)
+        storage_tool.chmod(0o755)
         config_path.write_text(
             "[general]\ntimezone = UTC\n"
             "[capture]\nphoto_scope = all\n"
@@ -815,6 +908,8 @@ def main():
                 "CAMERA_APP_RECORD_ROOT": str(record_root),
                 "CAMERA_APP_CAPTURE_ROOT": str(capture_root),
                 "CAMERA_APP_SITL_PHOTO": str(camera_binary.parent / "photo.jpg"),
+                "CAMERA_APP_STORAGE_STATE": str(storage_state),
+                "CAMERA_APP_STORAGE_TOOL": str(storage_tool),
             })
             camera_log = (directory / "camera.log").open("w", encoding="utf-8")
             logs.append(camera_log)
@@ -846,6 +941,7 @@ def main():
             trigger_device_information_announcement(tcp, position_targeting)
             full_capability_test(tcp, siyi_port, capture_root, recording_state,
                                  position_targeting)
+            managed_storage_test(tcp, storage_state, storage_tool)
             tcp.close()
 
             udp = mavutil.mavlink_connection(

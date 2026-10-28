@@ -712,6 +712,28 @@ enum string_id {
     S_BUNDLE_CAMERA,
     S_BUNDLE_WEB,
     S_BUNDLE_STATE,
+    S_SDCARD_ABSENT,
+    S_SDCARD_UNFORMATTED,
+    S_SDCARD_FORMATTING,
+    S_SDCARD_ERROR,
+    S_E_SDCARD_ERROR,
+    S_SDCARD_FORMAT_CONFIRM,
+    S_SDCARD_FORMAT_BUTTON,
+    S_SDCARD_FORMAT_UNCONFIRMED,
+    S_SDCARD_FORMAT_STARTED,
+    S_E_SDCARD_ABSENT,
+    S_E_SDCARD_UNFORMATTED,
+    S_E_SDCARD_BUSY,
+    S_E_FORMAT_FAILED,
+    S_E_SEND_COMMAND,
+    S_E_COMMAND_UNCONFIRMED,
+    S_SENSORS_RECORD_TEXT,
+    S_SENSORS_RECORD_START,
+    S_SENSORS_RECORD_STOP,
+    S_E_RECORD_ACTION,
+    S_E_RECORD_FAILED,
+    S_RECORDING_STARTED,
+    S_RECORDING_STOPPED,
     S_COUNT
 };
 
@@ -1268,6 +1290,28 @@ static constexpr Translations translations = [] {
     result[S_SENSORS_NO_PHOTOS] = {"No JPEG photos were found beneath <code>%s</code>.", "在 <code>%s</code> 下未找到 JPEG 照片。", "<code>%s</code> 配下に JPEG 写真が見つかりませんでした。"};
     result[S_SENSORS_BROWSE] = {"Browse all captures", "浏览全部拍摄文件", "撮影ファイルをすべて表示"};
     result[S_PHOTO_CAPTURED] = {"Photo captured and saved to the microSD card", "照片已拍摄并保存到 microSD 卡", "写真を撮影し、microSD カードに保存しました"};
+    result[S_SDCARD_ABSENT] = {"no card inserted", "未插入卡", "カードが挿入されていません"};
+    result[S_SDCARD_UNFORMATTED] = {"inserted, not formatted", "已插入，未格式化", "挿入済み、未フォーマット"};
+    result[S_SDCARD_FORMATTING] = {"formatting…", "正在格式化…", "フォーマット中…"};
+    result[S_SDCARD_ERROR] = {"inserted, not responding; reinsert the card", "已插入但无响应；请重新插入卡", "挿入済みですが応答がありません。カードを挿し直してください"};
+    result[S_E_SDCARD_ERROR] = {"The microSD card does not respond; reinsert it", "microSD 卡无响应；请重新插入", "microSD カードが応答しません。挿し直してください"};
+    result[S_SDCARD_FORMAT_CONFIRM] = {"Erase everything on the microSD card", "清除 microSD 卡上的全部内容", "microSD カードの内容をすべて消去する"};
+    result[S_SDCARD_FORMAT_BUTTON] = {"Format microSD card", "格式化 microSD 卡", "microSD カードをフォーマット"};
+    result[S_SDCARD_FORMAT_UNCONFIRMED] = {"Tick the box to confirm erasing the microSD card", "请勾选复选框以确认清除 microSD 卡", "microSD カードの消去を確認するにはチェックを入れてください"};
+    result[S_SDCARD_FORMAT_STARTED] = {"Formatting the microSD card; recording stays stopped until it finishes. Refresh this page to see when the card is ready.", "正在格式化 microSD 卡；完成前录像保持停止。刷新此页面查看卡何时就绪。", "microSD カードをフォーマットしています。完了するまで録画は停止したままです。このページを再読み込みすると、カードの準備ができたか確認できます。"};
+    result[S_E_SDCARD_ABSENT] = {"No microSD card is inserted", "未插入 microSD 卡", "microSD カードが挿入されていません"};
+    result[S_E_SDCARD_UNFORMATTED] = {"The microSD card is not formatted; format it on the Status page", "microSD 卡未格式化；请在状态页面将其格式化", "microSD カードがフォーマットされていません。ステータスページでフォーマットしてください"};
+    result[S_E_SDCARD_BUSY] = {"The microSD card is being formatted", "microSD 卡正在格式化", "microSD カードをフォーマット中です"};
+    result[S_E_FORMAT_FAILED] = {"Camera could not format the microSD card", "相机无法格式化 microSD 卡", "カメラが microSD カードをフォーマットできませんでした"};
+    result[S_E_SEND_COMMAND] = {"Cannot send command to the camera: %s", "无法向相机发送命令：%s", "カメラにコマンドを送信できません: %s"};
+    result[S_E_COMMAND_UNCONFIRMED] = {"Camera did not confirm the command", "相机未确认该命令", "カメラがコマンドを確認しませんでした"};
+    result[S_SENSORS_RECORD_TEXT] = {"Record video to the microSD card.", "将视频录制到 microSD 卡。", "microSD カードに動画を録画します。"};
+    result[S_SENSORS_RECORD_START] = {"Start recording", "开始录像", "録画開始"};
+    result[S_SENSORS_RECORD_STOP] = {"Stop recording", "停止录像", "録画停止"};
+    result[S_E_RECORD_ACTION] = {"Unknown recording action", "未知的录像操作", "不明な録画操作です"};
+    result[S_E_RECORD_FAILED] = {"Camera could not start or stop recording", "相机无法开始或停止录像", "カメラが録画を開始または停止できませんでした"};
+    result[S_RECORDING_STARTED] = {"Recording to the microSD card", "正在录像到 microSD 卡", "microSD カードに録画中です"};
+    result[S_RECORDING_STOPPED] = {"Recording stopped", "录像已停止", "録画を停止しました"};
     result[S_E_LIDAR_ACTION] = {"Unknown LiDAR action", "未知的激光测距操作", "不明な LiDAR 操作です"};
     result[S_LIDAR_ENABLED] = {"LiDAR enabled", "激光测距已启用", "LiDAR を有効にしました"};
     result[S_LIDAR_DISABLED] = {"LiDAR disabled", "激光测距已禁用", "LiDAR を無効にしました"};

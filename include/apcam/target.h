@@ -66,6 +66,11 @@
 #ifndef APCAM_HAVE_4KCAM_COMPAT
 #define APCAM_HAVE_4KCAM_COMPAT 0
 #endif
+/* Packaging mounts and formats the microSD card (sdcard.sh) and publishes
+ * its state; the web shows it and offers formatting and recording. */
+#ifndef APCAM_HAVE_SDCARD
+#define APCAM_HAVE_SDCARD 0
+#endif
 /* Default manual gains (1/256) and colour temperature (K). A WB-tuning target
  * sets its sensor calibration's reference point. */
 #ifndef APCAM_DEFAULT_WB_RED

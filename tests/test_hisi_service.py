@@ -96,7 +96,16 @@ echo "$name 16384 0 - Live 0x0" >>"$TEST_ROOT/modules"
 [ "$1" = -q ] && shift
 awk -v dir="$1" '$2 == dir {found=1} END {exit !found}' "$TEST_ROOT/mounts"
 ''')
-    for command, body in (('mount', 'exit 1'), ('ifconfig', 'exit 0'),
+    (commands / 'mount').write_text('''#!/bin/sh
+[ "$1" = -o ] && shift 2
+echo "$1 $2 vfat rw,noatime 0 0" >>"$TEST_ROOT/mounts"
+''')
+    (commands / 'umount').write_text('''#!/bin/sh
+[ "$1" = -l ] && shift
+awk -v dir="$1" '$2 != dir' "$TEST_ROOT/mounts" >"$TEST_ROOT/mounts.new"
+mv "$TEST_ROOT/mounts.new" "$TEST_ROOT/mounts"
+''')
+    for command, body in (('ifconfig', 'exit 0'),
                           ('reboot', 'echo reboot >>"$TEST_ROOT/reboots"')):
         (commands / command).write_text(f'#!/bin/sh\n{body}\n')
     for path in commands.iterdir():
@@ -149,6 +158,7 @@ awk -v dir="$1" '$2 == dir {found=1} END {exit !found}' "$TEST_ROOT/mounts"
     service = re.sub(r'(?<![\w.])/run/', str(runtime) + '/', service)
     script = app / 'service.sh'
     script.write_text(service)
+    shutil.copy(repo / 'packaging/hisi/sdcard.sh', app / 'sdcard.sh')
 
     # A broken bring-up override and a seed cut short by a full /date.
     config.mkdir(parents=True)
@@ -157,7 +167,8 @@ awk -v dir="$1" '$2 == dir {found=1} END {exit !found}' "$TEST_ROOT/mounts"
     env = dict(os.environ, PATH=str(commands) + ':' + os.environ['PATH'],
                TEST_ROOT=str(root), TEST_HARDWARE=str(root / 'hardware'),
                TEST_OVERLAP=str(root / 'overlap'), TEST_FAIL=str(root / 'fail'),
-               TEST_IGNORE_TERM=str(root / 'ignore-term'), TEST_STALE=str(root / 'stale'))
+               TEST_IGNORE_TERM=str(root / 'ignore-term'), TEST_STALE=str(root / 'stale'),
+               SDCARD_DISKS=str(root / 'mmcblk0'), SDCARD_MOUNTS=str(mounts), SDCARD_HOST='')
     log = open(root / 'service.log', 'w+')
     process = subprocess.Popen(['sh', str(script)], env=env, stdout=log, stderr=log,
                                start_new_session=True)
@@ -248,13 +259,39 @@ awk -v dir="$1" '$2 == dir {found=1} END {exit !found}' "$TEST_ROOT/mounts"
         assert f'config={config}/camera.ini record={media}/DCIM/record' in \
             (runtime / 'camera_app.log').read_text()
 
-        # A web restart replaces the instance; a card mounted since is prepared.
-        mounts.write_text(f'/dev/mmcblk0p1 {media} vfat rw 0 0\n')
+        # A card inserted while running is mounted and prepared, and detached
+        # once removed.
+        sdcard_state = runtime / 'sdcard.state'
+        assert sdcard_state.read_text() == 'absent\n'
+        status_page = web_request('/')[1]
+        assert b'<th>microSD</th><td>no card inserted</td>' in status_page
+        assert b'/storage/format' not in status_page
+        sensors_page = web_request('/sensors')[1]
+        assert b'action=/sensors/record' in sensors_page
+        assert b'No microSD card is inserted' in sensors_page
+        (root / 'mmcblk0').touch()
+        (root / 'mmcblk0p1').touch()
+        wait_for(lambda: sdcard_state.read_text() == 'ready\n', 'inserted card not mounted')
+        assert mounts.read_text() == f'{root}/mmcblk0p1 {media} vfat rw,noatime 0 0\n'
+        for folder in ('DCIM/record', 'DCIM/capture', 'logs'):
+            assert (media / folder).is_dir(), folder
+        status_page = web_request('/')[1]
+        assert b'action=/storage/format' in status_page
+        assert b'no card inserted' not in status_page
+        # Formatting needs the confirmation box; recording a known action.
+        status, page = web_request('/storage/format', f'csrf={csrf()}')
+        assert status == 400 and b'Tick the box to confirm erasing' in page, page
+        status, page = web_request('/sensors/record', f'csrf={csrf()}&action=pause')
+        assert status == 400 and b'Unknown recording action' in page, page
+        (root / 'mmcblk0').unlink()
+        (root / 'mmcblk0p1').unlink()
+        wait_for(lambda: sdcard_state.read_text() == 'absent\n', 'removed card not detached')
+        assert mounts.read_text() == ''
+
+        # A web restart replaces the instance.
         old = ready.read_text()
         assert web_request('/restart', f'csrf={csrf()}')[0] == 303
         assert ready.exists() and ready.read_text() != old
-        for folder in ('DCIM/record', 'DCIM/capture', 'logs'):
-            assert (media / folder).is_dir(), folder
 
         # A crash is restarted without a request.
         old = ready.read_text()

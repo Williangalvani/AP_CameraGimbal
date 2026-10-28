@@ -22,6 +22,7 @@
 #include "camera_app/support_proxy.h"
 #include "camera_app/media.h"
 #include "camera_app/metadata.h"
+#include "camera_app/storage.h"
 #include "camera_app/targeting.h"
 #include "camera_app/survey.h"
 #include "camera_app/telemetry_time.h"
@@ -195,6 +196,13 @@ struct ca_mavlink_server {
     char config_last_status[512];
     bool yaw_lock;
     bool reported_recording;
+    /* MAV_CMD_STORAGE_FORMAT runs in a child; its final ACK goes to the
+     * requester once it exits. */
+    pid_t format_child;
+    struct route format_route;
+    mavlink_message_t format_request;
+    enum ca_storage_state storage_state;
+    uint64_t storage_check_ms;
     uint32_t flight_mode;
     uint64_t log_retry_ms, log_snapshot_ms, log_status_ms;
     bool log_snapshot_valid;
@@ -813,6 +821,20 @@ static void send_camera_settings(struct ca_mavlink_server *server,
 static float storage_available(const struct ca_mavlink_server *server,
                                float *total, float *used, uint8_t *status)
 {
+    switch (ca_storage_state()) {
+    case CA_STORAGE_ABSENT:
+        *total = *used = 0.0f;
+        *status = STORAGE_STATUS_EMPTY;
+        return 0.0f;
+    case CA_STORAGE_UNFORMATTED:
+    case CA_STORAGE_FORMATTING:
+        *total = *used = 0.0f;
+        *status = STORAGE_STATUS_UNFORMATTED;
+        return 0.0f;
+    case CA_STORAGE_UNMANAGED:
+    case CA_STORAGE_READY:
+        break;
+    }
     struct statvfs info;
     if (statvfs(server->capture_root, &info) < 0) {
         *total = NAN;
@@ -846,7 +868,8 @@ static void send_storage_information(struct ca_mavlink_server *server,
     (void)mavlink_msg_storage_information_encode_status(
         server->system_id, server->camera_component_id,
         &server->encode_status, &message, &storage);
-    (void)send_message(server, route, &message);
+    if (route) (void)send_message(server, route, &message);
+    else broadcast_message(server, &message);
 }
 
 static uint32_t recording_time_ms(const struct ca_mavlink_server *server)
@@ -1704,12 +1727,55 @@ static void send_image_tracking(struct ca_mavlink_server *server, const struct r
     if(route) (void)send_message(server,route,&message); else broadcast_message(server,&message);
 }
 
+/* MAV_RESULT_ACCEPTED if the card can take a recording or still now. */
+static uint8_t storage_refusal(const struct ca_mavlink_server *server)
+{
+    if (server->format_child > 0) return MAV_RESULT_TEMPORARILY_REJECTED;
+    if (ca_storage_writable() == 0) return MAV_RESULT_ACCEPTED;
+    return errno == EBUSY ? MAV_RESULT_TEMPORARILY_REJECTED : MAV_RESULT_DENIED;
+}
+
+/* Answers IN_PROGRESS; check_storage() sends the final ACK. */
+static uint8_t format_storage(struct ca_mavlink_server *server, const struct route *route,
+                              const mavlink_message_t *message, const float params[7])
+{
+    enum ca_storage_state state = ca_storage_state();
+    if (state == CA_STORAGE_UNMANAGED) return MAV_RESULT_UNSUPPORTED;
+    if (params[0] != 1.0f) return MAV_RESULT_DENIED;
+    if (server->format_child > 0 || state == CA_STORAGE_FORMATTING)
+        return MAV_RESULT_TEMPORARILY_REJECTED;
+    if (params[1] == 1.0f && state == CA_STORAGE_ABSENT) return MAV_RESULT_DENIED;
+    if (params[2] == 1.0f) {
+        server->image_count = 0U;
+        server->next_image_index = 1;
+    }
+    if (params[1] != 1.0f) return MAV_RESULT_ACCEPTED;
+    if (ca_media_recording(server->media) && ca_media_set_recording(server->media, false) < 0)
+        return MAV_RESULT_FAILED;
+    survey_pause(server, "survey paused: storage format");
+    server->captures_remaining = 0;
+    server->capture_interval_s = 0.0f;
+    pid_t child = ca_storage_format_start();
+    if (child < 0) {
+        ca_log("storage format could not start: %s", strerror(errno));
+        return MAV_RESULT_FAILED;
+    }
+    ca_log("storage format started");
+    server->format_child = child;
+    server->format_route = *route;
+    server->format_request = *message;
+    broadcast_capture_status(server);
+    return MAV_RESULT_IN_PROGRESS;
+}
+
 static uint8_t handle_camera_command(struct ca_mavlink_server *server,
                                      const struct route *route,
                                      const mavlink_message_t *message,
                                      uint16_t command, const float params[7])
 {
     switch (command) {
+    case MAV_CMD_STORAGE_FORMAT:
+        return format_storage(server, route, message, params);
     case MAV_CMD_CAMERA_TRACK_RECTANGLE: {
         if(ca_mavlink_server_survey_owns_gimbal(server)) return MAV_RESULT_TEMPORARILY_REJECTED;
         if(!ca_media_tracking_available(server->media)) return MAV_RESULT_UNSUPPORTED;
@@ -1829,6 +1895,8 @@ static uint8_t handle_camera_command(struct ca_mavlink_server *server,
         if (count < 0 || !isfinite(params[1]) || params[1] < 0.0f) {
             return MAV_RESULT_DENIED;
         }
+        uint8_t refused = storage_refusal(server);
+        if (refused != MAV_RESULT_ACCEPTED) return refused;
         if(server->camera_mode==CAMERA_MODE_IMAGE_SURVEY) {
             return survey_capture_start(server,count,params[1]);
         }
@@ -1853,11 +1921,15 @@ static uint8_t handle_camera_command(struct ca_mavlink_server *server,
         server->capture_interval_s = 0.0f;
         broadcast_capture_status(server);
         return MAV_RESULT_ACCEPTED;
-    case MAV_CMD_VIDEO_START_CAPTURE:
+    case MAV_CMD_VIDEO_START_CAPTURE: {
+        uint8_t refused = ca_media_recording(server->media) ? (uint8_t)MAV_RESULT_ACCEPTED
+                                                             : storage_refusal(server);
+        if (refused != MAV_RESULT_ACCEPTED) return refused;
         if (ca_media_set_recording(server->media, true) < 0) return MAV_RESULT_FAILED;
         if (server->recording_started_ms == 0U) server->recording_started_ms = monotonic_ms();
         broadcast_capture_status(server);
         return MAV_RESULT_ACCEPTED;
+    }
     case MAV_CMD_VIDEO_STOP_CAPTURE:
         if (ca_media_set_recording(server->media, false) < 0) return MAV_RESULT_FAILED;
         server->recording_started_ms = 0U;
@@ -2355,6 +2427,9 @@ static int apply_runtime_config(struct ca_mavlink_server *server, const struct c
         record = next->autorecord == CA_AUTORECORD_ENABLED ||
             (next->autorecord == CA_AUTORECORD_WHILE_ARMED &&
              server->have_vehicle_armed && server->vehicle_armed);
+        /* Starts once a card is ready; see check_storage(). */
+        if (record && !was_recording && storage_refusal(server) != MAV_RESULT_ACCEPTED)
+            record = false;
     }
     if ((next->thermal_palette != previous.thermal_palette && APCAM_HAVE_THERMAL_PALETTE &&
          ca_media_set_thermal_palette(server->media, next->thermal_palette) < 0) ||
@@ -3136,7 +3211,8 @@ static void process_message(struct ca_mavlink_server *server,
         /* Reconcile on each matching heartbeat, including the first heartbeat
          * after a restart while airborne. Link loss is not a disarm event. */
         if (server->settings.autorecord == CA_AUTORECORD_WHILE_ARMED &&
-            ca_media_recording(server->media) != armed) {
+            ca_media_recording(server->media) != armed &&
+            (!armed || storage_refusal(server) == MAV_RESULT_ACCEPTED)) {
             if (ca_media_set_recording(server->media, armed) < 0) {
                 ca_log("armed-state recording could not %s: %s",
                        armed ? "start" : "stop", strerror(errno));
@@ -3451,6 +3527,7 @@ int ca_mavlink_server_open(struct ca_mavlink_server **result,
     }
 #endif
     server->next_image_index = 1;
+    server->storage_state = ca_storage_state();
     server->focus_percent = NAN;
     server->started_ms = monotonic_ms();
     server->pollset = ca_poll_open();
@@ -3543,6 +3620,37 @@ int ca_mavlink_server_handle(struct ca_mavlink_server *server)
     return 0;
 }
 
+/* Finishes a format, and reports a card inserted, removed or formatted. An
+ * enabled autorecord starts once a card is ready. */
+static void check_storage(struct ca_mavlink_server *server, uint64_t now)
+{
+    if (server->format_child > 0) {
+        int done = ca_storage_format_poll(server->format_child);
+        if (done == 0) return;
+        server->format_child = 0;
+        ca_log("storage format %s", done > 0 ? "finished" : "failed");
+        (void)send_ack(server, &server->format_route, server->camera_component_id,
+                       MAV_CMD_STORAGE_FORMAT,
+                       done > 0 ? MAV_RESULT_ACCEPTED : MAV_RESULT_FAILED,
+                       &server->format_request);
+        server->storage_check_ms = 0U;
+    }
+    if (now - server->storage_check_ms < 500U) return;
+    server->storage_check_ms = now;
+    enum ca_storage_state state = ca_storage_state();
+    if (state == server->storage_state) return;
+    server->storage_state = state;
+    send_storage_information(server, NULL);
+    broadcast_capture_status(server);
+    if (state == CA_STORAGE_READY && server->settings.autorecord == CA_AUTORECORD_ENABLED &&
+        !ca_media_recording(server->media)) {
+        if (ca_media_set_recording(server->media, true) < 0)
+            ca_log("automatic recording could not start: %s", strerror(errno));
+        else
+            ca_log("recording started: storage ready");
+    }
+}
+
 void ca_mavlink_server_periodic(struct ca_mavlink_server *server)
 {
     if (server == NULL) return;
@@ -3578,6 +3686,7 @@ void ca_mavlink_server_periodic(struct ca_mavlink_server *server)
     }
 #endif
     update_binlog(server, true);
+    check_storage(server, now);
     bool recording = ca_media_recording(server->media);
     if (recording != server->reported_recording) {
         server->reported_recording = recording;

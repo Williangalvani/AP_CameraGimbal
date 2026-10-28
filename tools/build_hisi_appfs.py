@@ -109,6 +109,7 @@ def stage(camera_app, web, lib_dir, loader, staging):
     install(packaging / 'start.sh', staging / 'sh/start.sh', 0o755)
     (staging / 'fconfigs').mkdir()
     install(packaging / 'service.sh', app / 'service.sh', 0o755)
+    install(packaging / 'sdcard.sh', app / 'sdcard.sh', 0o755)
     install(packaging / 'camera.ini', app / 'camera.ini.default', 0o644)
     (app / 'web.pass.default').write_bytes(b'ardupilot\n')
     stage_libraries(camera_app, lib_dir, loader, staging)

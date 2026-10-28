@@ -9,6 +9,7 @@
 #include "camera_app/log.h"
 #include "camera_app/binlog.h"
 #include "camera_app/metadata.h"
+#include "camera_app/storage.h"
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
@@ -426,6 +427,7 @@ int APC_Media::set_recording(bool active)
     _autorecord_pending=false;
     REQUIRE_IMPL;
     bool previous=_backend->recording();
+    if(active && !previous && ca_storage_writable()<0)return -1;
     struct ca_log_vid r={.time_us=ca_binlog_time_us(),.active=active};
     const char *path=_backend->recording_path();
     if (path) snprintf(r.path,sizeof(r.path),"%s",path);
@@ -544,6 +546,7 @@ bool APC_Media::photo_available() const { return APCAM_HAVE_PHOTO && _backend &&
 int APC_Media::capture_photo(enum ca_photo_scope scope)
 {
     REQUIRE_IMPL;
+    if(ca_storage_writable()<0)return -1;
     if(_photo_prepare && _photo_prepare(_photo_opaque)<0)return -1;
     struct ca_metadata snapshot;
     ca_metadata_snapshot(&snapshot);
