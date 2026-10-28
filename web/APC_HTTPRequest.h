@@ -34,7 +34,7 @@ private:
     static constexpr size_t MAX_BODY = 256U * 1024U;
     static constexpr int RECEIVE_INCOMPLETE = -1;
     bool _owns_storage = false;
-    static bool parse_content_length(const char *, size_t, size_t *, bool *);
+    static bool parse_content_length(const char *, size_t, size_t *);
 };
 
 /* trimmed value of the first header called name, or NULL when absent */
@@ -79,7 +79,7 @@ inline const char *APC_HTTPRequest::header(const char *name, char *value, size_t
 }
 
 inline bool APC_HTTPRequest::parse_content_length(const char *headers, size_t header_len,
-                                 size_t *content_length, bool *present)
+                                 size_t *content_length)
 {
     APC_HTTPRequest temporary {};
     temporary.storage = (char *)headers;
@@ -89,11 +89,9 @@ inline bool APC_HTTPRequest::parse_content_length(const char *headers, size_t he
     unsigned long long parsed;
 
     *content_length = 0;
-    *present = false;
     if (temporary.header("Content-Length", value, sizeof(value)) == NULL) {
         return true;
     }
-    *present = true;
     errno = 0;
     parsed = strtoull(value, &end, 10);
     if (errno != 0 || *value == '\0' || *end != '\0' || parsed > SIZE_MAX) {
@@ -109,7 +107,6 @@ inline int APC_HTTPRequest::receive(int fd)
     size_t used = 0;
     size_t header_len = 0;
     size_t content_length = 0;
-    bool content_length_present = false;
     char *storage = (char*)(calloc(1, capacity));
 
     if (storage == NULL) return 500;
@@ -146,8 +143,7 @@ inline int APC_HTTPRequest::receive(int fd)
         snprintf(this->query, sizeof(this->query), "%s", query + 1);
         *query = '\0';
     }
-    if (!parse_content_length(storage, header_len, &content_length,
-                              &content_length_present)) {
+    if (!parse_content_length(storage, header_len, &content_length)) {
         free(storage);
         return 400;
     }
@@ -168,9 +164,9 @@ inline int APC_HTTPRequest::receive(int fd)
     this->body = storage + header_len;
     this->body_len = used - header_len;
 
-    if (this->body_len > content_length ||
-        ((strcmp(this->method, "POST") == 0 ||
-          strcmp(this->method, "PUT") == 0) && !content_length_present)) {
+    /* Transfer-Encoding is refused above, so a request without
+     * Content-Length has an empty body (RFC 9112 section 6.3). */
+    if (this->body_len > content_length) {
         free(storage);
         this->storage = nullptr;
         return 400;

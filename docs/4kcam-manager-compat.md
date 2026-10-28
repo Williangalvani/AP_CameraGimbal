@@ -29,7 +29,13 @@ From MCM, by ONVIF:
 4. A WS-Security UsernameToken login as `admin` / `blue`.
 
 From the extension, directly: `POST http://<camera>:80/action/<name>`, with no
-authentication and a JSON body.
+authentication and a JSON body. Its reads send no body and no
+`Content-Length`, which the web server takes as an empty body.
+
+The extension only creates its MCM stream for a source URL ending in
+`stream_0`, and keeps the image and video controls disabled until its
+Hardware setup (the Navigator PWM channels for focus, zoom and tilt) has been
+applied, even on a camera without those actuators.
 
 ## Behaviour
 
@@ -76,7 +82,7 @@ match carries:
 | `GetDeviceInformation` | manufacturer `RadCam`, model `HDIPC`, firmware version the build hash, serial number the MAC, hardware ID `IPCamera` |
 | `GetServices` | device management (ver10) and media (ver10), both at `http://<address>/onvif/device_service` |
 | `GetProfiles` | `main` and `sub`: video encoder configuration from `[stream.main]` / `[stream.sub]` (codec, resolution, frame rate, bitrate) |
-| `GetStreamUri` | `rtsp://<address>:<CAMERA_APP_RTSP_PORT or 8554>/video1` or `/video2` |
+| `GetStreamUri` | `rtsp://<address>:<CAMERA_APP_RTSP_PORT or 8554>/stream_0` or `/stream_1`, the vendor's paths; the extension only streams a source ending in `stream_0`. The hisi camera-app serves them alongside `/video1` and `/video2`. |
 
 `<address>` is the camera's address on the connection. Other operations get a
 SOAP `ActionNotSupported` fault, and a body without an operation

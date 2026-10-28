@@ -184,6 +184,11 @@ def check_actions(args, check):
     check(status == 200 and re.fullmatch(r'[0-9a-f]{2}(-[0-9a-f]{2}){5}', reply['device_mac'])
           and reply['device_mac'] != '00-00-00-00-00-00' and reply['device_id'].strip('0') != '',
           f"getSysConfig MAC {reply and reply['device_mac']} and ID {reply and reply['device_id']} are set")
+    with socket.create_connection((args.camera, 80), timeout=5) as sock:
+        sock.sendall(f'POST /action/getImageAdjustmentEx HTTP/1.1\r\nHost: {args.camera}\r\n'
+                     'Accept: */*\r\n\r\n'.encode())
+        head = sock.recv(4096).decode(errors='replace')
+    check(head.startswith('HTTP/1.1 200'), "a bodyless POST without Content-Length (the extension's reads) is answered")
     status, text = get(f'http://{args.camera}/action/getSysConfig')
     check(not (status == 200 and is_action_reply(text)), f'GET /action needs a login ({status})')
     status, text = post(f'http://{args.camera}/action/getSysConfig', '', 'application/json', 'http://example.com')
