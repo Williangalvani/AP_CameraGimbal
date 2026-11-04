@@ -6921,7 +6921,7 @@ static void send_upgrade_script(int fd)
         {"applicationUpdate", "true"}, {"maxSize", "33554432"}, {"appFailed", T(S_APP_UPDATE_FAILED)},
         {"confirmRollback", T(S_APP_ROLLBACK)},
 #elif APCAM_TARGET == APCAM_TARGET_HISI
-        {"maxSize", "37748980"}, {"namePattern", apcam_hisi_firmware::NAME_REGEX},
+        {"maxSize", "50331892"}, {"namePattern", apcam_hisi_firmware::NAME_REGEX},
 #endif
         {"mediaRoot", UPGRADE_WRITE_ROOT}, {"reboots", WEB_UPGRADE_REBOOTS_JS},
         {"prefix", FIRMWARE_PREFIX}, {"suffix", FIRMWARE_SUFFIX},

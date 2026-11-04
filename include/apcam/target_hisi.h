@@ -137,7 +137,8 @@ static inline unsigned apcam_hisi_auto_bitrate_kbps(unsigned width, unsigned hei
 #define APCAM_GIMBAL_RATE_COMMAND_UPRIGHT_OFFSET {0, 0, 0}
 #define APCAM_GIMBAL_RATE_COMMAND_INVERTED_MATRIX {1, 0, 0, 0, 1, 0, 0, 0, 1}
 #define APCAM_GIMBAL_RATE_COMMAND_INVERTED_OFFSET {0, 0, 0}
-/* /appfs is a read-only squashfs (UBI volume on mtd4). /date (UBIFS, mtd6)
+/* /appfs is a read-only squashfs (a UBI volume on mtd4, or raw on mtd5 on the
+ * vendor's MAIN firmware line; see hisi_firmware.h). /date (UBIFS, mtd6)
  * keeps settings across appfs updates; recordings and logs go to the microSD
  * card on /mnt, which the launcher mounts in place of xipc. */
 #ifdef APCAM_WEB_BUILD

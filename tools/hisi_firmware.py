@@ -7,11 +7,15 @@ header, 164-byte entries naming each /dev/mtdN with its offset, length and
 CRC, the data, and a 28-byte trailer. The updater erases the whole partition,
 nandwrites the entry and optionally reboots.
 
-appfs is mtd4: a UBI image holding one dynamic volume with a squashfs (xz,
-64 KiB blocks), attached as ubi1 and mounted through ubiblock1_0. The CRC
-detects corruption; it is not a signature.
+Where appfs lives depends on the vendor firmware line, which the device code
+in updatetype.ini tells apart (LAYOUTS). On the U35.5 line (19/2/51) appfs is
+mtd4: a UBI image holding one dynamic volume with a squashfs (xz, 64 KiB
+blocks), attached as ubi1 and mounted through ubiblock1_0. On the MAIN line
+(19/2/35) it is a raw squashfs in mtd5, mounted from mtdblock5, and mtd4 holds
+fconfigs. The CRC detects corruption; it is not a signature.
 """
 import argparse
+from collections import namedtuple
 import hashlib
 from pathlib import Path
 import struct
@@ -43,6 +47,33 @@ VTBL_SLOTS = 128
 VTBL_RECORD_SIZE = 172
 UBI_VID_DYNAMIC = 1
 UBI_COMPAT_REJECT = 5
+
+# include/apcam/hisi_firmware.h APPFS_LAYOUTS: device code -> appfs partition.
+Layout = namedtuple('Layout', 'mtd pebs ubi')
+LAYOUTS = {
+    DEVICE_CODE: Layout(APPFS_MTD, APPFS_PEBS, True),
+    (19, 2, 35): Layout('/dev/mtd5', 384, False),
+}
+MAX_APPFS_PEBS = max(layout.pebs for layout in LAYOUTS.values())
+SQUASHFS_SUPERBLOCK_SIZE = 96
+
+
+def layout_for(device_code):
+    try:
+        return LAYOUTS[tuple(device_code)]
+    except KeyError:
+        raise ValueError('No known appfs layout for device code %d/%d/%d' % tuple(device_code)) from None
+
+
+def parse_device_code(text):
+    """'19/2/35' -> (19, 2, 35), for the command line."""
+    parts = text.split('/')
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        raise argparse.ArgumentTypeError(f'{text!r} is not DEV/SDK/PLATFORM')
+    code = tuple(int(part) for part in parts)
+    if code not in LAYOUTS:
+        raise argparse.ArgumentTypeError(f'no known appfs layout for device code {text}')
+    return code
 
 
 def _vendor_table():
@@ -192,17 +223,43 @@ def check_ubi(image):
         raise ValueError('Volume 0 size does not fit the image and the appfs partition')
 
 
-MAX_IMAGE_SIZE = HEADER_SIZE + ENTRY_SIZE + APPFS_PEBS * PEB_SIZE + TRAILER_SIZE
+MAX_IMAGE_SIZE = HEADER_SIZE + ENTRY_SIZE + MAX_APPFS_PEBS * PEB_SIZE + TRAILER_SIZE
+
+
+def raw_image(volume, pebs):
+    """A squashfs for a raw appfs partition, padded with erased flash (0xff) to
+    whole erase blocks: the updater erases and writes each block in turn."""
+    image = volume + b'\xff' * (-len(volume) % PEB_SIZE)
+    if len(image) // PEB_SIZE > pebs:
+        raise ValueError(f'{len(volume)} bytes do not fit the appfs partition')
+    return image
+
+
+def check_raw(image, pebs):
+    if not image or len(image) % PEB_SIZE:
+        raise ValueError('appfs image is not a whole number of erase blocks')
+    if len(image) // PEB_SIZE > pebs:
+        raise ValueError('appfs image is larger than the appfs partition')
+    if image[:4] != b'hsqs':
+        raise ValueError('appfs image is not a little-endian squashfs')
+    used, = struct.unpack_from('<Q', image, 40)
+    if not SQUASHFS_SUPERBLOCK_SIZE <= used <= len(image):
+        raise ValueError('squashfs size does not fit the appfs image')
 
 
 def check_appfs_image(contents, device_code=DEVICE_CODE):
     """What hisi-web accepts (include/apcam/hisi_firmware.h check_appfs_image()):
-    unpack()'s checks plus a single rebooting /dev/mtd4 entry holding a squashfs
-    volume, so the image cannot rewrite the rootfs that carries the updater."""
+    unpack()'s checks plus a single rebooting entry for the layout's appfs
+    partition holding a squashfs, so the image cannot rewrite the rootfs that
+    carries the updater."""
     if len(contents) < HEADER_SIZE + ENTRY_SIZE + TRAILER_SIZE:
         raise ValueError('Image is too short')
     if len(contents) > MAX_IMAGE_SIZE:
         raise ValueError('Image is larger than the appfs partition')
+    image_code = struct.unpack_from('<III', contents, 8)
+    if image_code != tuple(device_code):
+        raise ValueError('Device code %d/%d/%d does not match' % image_code)
+    layout = layout_for(device_code)
     count, = struct.unpack_from('<I', contents, 0x14)
     if count != 1:
         raise ValueError('Image must contain exactly one partition (appfs)')
@@ -211,12 +268,15 @@ def check_appfs_image(contents, device_code=DEVICE_CODE):
     if contents[0x1e] != 0:
         raise ValueError('Unsupported header flags')
     raw_path = contents[HEADER_SIZE:HEADER_SIZE + ENTRY_PATH_SIZE]
-    if b'\0' not in raw_path or raw_path.split(b'\0', 1)[0] != APPFS_MTD.encode():
-        raise ValueError(f'Image does not target the appfs partition ({APPFS_MTD})')
+    if b'\0' not in raw_path or raw_path.split(b'\0', 1)[0] != layout.mtd.encode():
+        raise ValueError(f'Image does not target the appfs partition ({layout.mtd})')
     length, offset = struct.unpack_from('<II', contents, HEADER_SIZE + ENTRY_PATH_SIZE)
     if offset != HEADER_SIZE + ENTRY_SIZE or offset + length != len(contents) - TRAILER_SIZE:
         raise ValueError('Partition data does not fill the image')
     _, ((_, image),) = unpack(contents, device_code)
+    if not layout.ubi:
+        check_raw(image, layout.pebs)
+        return image
     check_ubi(image)
     if image[2 * PEB_SIZE + DATA_OFFSET:2 * PEB_SIZE + DATA_OFFSET + 4] != b'hsqs':
         raise ValueError('appfs volume is not a little-endian squashfs')
@@ -229,22 +289,27 @@ def squashfs(staging, output, mksquashfs):
                     '-all-time', '0', '-quiet'], check=True)
 
 
-def build_appfs(staging, output, mksquashfs='mksquashfs', reboot=True):
+def build_appfs(staging, output, mksquashfs='mksquashfs', reboot=True, device_code=DEVICE_CODE):
     with tempfile.TemporaryDirectory() as temporary:
         volume = Path(temporary) / 'appfs.squashfs'
         squashfs(staging, volume, mksquashfs)
-        build_volume(volume.read_bytes(), output, reboot)
+        build_volume(volume.read_bytes(), output, reboot, device_code)
 
 
-def build_volume(volume, output, reboot=True):
+def build_volume(volume, output, reboot=True, device_code=DEVICE_CODE):
     if volume[:4] != b'hsqs':
         raise ValueError('appfs volume is not a little-endian squashfs')
-    image = ubinize(volume)
-    check_ubi(image)
-    contents = pack([(APPFS_MTD, image)], reboot=reboot)
-    unpack(contents)
+    layout = layout_for(device_code)
+    if layout.ubi:
+        image = ubinize(volume)
+        check_ubi(image)
+    else:
+        image = raw_image(volume, layout.pebs)
+        check_raw(image, layout.pebs)
+    contents = pack([(layout.mtd, image)], device_code, reboot=reboot)
+    unpack(contents, device_code)
     output.write_bytes(contents)
-    print(f'{output}: {APPFS_MTD} {len(image) // PEB_SIZE} PEBs, {len(contents)} bytes')
+    print(f'{output}: {layout.mtd} {len(image) // PEB_SIZE} PEBs, {len(contents)} bytes')
 
 
 def main():
@@ -264,17 +329,22 @@ def main():
     check = sub.add_parser('check', help='validate an image as the web UI does: appfs only, '
                            'so it is also safe to send to the rootfs updater on :9091')
     check.add_argument('image', type=Path)
+    for command in (appfs, volume, check):
+        command.add_argument('--device-code', type=parse_device_code, default=DEVICE_CODE,
+                             help='the camera\'s updatetype.ini DEV/SDK/PLATFORM, which picks the '
+                             'appfs layout (default %d/%d/%d)' % DEVICE_CODE)
     args = parser.parse_args()
     if args.command == 'appfs':
-        build_appfs(args.staging, args.output, args.mksquashfs, reboot=not args.no_reboot)
+        build_appfs(args.staging, args.output, args.mksquashfs, not args.no_reboot, args.device_code)
     elif args.command == 'volume':
-        build_volume(args.squashfs.read_bytes(), args.output, reboot=not args.no_reboot)
+        build_volume(args.squashfs.read_bytes(), args.output, not args.no_reboot, args.device_code)
     else:
         try:
-            image = check_appfs_image(args.image.read_bytes())
+            image = check_appfs_image(args.image.read_bytes(), args.device_code)
         except ValueError as error:
             raise SystemExit(f'{args.image}: rejected: {error}')
-        print(f'{args.image}: {APPFS_MTD} {len(image) // PEB_SIZE} PEBs, reboots after update')
+        print(f'{args.image}: {layout_for(args.device_code).mtd} {len(image) // PEB_SIZE} PEBs, '
+              'reboots after update')
 
 
 if __name__ == '__main__':

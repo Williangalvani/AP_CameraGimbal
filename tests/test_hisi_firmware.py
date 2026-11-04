@@ -110,6 +110,59 @@ class Ubi(unittest.TestCase):
             fw.check_ubi(with_reserved(image, len(image) // fw.PEB_SIZE - 3))
 
 
+MAIN_CODE = (19, 2, 35)
+
+
+def sample_squashfs(size=5000):
+    """Enough of a squashfs superblock for check_raw(): magic and bytes_used."""
+    volume = bytearray(size)
+    volume[:4] = b'hsqs'
+    struct.pack_into('<Q', volume, 40, size)
+    return bytes(volume)
+
+
+class Raw(unittest.TestCase):
+    """The MAIN firmware line: a raw squashfs in mtd5."""
+
+    def test_layouts(self):
+        self.assertEqual(fw.layout_for(fw.DEVICE_CODE), (fw.APPFS_MTD, fw.APPFS_PEBS, True))
+        self.assertEqual(fw.layout_for(MAIN_CODE), ('/dev/mtd5', 384, False))
+        with self.assertRaisesRegex(ValueError, 'No known appfs layout'):
+            fw.layout_for((19, 2, 52))
+        self.assertEqual(fw.parse_device_code('19/2/35'), MAIN_CODE)
+
+    def test_volume(self):
+        volume = sample_squashfs()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'appfs.img'
+            with contextlib.redirect_stdout(io.StringIO()):
+                fw.build_volume(volume, output, device_code=MAIN_CODE)
+            contents = output.read_bytes()
+        self.assertEqual(struct.unpack_from('<III', contents, 8), MAIN_CODE)
+        (path, image), = fw.unpack(contents, MAIN_CODE)[1]
+        self.assertEqual(path, '/dev/mtd5')
+        self.assertEqual(len(image), fw.PEB_SIZE)
+        self.assertEqual(image[:len(volume)], volume)
+        self.assertEqual(set(image[len(volume):]), {0xff})
+        self.assertEqual(fw.check_appfs_image(contents, MAIN_CODE), image)
+        with self.assertRaisesRegex(ValueError, 'Device code'):
+            fw.check_appfs_image(contents)
+
+    def test_check_raw(self):
+        image = fw.raw_image(sample_squashfs(), 384)
+        fw.check_raw(image, 384)
+        with self.assertRaisesRegex(ValueError, 'erase blocks'):
+            fw.check_raw(image[:-1], 384)
+        with self.assertRaisesRegex(ValueError, 'larger'):
+            fw.check_raw(image * 2, 1)
+        with self.assertRaisesRegex(ValueError, 'squashfs'):
+            fw.check_raw(b'UBI#' + image[4:], 384)
+        with self.assertRaisesRegex(ValueError, 'squashfs size'):
+            fw.check_raw(fw.raw_image(sample_squashfs(fw.PEB_SIZE + 1)[:fw.PEB_SIZE], 384), 384)
+        with self.assertRaisesRegex(ValueError, 'do not fit'):
+            fw.raw_image(b'hsqs' + bytes(384 * fw.PEB_SIZE), 384)
+
+
 def build_appfs(directory, *extra):
     staging = Path(directory) / 'stage'
     (staging / 'sh').mkdir(parents=True)
@@ -181,6 +234,8 @@ class Appfs(unittest.TestCase):
 
 CXX = os.environ.get('CXX', 'c++')
 VENDOR_APPFS = ROOT.parents[1] / 'restore/vendor_appfs_restore.bin'
+# The squashfs a MAIN-line camera's mtd5 holds, copied off the camera.
+VENDOR_MAIN_APPFS = ROOT.parents[1] / 'restore/v9/vendor_v9_mtd5_appfs.sqfs'
 # An original vendor update, e.g. IPC_18.010.U35.5_0054_V16(260305).img.
 VENDOR_IMAGE = Path(os.environ.get('HISI_VENDOR_IMAGE', '/nonexistent'))
 NAMES_ACCEPTED = ['HISI_AP_b321e2_appfs.img', 'HISI_AP_b321e2_appfs.bin',
@@ -203,6 +258,12 @@ class WebCheck(unittest.TestCase):
                         str(ROOT / 'tests/hisi_firmware_check.cpp'), '-o', str(cls.checker)], check=True)
         cls.good = build_appfs(cls.path).read_bytes()
         cls.ubi = fw.unpack(cls.good)[1][0][1]
+        (cls.path / 'main').mkdir()
+        cls.main = build_appfs(cls.path / 'main', '--device-code', '19/2/35').read_bytes()
+        cls.raw = fw.unpack(cls.main, MAIN_CODE)[1][0][1]
+        cls.main_ini = cls.path / 'main.ini'
+        cls.main_ini.write_text('[UPDATE_SET]\nVER = 18.010.25.3_MAIN_V9(240601)\nDEV_TYPE = 19\n'
+                                'SDK_TYPE = 2\nPLATFORM_TYPE = 35\n')
 
     @classmethod
     def tearDownClass(cls):
@@ -294,6 +355,39 @@ class WebCheck(unittest.TestCase):
             'header flags': poke(0x1e, b'\1'),
             'no reboot': fw.pack([(fw.APPFS_MTD, self.ubi)], reboot=False),
             'not squashfs': fw.pack([(fw.APPFS_MTD, sample_ubi())]),
+        }
+
+    def test_main_layout(self):
+        self.assertEqual(self.check(self.main, str(self.main_ini)), 'ok')
+        self.assertIn('Device code 19/2/35', self.check(self.main))
+        self.assertIn('Device code 19/2/51', self.check(self.good, str(self.main_ini)))
+        self.assertIn('/dev/mtd5', self.check(fw.pack([(fw.APPFS_MTD, self.raw)], MAIN_CODE), str(self.main_ini)))
+        self.assertIn('/dev/mtd5', self.check(fw.pack([('/dev/mtd4', self.raw)], MAIN_CODE), str(self.main_ini)))
+        for name, image in self.main_mutants().items():
+            with self.subTest(name):
+                self.assertNotEqual(self.check(image, str(self.main_ini)), 'ok')
+                with self.assertRaises(ValueError):
+                    fw.check_appfs_image(image, MAIN_CODE)
+        self.assertEqual(fw.check_appfs_image(self.main, MAIN_CODE), self.raw)
+
+    @unittest.skipUnless(VENDOR_MAIN_APPFS.is_file(), 'no MAIN-line vendor appfs copy')
+    def test_accepts_vendor_main_restore(self):
+        output = self.path / 'restore-main.img'
+        with contextlib.redirect_stdout(io.StringIO()):
+            fw.build_volume(VENDOR_MAIN_APPFS.read_bytes(), output, device_code=MAIN_CODE)
+        self.assertEqual(self.check(output.read_bytes(), str(self.main_ini)), 'ok')
+
+    def main_mutants(self):
+        unpadded = self.raw.rstrip(b'\xff')
+        truncated = bytearray(self.raw)
+        struct.pack_into('<Q', truncated, 40, len(self.raw) + 1)
+        return {
+            'unpadded': fw.pack([('/dev/mtd5', unpadded)], MAIN_CODE),
+            'too large': fw.pack([('/dev/mtd5', self.raw + b'\xff' * 384 * fw.PEB_SIZE)], MAIN_CODE),
+            'ubi payload': fw.pack([('/dev/mtd5', self.ubi)], MAIN_CODE),
+            'truncated squashfs': fw.pack([('/dev/mtd5', bytes(truncated))], MAIN_CODE),
+            'rootfs': fw.pack([('/dev/mtd3', self.raw)], MAIN_CODE),
+            'no reboot': fw.pack([('/dev/mtd5', self.raw)], MAIN_CODE, reboot=False),
         }
 
     def test_python_check_matches_the_web(self):

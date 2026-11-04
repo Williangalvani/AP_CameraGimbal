@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Stage the Hi3516DV500 appfs and write it as a vendor update image.
 
-The image replaces the whole vendor appfs (mtd4). rcS runs sh/start.sh from
-it, and S05Ubifs_Mount mounts the vendor parameter volume on fconfigs/, so
-both must exist. Everything else lives in ap_cameragimbal/.
+The image replaces the whole vendor appfs, which --device-code locates (mtd4
+on the U35.5 firmware line, mtd5 on the MAIN line; see hisi_firmware.py).
+rcS runs sh/start.sh from it, and S05Ubifs_Mount mounts the vendor parameter
+volume on fconfigs/, so both must exist. Everything else lives in
+ap_cameragimbal/.
 
 camera-app links the B040 MPP shared libraries, which are musl builds; the
 rootfs has only glibc, so ap_cameragimbal/lib carries musl's loader and every
@@ -137,13 +139,17 @@ def main():
     parser.add_argument('--loader', type=Path, required=True,
                         help="the musl toolchain's libc.so, installed as " + LOADER)
     parser.add_argument('--mksquashfs', default='mksquashfs')
+    parser.add_argument('--device-code', type=hisi_firmware.parse_device_code,
+                        default=hisi_firmware.DEVICE_CODE,
+                        help="the camera's updatetype.ini DEV/SDK/PLATFORM (default %d/%d/%d)"
+                        % hisi_firmware.DEVICE_CODE)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory() as temporary:
         staging = Path(temporary) / 'appfs'
         staging.mkdir()
         stage(args.camera_app, args.web, args.lib_dir, args.loader, staging)
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        hisi_firmware.build_appfs(staging, args.output, args.mksquashfs)
+        hisi_firmware.build_appfs(staging, args.output, args.mksquashfs, device_code=args.device_code)
 
 
 if __name__ == '__main__':

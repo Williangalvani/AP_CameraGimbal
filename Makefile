@@ -475,15 +475,20 @@ hisi_dependencies: build-dependencies
 hisi: hisi_dependencies generated
 	$(MAKE) -C camera_app CAMERA_BACKEND=hisi CROSS_COMPILE='$(HISI_CROSS_COMPILE)'
 	$(MAKE) -C web CAMERA_BACKEND=hisi HISI_CROSS_COMPILE='$(HISI_CROSS_COMPILE)' hisi-web
-# Whole-appfs (mtd4) image for the vendor web uploader or the rootfs
-# recovery updater on TCP 9091. Package only: nothing here contacts a camera.
+# Whole-appfs image for the vendor web uploader or the rootfs recovery updater
+# on TCP 9091. Package only: nothing here contacts a camera. HISI_DEVICE_CODE
+# is the camera's updatetype.ini code, which picks the appfs layout: 19/2/51
+# (U35.5 firmware, UBI in mtd4) or 19/2/35 (MAIN firmware, squashfs in mtd5).
+HISI_DEVICE_CODE ?= 19/2/51
 HISI_BUILD_HASH := $(MT11_GIT_HASH)$(shell git diff --quiet HEAD -- || printf -- -dirty)
-HISI_APPFS_OUT ?= build/HISI_AP_$(MT11_VERSION)_$(HISI_BUILD_HASH)_appfs.img
+HISI_APPFS_SUFFIX := $(if $(filter 19/2/51,$(HISI_DEVICE_CODE)),,_p$(lastword $(subst /, ,$(HISI_DEVICE_CODE))))
+HISI_APPFS_OUT ?= build/HISI_AP_$(MT11_VERSION)_$(HISI_BUILD_HASH)_appfs$(HISI_APPFS_SUFFIX).img
 SQUASHFS_TOOLS_ROOT ?= $(abspath $(DEPS_ROOT)/squashfs-tools)
 .PHONY: hisi_appfs hisi-test
 hisi_appfs: hisi
 	tools/bootstrap_squashfs_tools.sh '$(SQUASHFS_TOOLS_ROOT)'
 	python3 tools/build_hisi_appfs.py --mksquashfs '$(SQUASHFS_TOOLS_ROOT)/bin/mksquashfs' \
+		--device-code '$(HISI_DEVICE_CODE)' \
 		--lib-dir '$(HISI_B040_ROOT)/openipc/general/package/hisilicon-osdrv-hi3519dv500/files/lib' \
 		--loader '$(HISI_TOOLCHAIN)/aarch64-buildroot-linux-musl/sysroot/lib/libc.so' \
 		camera_app/build/hisi/camera-app web/hisi-web '$(HISI_APPFS_OUT)'

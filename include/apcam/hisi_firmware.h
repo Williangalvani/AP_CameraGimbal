@@ -6,8 +6,9 @@
 
 // Validation of Hi3516DV500 vendor update images before they reach the rootfs
 // updater, matching tools/hisi_firmware.py check_appfs_image(). The web
-// UI only forwards appfs: one /dev/mtd4 entry that reboots after writing, so
-// an upload can never rewrite the rootfs that holds the recovery updater.
+// UI only forwards appfs: one entry for the appfs partition that reboots after
+// writing, so an upload can never rewrite the rootfs that holds the recovery
+// updater.
 namespace apcam_hisi_firmware {
 
 constexpr uint32_t MAGIC = 0xabcabccbU;
@@ -26,7 +27,6 @@ constexpr size_t APPFS_PEBS = 288;
 constexpr size_t APPFS_VOLUME_MAX_PEBS = 265;
 constexpr size_t VTBL_SLOTS = 128;
 constexpr size_t VTBL_RECORD_SIZE = 172;
-constexpr size_t MAX_IMAGE_SIZE = HEADER_SIZE + ENTRY_SIZE + APPFS_PEBS * PEB_SIZE + TRAILER_SIZE;
 
 // Upload names: .img as the vendor web UI requires, or .bin, in the characters
 // vendor releases and browser renames use ("IPC_..._V16(260305) (1).img").
@@ -52,6 +52,32 @@ inline bool valid_image_name(const char *name)
 // updatetype.ini [UPDATE_SET] DEV_TYPE / SDK_TYPE / PLATFORM_TYPE.
 struct device_code { uint32_t dev, sdk, platform; };
 constexpr device_code CAMERA_DEVICE_CODE = {19, 2, 51};
+
+// Vendor firmware lines lay the flash out differently; the device code the
+// updater checks tells them apart. The U35.5 line keeps appfs as a UBI volume
+// in a 36 MiB mtd4; the MAIN line keeps it as a raw squashfs in a 48 MiB mtd5,
+// with fconfigs in mtd4.
+struct appfs_layout {
+    device_code code;
+    const char *mtd;
+    size_t pebs;
+    bool ubi;
+};
+constexpr appfs_layout APPFS_LAYOUTS[] = {
+    {{19, 2, 51}, "/dev/mtd4", APPFS_PEBS, true},
+    {{19, 2, 35}, "/dev/mtd5", 384, false},
+};
+constexpr size_t MAX_APPFS_PEBS = 384;
+constexpr size_t MAX_IMAGE_SIZE = HEADER_SIZE + ENTRY_SIZE + MAX_APPFS_PEBS * PEB_SIZE + TRAILER_SIZE;
+
+inline const appfs_layout *find_layout(device_code code)
+{
+    for (const appfs_layout &layout : APPFS_LAYOUTS) {
+        if (layout.code.dev == code.dev && layout.code.sdk == code.sdk && layout.code.platform == code.platform)
+            return &layout;
+    }
+    return nullptr;
+}
 
 inline uint32_t le32(const uint8_t *p)
 {
@@ -143,6 +169,18 @@ inline const char *check_ubi(const uint8_t *image, size_t length, char *error, s
     return nullptr;
 }
 
+// A squashfs written straight to the partition, padded to whole erase blocks.
+inline const char *check_raw(const uint8_t *image, size_t length, size_t pebs)
+{
+    constexpr size_t SUPERBLOCK_SIZE = 96;
+    if (length == 0 || length % PEB_SIZE) return "appfs image is not a whole number of erase blocks";
+    if (length / PEB_SIZE > pebs) return "appfs image is larger than the appfs partition";
+    if (std::memcmp(image, "hsqs", 4)) return "appfs image is not a little-endian squashfs";
+    const uint64_t used = uint64_t(le32(image + 40)) | uint64_t(le32(image + 44)) << 32;
+    if (used < SUPERBLOCK_SIZE || used > length) return "squashfs size does not fit the appfs image";
+    return nullptr;
+}
+
 // nullptr when the camera's updater would accept the image and the web UI may
 // forward it; otherwise a reason (possibly formatted into error).
 inline const char *check_appfs_image(const uint8_t *image, size_t length, device_code expected,
@@ -163,18 +201,30 @@ inline const char *check_appfs_image(const uint8_t *image, size_t length, device
                       unsigned(expected.dev), unsigned(expected.sdk), unsigned(expected.platform));
         return error;
     }
+    const appfs_layout *layout = find_layout(expected);
+    if (layout == nullptr) {
+        std::snprintf(error, error_size, "No known appfs layout for device code %u/%u/%u",
+                      unsigned(expected.dev), unsigned(expected.sdk), unsigned(expected.platform));
+        return error;
+    }
     if (le32(image + 0x14) != 1U) return "Image must contain exactly one partition (appfs)";
     if (image[0x1c] != 1U) return "Image does not reboot after writing";
     // the vendor web uploader requires it, and no known image sets it
     if (image[0x1e] != 0U) return "Unsupported header flags";
     const uint8_t *entry = image + HEADER_SIZE;
     if (!std::memchr(entry, 0, ENTRY_PATH_SIZE) ||
-        std::strcmp(reinterpret_cast<const char *>(entry), APPFS_MTD) != 0)
-        return "Image does not target the appfs partition (/dev/mtd4)";
+        std::strcmp(reinterpret_cast<const char *>(entry), layout->mtd) != 0) {
+        std::snprintf(error, error_size, "Image does not target the appfs partition (%s)", layout->mtd);
+        return error;
+    }
     const uint32_t data_length = le32(entry + 0x80), offset = le32(entry + 0x84);
     if (offset != HEADER_SIZE + ENTRY_SIZE || size_t(offset) + data_length != length - TRAILER_SIZE)
         return "Partition data does not fill the image";
-    if (vendor_crc(image + offset, data_length) != le32(entry + 0x90)) return "/dev/mtd4 CRC mismatch";
+    if (vendor_crc(image + offset, data_length) != le32(entry + 0x90)) {
+        std::snprintf(error, error_size, "%s CRC mismatch", layout->mtd);
+        return error;
+    }
+    if (!layout->ubi) return check_raw(image + offset, data_length, layout->pebs);
     return check_ubi(image + offset, data_length, error, error_size);
 }
 

@@ -28,7 +28,7 @@
 #define HISI_UPLOAD_DURATION_MS 300000U
 // The upload sits in tmpfs while the updater may hold its own copy.
 #define HISI_MEMORY_RESERVE (16U * 1024U * 1024U)
-static_assert(apcam_hisi_firmware::MAX_IMAGE_SIZE == 37748980U, "upgrade.js maxSize");
+static_assert(apcam_hisi_firmware::MAX_IMAGE_SIZE == 50331892U, "upgrade.js maxSize");
 
 static bool hisi_write_all(int fd, const void *data, size_t length)
 {
