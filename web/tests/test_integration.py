@@ -998,13 +998,17 @@ try:
     assert b"id=attitude-pitch-rate" in body
     assert b"id=attitude-yaw-rate" in body
     assert b">Live</a>" in body
+    assert re.search(rb'<script src=/live\.js data-csrf="[^"]+" data-gimbal="[01]" data-mse="[01]" defer>', body)
     status, body, headers = request("GET", "/live.js", "initial-password")
-    assert status == 200 and b"video.src = '/live/video'" in body
+    assert status == 200
+    assert b"const streamUrl = () => '/live/video' + (Number(stream.value) + 1) + '.mp4?start=' + Date.now();" in body
+    assert b"if (!useMse) { session = null; video.src = streamUrl(); video.load(); video.play()" in body
+    assert b"const useMse = script.dataset.mse === '1' && !!(window.MediaSource" in body
+    assert b"fetch(streamUrl(), {cache: 'no-store'" in body
     assert b"fetch('/live/attitude.json'" in body
     assert b"setInterval(refreshAttitude, 250)" in body
     assert b"sendControl(direction, Number(rate.value).toFixed(0))" in body
     assert b"Number(data.pitch_rate_dps).toFixed(1) + '\xc2\xb0/s'" in body
-    assert b"MediaSource" not in body
     assert headers["Content-Type"].startswith("application/javascript")
     subprocess.run(["node", "--check"], input=body, check=True)
     status, body, headers = request(
