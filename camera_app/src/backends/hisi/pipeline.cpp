@@ -26,8 +26,8 @@ static void channel_attributes(ot_vpss_chn_attr *attr, unsigned channel,
     sample_comm_vpss_get_default_chn_attr(attr);
     attr->width = sizes->width[channel];
     attr->height = sizes->height[channel];
-    // photos read frames from the main channel's user queue
-    attr->depth = channel == CA_HISI_MAIN_CHN ? 2U : 0U;
+    // photos read frames from the main channel's user queue, one-push white balance the sub's
+    attr->depth = channel == CA_HISI_MAIN_CHN ? 2U : channel == CA_HISI_SUB_CHN ? 1U : 0U;
     if (channel != CA_HISI_MAIN_CHN) attr->compress_mode = OT_COMPRESS_MODE_NONE;
 }
 

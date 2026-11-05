@@ -57,7 +57,7 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   pool per VPSS channel, JPEG and BNR-motion supplements), about 210 MB with
   the defaults. Every pool is logged at startup.
 - **VPSS group 0**: channel 0 main (user queue depth 2 for photos), channel 1
-  sub, and channel 2 record (only when needed, enabled only while recording).
+  sub (depth 1 for one-push white balance), and channel 2 record (only when needed, enabled only while recording).
 - **VENC**: 0 = main (`/video1`), 1 = sub (`/video2`), 2 = dedicated H.264
   recorder, 3 = on-demand JPEG still. With the defaults (4K H.264 main, 4K
   recording) recording reuses the main encoder and VENC 2 is not created.
@@ -80,9 +80,11 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   ISP for that calibration's gains at a colour temperature, and fall back to
   auto if it has none. `manual` takes R/G/B gains in 1/256, defaulting to the
   calibration's 4950 K gains. One-push (Photos page, green or blue water)
-  measures the centre of the picture and saves the result as manual gains.
-  ISP attributes and statistics have their own mutex, so a measurement does
-  not stall recording.
+  runs on its own thread (`one_push_wb.h`, `media.cpp`): it sets manual gains,
+  waits 20 ms, averages the centre half of a channel 1 frame as BT.709 RGB and
+  steps the gains until the channels match, then saves them as manual gains.
+  ISP attributes and statistics have their own mutex, taken only per step, so
+  a one-push does not stall recording or the main loop.
 
 ## Bring-up overrides (environment)
 - `CA_HISI_SENSOR_BUS=<0-7>`: sensor I²C bus. The default 3 is the SDK's DMEB

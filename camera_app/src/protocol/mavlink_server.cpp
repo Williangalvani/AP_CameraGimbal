@@ -189,6 +189,8 @@ struct ca_mavlink_server {
     float tracking_rate[2];
     uint64_t config_check_ms;
     uint64_t wb_command_check_ms;
+    /* a one-push is running; wb_report: its outcome goes to <config>.wb.status */
+    bool wb_running, wb_report;
     struct stat config_stat;
     bool config_seen, config_pending;
     char config_status_path[4096];
@@ -2513,23 +2515,34 @@ static int apply_camera_config(struct ca_mavlink_server *server, size_t index, f
 }
 
 #if APCAM_HAVE_WB_TUNING
-/* Measure the scene, then apply and save the result as manual gains, so the
- * web page and GCS show it and it survives a restart. */
-static int one_push_white_balance(struct ca_mavlink_server *server, unsigned water,
-                                  char *message, size_t message_size)
+/* Starts a one-push in the background; finish_white_balance saves its
+ * result. A request while one runs is ignored, as the factory firmware does,
+ * and shares that one's outcome. */
+static int start_white_balance(struct ca_mavlink_server *server, unsigned water,
+                               char *message, size_t message_size)
 {
-    struct ca_wb_gains gains;
     if (water != CA_WB_WATER_GREEN && water != CA_WB_WATER_BLUE) {
         snprintf(message, message_size, "Unknown one-push white balance %u", water);
         errno = EINVAL;
         return -1;
     }
-    if (ca_media_measure_white_balance(server->media, (enum ca_wb_water)water, &gains) < 0) {
-        snprintf(message, message_size, "White balance not measured: %s",
-                 errno == ERANGE ? "the scene is too dark" : strerror(errno));
+    if (server->wb_running) return 0;
+    if (ca_media_start_white_balance(server->media, (enum ca_wb_water)water) < 0) {
+        snprintf(message, message_size, "White balance not started: %s", strerror(errno));
         parameter_status(server, message);
         return -1;
     }
+    server->wb_running = true;
+    parameter_status(server, water == CA_WB_WATER_BLUE ? "White balance: measuring for blue water"
+                                                       : "White balance: measuring for green water");
+    return 0;
+}
+
+/* Saves one-push gains as manual white balance, so the web page and GCS show
+ * them and they survive a restart. */
+static int save_white_balance(struct ca_mavlink_server *server, const struct ca_wb_gains &gains,
+                              char *message, size_t message_size)
+{
     struct ca_config next = server->settings;
     next.white_balance = CA_WB_MANUAL;
     next.wb_red = gains.red;
@@ -2537,7 +2550,6 @@ static int one_push_white_balance(struct ca_mavlink_server *server, unsigned wat
     next.wb_blue = gains.blue;
     if (apply_runtime_config(server, &next) < 0) {
         snprintf(message, message_size, "White balance not applied: %s", strerror(errno));
-        parameter_status(server, message);
         return -1;
     }
     // the mode last, so a failed save never pairs "manual" with old gains
@@ -2551,23 +2563,31 @@ static int one_push_white_balance(struct ca_mavlink_server *server, unsigned wat
                                               (size_t)index, (float)entry.value) < 0) {
             snprintf(message, message_size, "White balance applied but not saved: %s",
                      strerror(errno));
-            parameter_status(server, message);
             return -1;
         }
         ca_binlog_parameter(entry.name, (int)entry.value, false);
     }
-    snprintf(message, message_size, "White balance set: R %.2f G %.2f B %.2f",
-             gains.red / 256.0, gains.green / 256.0, gains.blue / 256.0);
-    parameter_status(server, message);
     return 0;
 }
 
 /* The web UI asks through <config>.wb.command ("1" green or "2" blue water)
  * and reads the outcome from <config>.wb.status: "ok" or "error", then the
  * message. Unlike MAVLink this works before any vehicle is heard. */
+static void white_balance_status(struct ca_mavlink_server *server, bool ok, const char *message)
+{
+    char status[4096], temporary[4100];
+    snprintf(status, sizeof(status), "%s.wb.status", server->config_path);
+    snprintf(temporary, sizeof(temporary), "%s.tmp", status);
+    FILE *output = fopen(temporary, "w");
+    if (!output) return;
+    bool written = fprintf(output, "%s\n%s\n", ok ? "ok" : "error", message) > 0;
+    if (fclose(output) == 0 && written && rename(temporary, status) == 0) return;
+    unlink(temporary);
+}
+
 static void white_balance_command(struct ca_mavlink_server *server, uint64_t now)
 {
-    char path[4096], status[4096], temporary[4100], message[160];
+    char path[4096], message[160];
     if (now - server->wb_command_check_ms < 500U) return;
     server->wb_command_check_ms = now;
     snprintf(path, sizeof(path), "%s.wb.command", server->config_path);
@@ -2577,15 +2597,43 @@ static void white_balance_command(struct ca_mavlink_server *server, uint64_t now
     bool parsed = fscanf(input, "%u", &water) == 1;
     fclose(input);
     unlink(path);
-    bool ok = parsed && one_push_white_balance(server, water, message, sizeof(message)) == 0;
-    if (!parsed) snprintf(message, sizeof(message), "Unreadable white balance request");
-    snprintf(status, sizeof(status), "%s.wb.status", server->config_path);
-    snprintf(temporary, sizeof(temporary), "%s.tmp", status);
-    FILE *output = fopen(temporary, "w");
-    if (!output) return;
-    bool written = fprintf(output, "%s\n%s\n", ok ? "ok" : "error", message) > 0;
-    if (fclose(output) == 0 && written && rename(temporary, status) == 0) return;
-    unlink(temporary);
+    if (!parsed) {
+        white_balance_status(server, false, "Unreadable white balance request");
+    } else if (start_white_balance(server, water, message, sizeof(message)) < 0) {
+        white_balance_status(server, false, message);
+    } else {
+        server->wb_report = true;
+    }
+}
+
+/* At the iteration limit the gains reached are kept, as the factory firmware
+ * does, and reported as set. */
+static void finish_white_balance(struct ca_mavlink_server *server)
+{
+    struct ca_wb_one_push result;
+    int error = 0;
+    char message[160];
+    if (!server->wb_running || !ca_media_poll_white_balance(server->media, &result, &error)) return;
+    server->wb_running = false;
+    bool ok = false;
+    if (error != 0) {
+        snprintf(message, sizeof(message), "White balance not measured: %s", strerror(error));
+    } else if (save_white_balance(server, result.gains, message, sizeof(message)) == 0) {
+        ok = true;
+        const double red = result.gains.red / 256.0, green = result.gains.green / 256.0,
+                     blue = result.gains.blue / 256.0;
+        if (result.converged) {
+            snprintf(message, sizeof(message), "White balance set: R %.2f G %.2f B %.2f after %u iterations",
+                     red, green, blue, result.iterations);
+        } else {
+            snprintf(message, sizeof(message),
+                     "White balance set: R %.2f G %.2f B %.2f; stopped at the %u-iteration limit",
+                     red, green, blue, result.limit);
+        }
+    }
+    parameter_status(server, message);
+    if (server->wb_report) white_balance_status(server, ok, message);
+    server->wb_report = false;
 }
 #endif
 
@@ -2952,9 +3000,10 @@ static int camera_parameter_set(struct ca_mavlink_server *server,
     case CA_CAMERA_GAIN: return ca_media_set_thermal_gain(server->media, (uint8_t)value);
     case CA_CAMERA_WB_ONEPUSH: {
 #if APCAM_HAVE_WB_TUNING
+        // accepted once started; the outcome follows in STATUSTEXT
         char message[160];
         return value == 0 ||
-            one_push_white_balance(server, (unsigned)value, message, sizeof(message)) == 0 ? 0 : -1;
+            start_white_balance(server, (unsigned)value, message, sizeof(message)) == 0 ? 0 : -1;
 #else
         errno = ENOTSUP;
         return -1;
@@ -3671,6 +3720,7 @@ void ca_mavlink_server_periodic(struct ca_mavlink_server *server)
     reload_config(server, now);
 #if APCAM_HAVE_WB_TUNING
     white_balance_command(server, now);
+    finish_white_balance(server);
 #endif
     const uint32_t tracking_interval=server->image_tracking_interval_ms?server->image_tracking_interval_ms:200;
     if(ca_media_tracking_available(server->media) && have_peer(server) &&

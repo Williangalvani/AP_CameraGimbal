@@ -92,6 +92,45 @@ bool APC_Media::survey_start(const ca_survey_request &request)
     return true;
 }
 
+struct APC_Media::WhiteBalanceWorker {
+    std::thread thread;
+    std::atomic<bool> stop{false}, done{false};
+    ca_wb_one_push result{};
+    int error = 0;
+};
+
+// The outcome stays for poll_white_balance.
+void APC_Media::_stop_white_balance()
+{
+    if(!_white_balance || !_white_balance->thread.joinable()) return;
+    _white_balance->stop=true;
+    _white_balance->thread.join();
+}
+
+int APC_Media::start_white_balance(enum ca_wb_water water)
+{
+    if(!_backend) { errno=ENODEV; return -1; }
+    if(_white_balance) { errno=EBUSY; return -1; }
+    auto *worker=new(std::nothrow) WhiteBalanceWorker;
+    if(!worker) { errno=ENOMEM; return -1; }
+    _white_balance=worker;
+    worker->thread=std::thread([this,worker,water]() {
+        if(_backend->one_push_white_balance(water,&worker->result,worker->stop)<0)
+            worker->error=errno?errno:EIO;
+        worker->done=true;
+    });
+    return 0;
+}
+
+bool APC_Media::poll_white_balance(ca_wb_one_push &result, int &error)
+{
+    if(!_white_balance || !_white_balance->done) return false;
+    if(_white_balance->thread.joinable()) _white_balance->thread.join();
+    result=_white_balance->result; error=_white_balance->error;
+    delete _white_balance; _white_balance=nullptr;
+    return true;
+}
+
 bool APC_Media::survey_poll(ca_survey_result &result)
 {
     if(_survey_completed) {
@@ -320,6 +359,7 @@ int APC_Media::configure(const struct ca_config *settings)
     if (pipeline) {
         if (_backend && _backend->recording()) { errno = EBUSY; return -1; }
         _stop_survey();
+        _stop_white_balance();
         LiveControls state = {};
         state.zoom = 1;
         state.lens_zoom[0] = state.lens_zoom[1] = 1;
@@ -393,6 +433,8 @@ int APC_Media::configure(const struct ca_config *settings)
 APC_Media::~APC_Media()
 {
     _stop_survey();
+    _stop_white_balance();
+    delete _white_balance;
     _stop_controls_monitor();
     if (recording()) (void)set_recording(false);
     _backend.reset();
@@ -613,12 +655,6 @@ int APC_Media::set_inverted(bool inverted)
     return 0;
 }
 
-int APC_Media::measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains)
-{
-    REQUIRE_IMPL;
-    return _backend->measure_white_balance(water, gains);
-}
-
 // Legacy protocol entry points; new services can use APC_Media directly.
 bool ca_media_tracking_available(ca_media *media)
 { return media && media->tracking().available() &&
@@ -763,11 +799,14 @@ int ca_media_set_inverted(struct ca_media *media, bool inverted)
     if (!media) { errno = ENODEV; return -1; }
     return media->set_inverted(inverted);
 }
-int ca_media_measure_white_balance(struct ca_media *media, enum ca_wb_water water,
-                                   struct ca_wb_gains *gains)
+int ca_media_start_white_balance(struct ca_media *media, enum ca_wb_water water)
 {
     if (!media) { errno = ENODEV; return -1; }
-    return media->measure_white_balance(water, gains);
+    return media->start_white_balance(water);
+}
+bool ca_media_poll_white_balance(struct ca_media *media, struct ca_wb_one_push *result, int *error)
+{
+    return media && result && error && media->poll_white_balance(*result, *error);
 }
 void ca_media_close(struct ca_media *media) { delete media; }
 

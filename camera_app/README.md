@@ -603,9 +603,14 @@ through the web UI/INI. The additional proxy parameters are listed in
 | `IMG_WB_TEMP` | `image.wb_temp` | Hi3516DV500: colour temperature mode's light source, 1500–15000 K |
 
 On Hi3516DV500 the camera-definition setting `CAM_WB_ONEPUSH` (also the Photos
-page's one-push white balance) measures the centre of the picture and saves the
-result as manual gains: 1 "green water" makes it neutral grey, 2 "blue water"
-keeps green and blue at 1× and sets red to 1.2× blue. It always reads 0.
+page's one-push white balance) steps the manual gains, checking the centre of
+the sub stream 20 ms after each step, and saves the result as manual gains:
+1 "green water" keeps green at the auto gain and moves red, then blue, until
+each is within 8 of green; 2 "blue water" keeps green and blue at 1×, moves red
+until it is within 3 of blue, and saves 1.2× that red. The first one-push since
+camera-app started begins from auto white balance and allows 300 steps (about
+20 s); later ones start from the current gains and allow 100. At the limit it
+keeps the gains it reached. It runs in the background and always reads 0.
 
 For the resolution parameters, MT11 and A8 support values 0, 1 and 2;
 ZR10 supports 0, 1 and 3. Z1-Mini supports only 1 for streaming and 1 or 2

@@ -50,7 +50,9 @@ public:
     virtual int set_thermal_palette(uint8_t palette) = 0;
     virtual int set_inverted(bool inverted) = 0;
     virtual int exposure(unsigned lens, struct ca_exposure *sample) = 0;
-    virtual int measure_white_balance(enum ca_wb_water, struct ca_wb_gains *) { errno = ENOTSUP; return -1; }
+    // Called by the white balance worker; returns soon after stop is set.
+    virtual int one_push_white_balance(enum ca_wb_water, struct ca_wb_one_push *,
+                                       const std::atomic<bool> &) { errno = ENOTSUP; return -1; }
     virtual int apply_overlay(const struct ca_config *settings) = 0;
     virtual int configure_raw_thermal(const ca_config *) { return 0; }
     virtual int apply_image(const struct ca_config *settings) = 0;

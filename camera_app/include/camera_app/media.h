@@ -89,9 +89,21 @@ enum ca_wb_water {
     CA_WB_WATER_BLUE = 2,
 };
 struct ca_wb_gains { unsigned red, green, blue; };   /* 1/256 */
-/* Measures the scene and returns manual gains; it does not apply them. */
-int ca_media_measure_white_balance(struct ca_media *media, enum ca_wb_water water,
-                                   struct ca_wb_gains *gains);
+struct ca_wb_one_push {
+    struct ca_wb_gains gains;
+    /* frames measured, and the most allowed */
+    unsigned iterations, limit;
+    /* false when it stopped at the limit; the gains are still applied */
+    bool converged;
+    unsigned elapsed_ms;
+};
+/* Starts a one-push in the background, which leaves its gains applied as
+ * manual white balance but not saved. EBUSY while one runs. */
+int ca_media_start_white_balance(struct ca_media *media, enum ca_wb_water water);
+/* True once for each one-push, when it has finished: error is 0, or the errno
+ * it failed with (ECANCELED if a pipeline change stopped it). */
+bool ca_media_poll_white_balance(struct ca_media *media, struct ca_wb_one_push *result,
+                                 int *error);
 void ca_media_close(struct ca_media *media);
 
 #endif

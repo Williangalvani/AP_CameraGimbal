@@ -3896,7 +3896,10 @@ static bool set_lidar_enabled(bool enabled, char *error, size_t error_size)
 
 #if APCAM_HAVE_WB_TUNING
 /* camera-app polls <config>.wb.command every 500 ms, measures, and answers in
- * <config>.wb.status: "ok" or "error", then its message. */
+ * <config>.wb.status: "ok" or "error", then its message. The first one-push
+ * since camera-app started may take 300 iterations of a 20 ms wait and a
+ * frame, about 20 s, so the wait is twice that. */
+#define WB_WAIT_TENTHS 400U
 /* Asks camera-app for a one-push measurement ('1' green or '2' blue water)
  * through <config>.wb.command, without waiting for the result. */
 static bool start_white_balance(char water, char *message, size_t message_size)
@@ -3934,7 +3937,7 @@ static bool request_white_balance(char water, char *message, size_t message_size
     if (!start_white_balance(water, message, message_size)) return false;
     snprintf(command, sizeof(command), "%s.wb.command", REPLACEMENT_CONFIG_PATH);
     snprintf(status, sizeof(status), "%s.wb.status", REPLACEMENT_CONFIG_PATH);
-    for (unsigned attempt = 0; attempt < 100U; attempt++) {
+    for (unsigned attempt = 0; attempt < WB_WAIT_TENTHS; attempt++) {
         const struct timespec delay = {.tv_sec = 0, .tv_nsec = 100000000L};
         (void)nanosleep(&delay, NULL);
         size_t length = 0;

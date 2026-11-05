@@ -52,7 +52,8 @@ public:
     int get_thermal_palette(uint8_t *palette);
     int set_thermal_palette(uint8_t palette);
     int set_inverted(bool inverted);
-    int measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains);
+    int start_white_balance(enum ca_wb_water water);
+    bool poll_white_balance(ca_wb_one_push &result, int &error);
     APC_Tracking &tracking() { return _tracking; }
 private:
     bool _autorecord_pending=false;
@@ -64,6 +65,9 @@ private:
     ca_survey_result _survey_completion{};
     bool _survey_completed = false;
     void _stop_survey();
+    struct WhiteBalanceWorker;
+    WhiteBalanceWorker *_white_balance = nullptr;
+    void _stop_white_balance();
     int _open_backend(const ca_media_config *config);
     void _apply_overlay_after_control(const char *control);
     int _restore_controls(const LiveControls *state);

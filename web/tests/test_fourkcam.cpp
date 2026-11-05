@@ -384,6 +384,18 @@ static void test_replies()
     assert(strstr(out.data(), "\"code\":0,\"device_mac\":\"aa-bb-cc-dd-ee-ff\",\"device_id\":\"AABBCCDDEEFF\","
                               "\"device_ip\":\"192.168.2.10\",\"log\":\"\",\"sign_tby\":\"\"}"));
 
+    // a one-push saves the vendor's slider values as gains, which read back unchanged
+    Image one_push;
+    strcpy(one_push.white_balance, "manual");
+    one_push.wb_red = red_gain(46);
+    one_push.wb_green = green_blue_gain(1);
+    one_push.wb_blue = green_blue_gain(55);
+    assert(one_push.wb_red == 946 && one_push.wb_green == 264 && one_push.wb_blue == 696);
+    out.reset();
+    out.append("{");
+    image_adjustment(out, one_push);
+    assert(strstr(out.data(), "\"auto_awb\":1,\"awb_red\":46,\"awb_green\":1,\"awb_blue\":55,"));
+
     out.reset();
     out.append("{");
     Image inverted;

@@ -8,6 +8,11 @@
 
 td_s32 ca_hisi_apply_isp_config(const struct ca_config *config);
 int ca_hisi_exposure(unsigned lens, struct ca_exposure *sample);
-int ca_hisi_measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains);
+/* White balance for one-push; the caller holds the ISP lock. */
+td_s32 ca_hisi_apply_white_balance(const struct ca_config *config);
+/* the gains in use, in 1/256; green is Gr */
+td_s32 ca_hisi_white_balance_gains(td_u16 *red, td_u16 *green, td_u16 *blue);
+/* manual gains, green on Gr and Gb, or auto keeping its calibration */
+td_s32 ca_hisi_set_white_balance_gains(bool manual, td_u16 red, td_u16 green, td_u16 blue);
 
 #endif

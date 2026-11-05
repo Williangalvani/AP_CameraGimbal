@@ -223,10 +223,10 @@ would be added to the extension, not here.
   each ONVIF operation with a correct digest, a wrong one and none, checks
   that requests with `Origin` get 403 and change nothing, reads and writes
   each `/action` (checking the extension's types, `mirror` or `flip` alone and
-  `set_default`), runs `onceAWB` (manual gains within 10 s), turns the setting
+  `set_default`), runs `onceAWB` (manual gains within 30 s), turns the setting
   off (404, no probe reply) and restarts camera-app, checking that a second
   `restart` meanwhile gets `restart in progress`. It backs up and restores
-  `camera.ini` (waiting up to 20 s more for a one-push that missed the 10 s,
+  `camera.ini` (waiting up to 45 s more for a one-push that missed the 30 s,
   so its gains can't land on the restored file) and saves the ONVIF replies
   for `run.sh check`; it fails if the probe with the fixture's `MessageID`
   gets no reply rather than keep an old `probe.xml`.

@@ -272,18 +272,19 @@ def check_actions(args, check):
     status, reply = action(args, 'setImageAdjustmentEx', {'onceAWB': 1})
     check(status == 200 and reply['code'] == 0 and time.time() - started < 2, 'onceAWB replies at once')
     args.one_push_pending = True
-    deadline = time.time() + 10
+    # the first one-push since camera-app started may take 300 iterations
+    deadline = time.time() + 30
     image = None
     while time.time() < deadline:
         _, image = action(args, 'getImageAdjustment')
         if image and image['auto_awb'] == 1:
             break
         time.sleep(0.5)
-    if check(image is not None and image['auto_awb'] == 1, f'onceAWB leaves manual gains within 10 s: {image}'):
+    if check(image is not None and image['auto_awb'] == 1, f'onceAWB leaves manual gains within 30 s: {image}'):
         args.one_push_pending = False
 
 
-def wait_one_push(args, timeout=20):
+def wait_one_push(args, timeout=45):
     """Waits until camera-app has taken the one-push request and written its
     outcome, so a late measurement can't save its gains over the restore."""
     deadline = time.time() + timeout

@@ -12,6 +12,7 @@
 #endif
 #include "ircut.h"
 #include "isp.h"
+#include "one_push_wb.h"
 #include "pipeline.h"
 
 #include "camera_app/APC_Media_Backend.h"
@@ -23,6 +24,7 @@
 #include "camera_app/still.h"
 
 #include "ss_mpi_sys.h"
+#include "ss_mpi_sys_mem.h"
 #include "ss_mpi_vpss.h"
 
 #include "apcam/atomic.h"
@@ -124,7 +126,8 @@ public:
     int set_thermal_palette(uint8_t) override { return unsupported(); }
     int set_inverted(bool inverted) override;
     int exposure(unsigned lens, struct ca_exposure *sample) override;
-    int measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains) override;
+    int one_push_white_balance(enum ca_wb_water water, struct ca_wb_one_push *result,
+                               const std::atomic<bool> &stop) override;
     int apply_overlay(const struct ca_config *settings) override;
     int apply_image(const struct ca_config *settings) override;
 private:
@@ -782,19 +785,148 @@ int APC_Media_HiSi::exposure(unsigned lens, struct ca_exposure *s)
     return result;
 }
 
-// Not under lock: the measurement sleeps across frames, and the capture
-// thread takes lock for every recorded frame.
-int APC_Media_HiSi::measure_white_balance(enum ca_wb_water water, struct ca_wb_gains *gains)
+static void sleep_ms(unsigned ms)
 {
+    const struct timespec delay = {.tv_sec = (time_t)(ms / 1000U), .tv_nsec = (long)(ms % 1000U) * 1000000L};
+    (void)nanosleep(&delay, NULL);
+}
+
+static uint64_t monotonic_ms(void)
+{
+    struct timespec now;
+    (void)clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000U + (uint64_t)now.tv_nsec / 1000000U;
+}
+
+/* The centre of the sub stream's picture, from the VPSS channel the factory
+ * firmware reads. Its user queue always holds the latest frame. */
+static int centre_means(ca_hisi_wb::Means *means)
+{
+    ot_video_frame_info frame = {};
+    td_s32 code = ss_mpi_vpss_get_chn_frame(CA_HISI_GROUP, CA_HISI_SUB_CHN, &frame, 1000);
+    if (code != TD_SUCCESS) {
+        ca_log("white balance: VPSS frame failed: 0x%x", (unsigned)code);
+        errno = EIO;
+        return -1;
+    }
+    const ot_video_frame &video = frame.video_frame;
+    const bool vu_order = video.pixel_format == OT_PIXEL_FORMAT_YVU_SEMIPLANAR_420;
+    const td_u64 chroma = video.phys_addr[1] - video.phys_addr[0];
+    const td_u64 size = chroma + (td_u64)video.stride[1] * ((video.height + 1U) / 2U);
+    int result = -1;
+    if ((!vu_order && video.pixel_format != OT_PIXEL_FORMAT_YUV_SEMIPLANAR_420) ||
+        video.compress_mode != OT_COMPRESS_MODE_NONE || video.phys_addr[1] <= video.phys_addr[0] ||
+        size > UINT32_MAX) {
+        ca_log("white balance: VPSS frame format %d compression %d not readable",
+               (int)video.pixel_format, (int)video.compress_mode);
+        errno = ENOTSUP;
+    } else {
+        auto *base = (const uint8_t *)ss_mpi_sys_mmap(video.phys_addr[0], (td_u32)size);
+        if (base == NULL) {
+            ca_log("white balance: VPSS frame mapping failed");
+            errno = EIO;
+        } else {
+            *means = ca_hisi_wb::centre_means(base, video.stride[0], base + chroma, video.stride[1],
+                                              video.width, video.height, vu_order);
+            (void)ss_mpi_sys_munmap(base, (td_u32)size);
+            result = 0;
+        }
+    }
+    (void)ss_mpi_vpss_release_chn_frame(CA_HISI_GROUP, CA_HISI_SUB_CHN, &frame);
+    return result;
+}
+
+// like the factory firmware's, once per process
+static bool first_one_push = true;
+
+/* The factory firmware's one-push: see one_push_wb.h. The ISP lock is held
+ * only for each ISP call, so other image controls keep working; one applied
+ * meanwhile can change white balance for a frame before the next step. */
+int APC_Media_HiSi::one_push_white_balance(enum ca_wb_water water, struct ca_wb_one_push *result,
+                                           const std::atomic<bool> &stop)
+{
+    using namespace ca_hisi_wb;
     auto *media = _state;
     if (media == NULL) {
         errno = ENODEV;
         return -1;
     }
+    if ((water != CA_WB_WATER_GREEN && water != CA_WB_WATER_BLUE) || result == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    const char *name = water == CA_WB_WATER_BLUE ? "blue" : "green";
+    const bool first = first_one_push;
+    const uint64_t started = monotonic_ms();
+    td_s32 code;
+    if (first) {
+        pthread_mutex_lock(&media->isp_lock);
+        code = ca_hisi_set_white_balance_gains(false, 0, 0, 0);
+        pthread_mutex_unlock(&media->isp_lock);
+        if (code != TD_SUCCESS) ca_log("white balance: auto before one-push failed: 0x%x", (unsigned)code);
+        sleep_ms(first_auto_ms);
+    }
+    td_u16 red = 0, green = 0, blue = 0;
     pthread_mutex_lock(&media->isp_lock);
-    int result = ca_hisi_measure_white_balance(water, gains);
+    code = ca_hisi_white_balance_gains(&red, &green, &blue);
     pthread_mutex_unlock(&media->isp_lock);
-    return result;
+    if (code != TD_SUCCESS) {
+        ca_log("white balance: one-push could not read the gains: 0x%x", (unsigned)code);
+        errno = EIO;
+        return -1;
+    }
+    Stepper stepper(water == CA_WB_WATER_BLUE ? Water::blue : Water::green, {red, green, blue}, first);
+    ca_log("white balance: one-push %s water from R %u G %u B %u, at most %u iterations%s", name,
+           red, green, blue, stepper.limit(), first ? " (first since start-up, from auto)" : "");
+    bool refused = false;
+    int error = 0;
+    while (!stepper.done() && error == 0) {
+        if (stop) {
+            error = ECANCELED;
+            break;
+        }
+        const Gains &step = stepper.gains();
+        pthread_mutex_lock(&media->isp_lock);
+        code = ca_hisi_set_white_balance_gains(true, (td_u16)step.red, (td_u16)step.green, (td_u16)step.blue);
+        pthread_mutex_unlock(&media->isp_lock);
+        // the factory firmware keeps stepping past gains the ISP refuses
+        if (code != TD_SUCCESS && !refused) {
+            ca_log("white balance: ISP refused R %u G %u B %u (0x%x); continuing",
+                   step.red, step.green, step.blue, (unsigned)code);
+            refused = true;
+        }
+        sleep_ms(settle_ms);
+        Means means;
+        if (centre_means(&means) < 0) error = errno;
+        else stepper.measured(means);
+    }
+    const unsigned elapsed = (unsigned)(monotonic_ms() - started);
+    if (error != 0) {
+        pthread_mutex_lock(&media->lock);
+        pthread_mutex_lock(&media->isp_lock);
+        code = ca_hisi_apply_white_balance(&media->config.settings);
+        pthread_mutex_unlock(&media->isp_lock);
+        pthread_mutex_unlock(&media->lock);
+        ca_log("white balance: one-push %s water stopped after %u iterations in %u ms: %s%s", name,
+               stepper.frames(), elapsed, strerror(error),
+               code == TD_SUCCESS ? "" : "; the previous white balance was not restored");
+        errno = error;
+        return -1;
+    }
+    first_one_push = false;
+    const Levels levels = stepper.result_levels();
+    const Gains gains = ca_hisi_wb::gains(levels);
+    pthread_mutex_lock(&media->isp_lock);
+    code = ca_hisi_set_white_balance_gains(true, (td_u16)gains.red, (td_u16)gains.green, (td_u16)gains.blue);
+    pthread_mutex_unlock(&media->isp_lock);
+    if (code != TD_SUCCESS) ca_log("white balance: one-push gains not applied: 0x%x", (unsigned)code);
+    *result = {{gains.red, gains.green, gains.blue}, stepper.frames(), stepper.limit(),
+               stepper.converged(), elapsed};
+    ca_log("white balance: one-push %s water %s after %u iterations in %u ms: R %u G %u B %u "
+           "(4K Cam Manager %u/%u/%u)", name,
+           stepper.converged() ? "converged" : "stopped at the iteration limit", stepper.frames(),
+           elapsed, gains.red, gains.green, gains.blue, levels.red, levels.green, levels.blue);
+    return 0;
 }
 
 int APC_Media_HiSi::apply_overlay(const struct ca_config *settings)
