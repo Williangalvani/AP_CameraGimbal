@@ -1123,7 +1123,8 @@ static void relay_live_video(int fd, unsigned stream)
     uint8_t status = (uint8_t)stream;
     uint8_t buffer[64U * 1024U];
     int source = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    static const char header[] =
+    char header[1024];
+    const int header_length = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\n"
         "Server: " SERVER_NAME "\r\n"
         "Content-Type: video/mp4\r\n"
@@ -1132,7 +1133,7 @@ static void relay_live_video(int fd, unsigned stream)
         "X-Content-Type-Options: nosniff\r\n"
         "X-Frame-Options: DENY\r\n"
         "Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n"
-        "\r\n";
+        "%s\r\n", APC_HTTPResponse::cors_headers());
 
     if (source < 0 ||
         setsockopt(source, SOL_SOCKET, SO_RCVTIMEO, &timeout,
@@ -1152,7 +1153,8 @@ static void relay_live_video(int fd, unsigned stream)
     /* Deliver each frame's final chunk without waiting for a delayed ACK. */
     int no_delay = 1;
     (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay));
-    if (!send_all(fd, header, sizeof(header) - 1U)) {
+    if (header_length <= 0 || (size_t)header_length >= sizeof(header) ||
+        !send_all(fd, header, (size_t)header_length)) {
         close(source);
         return;
     }
@@ -8073,8 +8075,8 @@ static void send_file_response(int client, const APC_HTTPRequest *request,
     if (range == RANGE_INVALID) {
         header_length = snprintf(header, sizeof(header),
             "HTTP/1.1 416 Range Not Satisfiable\r\nServer: %s\r\n"
-            "Content-Range: bytes */%" PRIu64 "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            SERVER_NAME, (uint64_t)st.st_size);
+            "Content-Range: bytes */%" PRIu64 "\r\nContent-Length: 0\r\nConnection: close\r\n%s\r\n",
+            SERVER_NAME, (uint64_t)st.st_size, APC_HTTPResponse::cors_headers());
         if (header_length > 0 && (size_t)header_length < sizeof(header))
             (void)send_all(client, header, (size_t)header_length);
         close(file);
@@ -8088,16 +8090,17 @@ static void send_file_response(int client, const APC_HTTPRequest *request,
             "HTTP/1.1 206 Partial Content\r\nServer: %s\r\nContent-Type: %s\r\n"
             "Content-Length: %" PRIu64 "\r\nContent-Range: bytes %" PRIu64 "-%" PRIu64 "/%" PRIu64 "\r\n"
             "Accept-Ranges: bytes\r\nContent-Disposition: %s; filename=\"%s\"\r\n"
-            "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+            "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n%s\r\n",
             SERVER_NAME, mime, remaining, start, end, (uint64_t)st.st_size,
-            download ? "attachment" : "inline", filename);
+            download ? "attachment" : "inline", filename, APC_HTTPResponse::cors_headers());
     } else {
         header_length = snprintf(header, sizeof(header),
             "HTTP/1.1 200 OK\r\nServer: %s\r\nContent-Type: %s\r\n"
             "Content-Length: %" PRIu64 "\r\nAccept-Ranges: bytes\r\n"
             "Content-Disposition: %s; filename=\"%s\"\r\nCache-Control: no-store\r\n"
-            "X-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
-            SERVER_NAME, mime, remaining, download ? "attachment" : "inline", filename);
+            "X-Content-Type-Options: nosniff\r\nConnection: close\r\n%s\r\n",
+            SERVER_NAME, mime, remaining, download ? "attachment" : "inline", filename,
+            APC_HTTPResponse::cors_headers());
     }
     if (header_length <= 0 || (size_t)header_length >= sizeof(header) ||
         !send_all(client, header, (size_t)header_length) || head) {
@@ -8207,7 +8210,10 @@ static void handle_request(int fd, const char *peer)
     char session_token[65];
     bool login_route;
     int auth;
+    size_t origin_length = 0;
+    const char *origin = find_header_span(&request, "Origin", &origin_length);
 
+    APC_HTTPResponse::set_cors_origin(origin, origin_length);
     apply_configured_timezone();
 
     /* Browsers commonly leave speculative connections idle.  Closing an
@@ -8225,6 +8231,12 @@ static void handle_request(int fd, const char *peer)
             send_text_errorf(fd, 400, "Bad Request", S_E_MALFORMED);
         }
         return;
+    }
+    if (strcmp(request.method, "OPTIONS") == 0) {
+        size_t length = 0;
+        const char *wanted = find_header_span(&request, "Access-Control-Request-Headers", &length);
+        APC_HTTPResponse(fd, SERVER_NAME).send_preflight(wanted, length);
+        goto done;
     }
     if (strcmp(request.method, "GET") == 0 &&
         (strcmp(request.path, "/style.css") == 0 || strcmp(request.path, "/log.css") == 0)) {

@@ -284,6 +284,128 @@ def raw_request(method, path, headers=None, body=None):
     return result
 
 
+def header_value(headers, name):
+    """the one value of a header, or None; a repeated header fails"""
+    values = [value for key, value in headers if key.lower() == name.lower()]
+    assert len(values) <= 1, (name, values)
+    return values[0] if values else None
+
+
+def assert_cors(headers, origin):
+    assert header_value(headers, "Access-Control-Allow-Origin") == origin, headers
+    # credentials are allowed only for an echoed origin, never with *
+    expected = None if origin == "*" else "true"
+    assert header_value(headers, "Access-Control-Allow-Credentials") == expected, headers
+    assert header_value(headers, "Vary") == "Origin", headers
+    exposed = header_value(headers, "Access-Control-Expose-Headers")
+    for name in ("Content-Length", "Content-Range", "Content-Disposition",
+                 "Accept-Ranges", "WWW-Authenticate"):
+        assert name in exposed, exposed
+
+
+def socket_response_headers(data):
+    """status and headers of a hand-written request http.client would refuse"""
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+        connection.sendall(data)
+        response = b""
+        while True:
+            chunk = connection.recv(65536)
+            if not chunk:
+                break
+            response += chunk
+    lines = response.partition(b"\r\n\r\n")[0].decode("latin-1").split("\r\n")
+    status = int(lines[0].split()[1])
+    return status, [tuple(part.strip() for part in line.split(":", 1)) for line in lines[1:]]
+
+
+def test_cors(password):
+    origin = "http://gcs.example:8080"
+    basic = authorization(password)
+
+    # a preflight is answered on any path before authentication
+    for path in ("/parameters", "/live/control", "/no-such-route", "/action/getVersion"):
+        status, body, headers = raw_request("OPTIONS", path, {
+            "Origin": origin, "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization, x-csrf-token"})
+        assert status == 204 and body == b"", (path, status, body)
+        assert_cors(headers, origin)
+        assert header_value(headers, "Access-Control-Allow-Methods") == "GET, POST, PUT, DELETE, OPTIONS"
+        assert header_value(headers, "Access-Control-Allow-Headers") == "authorization, x-csrf-token"
+        assert header_value(headers, "Access-Control-Max-Age") == "86400"
+        assert header_value(headers, "Content-Length") == "0"
+        assert header_value(headers, "WWW-Authenticate") is None
+    status, _, headers = raw_request("OPTIONS", "/", {"Origin": origin})
+    assert status == 204
+    assert header_value(headers, "Access-Control-Allow-Headers") == \
+        "Authorization, Content-Type, Range, X-Requested-With"
+    status, _, headers = raw_request("OPTIONS", "/")
+    assert status == 204
+    assert_cors(headers, "*")
+
+    # authenticated requests echo the origin and allow credentials
+    status, body, headers = raw_request("GET", "/", {"Authorization": basic, "Origin": origin})
+    assert status == 200 and b"<html" in body
+    assert_cors(headers, origin)
+    status, _, headers = raw_request("GET", "/", {"Authorization": basic})
+    assert status == 200
+    assert_cors(headers, "*")
+
+    # authentication is unchanged: a challenge, a redirect, a CSRF refusal
+    status, _, headers = raw_request("GET", "/sensors.json", {"Origin": origin})
+    assert status == 401 and header_value(headers, "WWW-Authenticate").startswith("Basic")
+    assert_cors(headers, origin)
+    status, _, headers = raw_request("GET", "/", {"Accept": "text/html", "Origin": origin})
+    assert status == 303 and header_value(headers, "Location") == "/login"
+    assert_cors(headers, origin)
+    status, _, headers = raw_request(
+        "POST", "/live/control",
+        {"Authorization": basic, "Origin": origin,
+         "Content-Type": "application/x-www-form-urlencoded"},
+        urllib.parse.urlencode({"csrf": "0" * 64, "action": "left"}).encode())
+    assert status == 403 and not camera_events["controls"]
+    assert_cors(headers, origin)
+    status, _, headers = raw_request("GET", "/no-such-route", {"Authorization": basic, "Origin": origin})
+    assert status == 404
+    assert_cors(headers, origin)
+
+    # hand-built streaming and file headers carry the same CORS headers
+    status, body, headers = raw_request("GET", "/live/video1.mp4", {"Authorization": basic, "Origin": origin})
+    assert status == 200 and body == live_payload + b"\x00"
+    assert_cors(headers, origin)
+    sample = root / "mnt" / "cors.bin"
+    sample.write_bytes(b"0123456789")
+    path = "/file?" + urllib.parse.urlencode({"path": str(sample)})
+    status, body, headers = raw_request("GET", path, {"Authorization": basic, "Origin": origin})
+    assert status == 200 and body == b"0123456789"
+    assert_cors(headers, origin)
+    status, body, headers = raw_request("GET", path, {"Authorization": basic, "Origin": origin,
+                                                      "Range": "bytes=2-4"})
+    assert status == 206 and body == b"234"
+    assert_cors(headers, origin)
+    status, _, headers = raw_request("GET", path, {"Authorization": basic, "Origin": origin,
+                                                   "Range": "bytes=20-"})
+    assert status == 416
+    assert_cors(headers, origin)
+    sample.unlink()
+
+    # an Origin that could split or forge headers is never reflected
+    for bad in (b"http://a.example\x01", b"http://a.example\rInjected: yes",
+                b"http://a.example extra", b"http://" + b"a" * 300):
+        status, headers = socket_response_headers(
+            b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: " + basic.encode() +
+            b"\r\nOrigin: " + bad + b"\r\n\r\n")
+        assert status == 200, bad
+        assert_cors(headers, "*")
+        assert header_value(headers, "Injected") is None
+    status, headers = socket_response_headers(
+        b"OPTIONS / HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: " + origin.encode() +
+        b"\r\nAccess-Control-Request-Headers: x-a\rInjected: yes\r\n\r\n")
+    assert status == 204 and header_value(headers, "Injected") is None
+    assert header_value(headers, "Access-Control-Allow-Headers") == \
+        "Authorization, Content-Type, Range, X-Requested-With"
+    print("PASS CORS preflight, origin echo, credentials, error, stream and file responses")
+
+
 def set_cookies(headers):
     """name -> (value, attributes) from every Set-Cookie header"""
     cookies = {}
@@ -622,6 +744,7 @@ try:
             time.sleep(0.05)
 
     test_large_recording_download()
+    test_cors("initial-password")
     check_terrain_upload(request, root, csrf, port)
     test_login_and_languages(csrf)
     test_reboot_redirect(csrf)
