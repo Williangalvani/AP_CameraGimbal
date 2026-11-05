@@ -10,6 +10,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include "ircut.h"
 #include "isp.h"
 #include "pipeline.h"
 
@@ -429,6 +430,8 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     pthread_mutex_init(&media->venc_lock, NULL);
     pthread_mutex_init(&media->photo_lock, NULL);
     pthread_mutex_init(&media->isp_lock, NULL);
+    // once per process, without waiting for the pulse
+    ircut_start_day();
     ca_hisi_configure_vi(&media->vi_cfg);
     stage = "SYS/VB initialization";
     if (ca_hisi_system_init(sizes) != TD_SUCCESS) goto fail;

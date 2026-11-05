@@ -70,6 +70,9 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
 - **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
   `max_num_reorder_frames = 0`. Without it Chrome's decoder holds the level's
   whole DPB (5 frames at 4K) before showing the first one.
+- **IR-cut**: a two-wire motor on sysfs GPIO 72 (day, filter in) and 73
+  (night). `ircut.cpp` pulses day once per process from a detached thread at
+  media start-up; a missing sysfs GPIO is logged and ignored.
 - Overlay reuses `mt11/overlay.cpp` (generic `ss_mpi_rgn`); exposure and image
   controls are mt11's ISP calls on pipe 0.
 - **White balance** differs from mt11. Auto uses the vendor's AWB calibration
