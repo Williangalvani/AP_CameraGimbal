@@ -73,14 +73,24 @@ enum string_id {
     S_OPT_ISO_800,
     S_OPT_ISO_1600,
     S_OPT_ISO_3200,
+    S_OPT_SHUTTER_12,
+    S_OPT_SHUTTER_25,
     S_OPT_SHUTTER_30,
     S_OPT_SHUTTER_50,
+    S_OPT_SHUTTER_60,
     S_OPT_SHUTTER_100,
+    S_OPT_SHUTTER_200,
     S_OPT_SHUTTER_250,
+    S_OPT_SHUTTER_400,
     S_OPT_SHUTTER_500,
     S_OPT_SHUTTER_750,
+    S_OPT_SHUTTER_800,
     S_OPT_SHUTTER_1000,
     S_OPT_SHUTTER_2000,
+    S_OPT_SHUTTER_4000,
+    S_OPT_SHUTTER_8000,
+    S_OPT_SHUTTER_10000,
+    S_OPT_SHUTTER_100000,
     S_OPT_METER_AVERAGE,
     S_OPT_METER_CENTER,
     S_OPT_METER_SPOT_CENTER,
@@ -788,14 +798,24 @@ static constexpr Translations translations = [] {
     result[S_OPT_ISO_800] = {"ISO 800", "ISO 800", "ISO 800"};
     result[S_OPT_ISO_1600] = {"ISO 1600", "ISO 1600", "ISO 1600"};
     result[S_OPT_ISO_3200] = {"ISO 3200", "ISO 3200", "ISO 3200"};
+    result[S_OPT_SHUTTER_12] = {"1/12 s", "1/12 秒", "1/12 秒"};
+    result[S_OPT_SHUTTER_25] = {"1/25 s", "1/25 秒", "1/25 秒"};
     result[S_OPT_SHUTTER_30] = {"1/30 s", "1/30 秒", "1/30 秒"};
     result[S_OPT_SHUTTER_50] = {"1/50 s", "1/50 秒", "1/50 秒"};
+    result[S_OPT_SHUTTER_60] = {"1/60 s", "1/60 秒", "1/60 秒"};
     result[S_OPT_SHUTTER_100] = {"1/100 s", "1/100 秒", "1/100 秒"};
+    result[S_OPT_SHUTTER_200] = {"1/200 s", "1/200 秒", "1/200 秒"};
     result[S_OPT_SHUTTER_250] = {"1/250 s", "1/250 秒", "1/250 秒"};
+    result[S_OPT_SHUTTER_400] = {"1/400 s", "1/400 秒", "1/400 秒"};
     result[S_OPT_SHUTTER_500] = {"1/500 s", "1/500 秒", "1/500 秒"};
     result[S_OPT_SHUTTER_750] = {"1/750 s", "1/750 秒", "1/750 秒"};
+    result[S_OPT_SHUTTER_800] = {"1/800 s", "1/800 秒", "1/800 秒"};
     result[S_OPT_SHUTTER_1000] = {"1/1000 s", "1/1000 秒", "1/1000 秒"};
     result[S_OPT_SHUTTER_2000] = {"1/2000 s", "1/2000 秒", "1/2000 秒"};
+    result[S_OPT_SHUTTER_4000] = {"1/4000 s", "1/4000 秒", "1/4000 秒"};
+    result[S_OPT_SHUTTER_8000] = {"1/8000 s", "1/8000 秒", "1/8000 秒"};
+    result[S_OPT_SHUTTER_10000] = {"1/10000 s", "1/10000 秒", "1/10000 秒"};
+    result[S_OPT_SHUTTER_100000] = {"1/100000 s", "1/100000 秒", "1/100000 秒"};
     result[S_OPT_METER_AVERAGE] = {"Average", "平均测光", "平均測光"};
     result[S_OPT_METER_CENTER] = {"Center-weighted", "中央重点测光", "中央重点測光"};
     result[S_OPT_METER_SPOT_CENTER] = {"Spot (center)", "点测光（中央）", "スポット測光（中央）"};

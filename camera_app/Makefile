@@ -493,9 +493,9 @@ hisi-image-test: tests/test_hisi_tuning tests/test_hisi_config tests/test_hisi_i
 	./tests/test_hisi_config
 	./tests/test_hisi_ircut
 
-tests/test_hisi_tuning: tests/test_hisi_tuning.cpp src/backends/hisi/image_tuning.h
+tests/test_hisi_tuning: tests/test_hisi_tuning.cpp src/backends/hisi/image_tuning.h $(APCAM_HEADERS)
 	$(call progress,Linking $@)
-	$(HOST_CXX) $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $<
+	$(HOST_CXX) -I../include -DAPCAM_TARGET=APCAM_TARGET_HISI $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $<
 
 tests/test_hisi_ircut: tests/test_hisi_ircut.cpp src/backends/hisi/ircut.cpp src/backends/hisi/ircut.h src/log.cpp include/camera_app/log.h
 	$(call progress,Linking $@)

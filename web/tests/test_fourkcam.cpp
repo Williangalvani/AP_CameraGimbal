@@ -97,15 +97,49 @@ static void test_conversions()
     }
     for (long percent = 0; percent <= 100; percent++) assert(percent_from_level(level_from_percent(percent)) == percent);
     assert(green_blue_gain(0) == 256 && green_blue_level(504) == 31 && green_blue_level(725) == 59);
-    assert(exposure_time("auto") == 60 && exposure_time("1/250") == 200);
-    assert(exposure_time("1/750") == 800 && exposure_time("1/30") == 30);
-    assert(shutter_denominator(200) == 250 && shutter_denominator(800) == 750);
-    assert(shutter_denominator(12) == 30 && shutter_denominator(34464) == 2000);
-    static const char *const shutters[] = {"1/30", "1/50", "1/100", "1/250", "1/500", "1/750", "1/1000", "1/2000"};
-    for (const char *shutter : shutters) {
+    // every vendor exposure is a shutter of its own; 34464 is 1/100000 s
+    static const unsigned vendor[] = {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000, 10000, 34464};
+    static const char *const shutters[] = {"1/12", "1/25", "1/30", "1/50", "1/60", "1/100", "1/200", "1/400",
+                                           "1/800", "1/1000", "1/2000", "1/4000", "1/8000", "1/10000", "1/100000"};
+    for (size_t i = 0; i < sizeof(vendor) / sizeof(vendor[0]); i++) {
         char back[16];
-        snprintf(back, sizeof(back), "1/%u", shutter_denominator(exposure_time(shutter)));
-        assert(!strcmp(back, shutter));
+        snprintf(back, sizeof(back), "1/%u", shutter_denominator(vendor[i]));
+        assert(!strcmp(back, shutters[i]) && exposure_time(shutters[i]) == vendor[i]);
+    }
+    assert(exposure_time("auto") == 60 && exposure_time("1/250") == 200);
+    assert(exposure_time("1/500") == 400 && exposure_time("1/750") == 800);
+    // anything else is the nearest vendor exposure
+    assert(shutter_denominator(250) == 200 && shutter_denominator(500) == 400 && shutter_denominator(1) == 12);
+    assert(shutter_denominator(20000) == 10000 && shutter_denominator(50000) == 100000);
+}
+
+/* Each vendor exposure survives setImageAdjustment, then getImageAdjustment. */
+static void test_exposure_round_trip()
+{
+    static const unsigned vendor[] = {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000, 10000, 34464};
+    for (unsigned exposure : vendor) {
+        Image image;
+        char request[64];
+        snprintf(request, sizeof(request), "{\"auto_exposureEx\":1,\"exposure_time\":%u}", exposure);
+        Field fields[16];
+        size_t count;
+        Changes changes;
+        assert(parse(request, fields, &count));
+        image_adjustment_changes(fields, count, image, changes);
+        assert(changes.count == 1 && !strcmp(changes.updates[0].key, "shutter"));
+        snprintf(image.shutter, sizeof(image.shutter), "%.15s", changes.updates[0].value);
+
+        APC_StringBuffer out;
+        out.append("{");
+        image_adjustment(out, image);
+        out.append("}");
+        char expected[64];
+        snprintf(expected, sizeof(expected), "\"auto_exposureEx\":1,\"exposure_time\":%u,", exposure);
+        assert(out.valid() && strstr(out.data(), expected));
+
+        changes = Changes();
+        image_adjustment_changes(fields, count, image, changes);
+        assert(changes.count == 0);
     }
 }
 
@@ -154,7 +188,7 @@ static void test_image_changes()
     changes = Changes();
     assert(parse("{\"auto_exposureEx\":1,\"exposure_time\":400}", fields, &count));
     image_adjustment_changes(fields, count, image, changes);
-    assert(!strcmp(change(changes, "shutter")->value, "1/500"));
+    assert(!strcmp(change(changes, "shutter")->value, "1/400"));
     changes = Changes();
     assert(parse("{\"exposure_time\":800}", fields, &count));
     image_adjustment_changes(fields, count, image, changes);
@@ -165,9 +199,10 @@ static void test_image_changes()
     assert(parse("{\"exposure_time\":400}", fields, &count));
     image_adjustment_changes(fields, count, image, changes);
     assert(changes.count == 0);
+    // an older config's 1/500 stays until the exposure moves
     assert(parse("{\"exposure_time\":800}", fields, &count));
     image_adjustment_changes(fields, count, image, changes);
-    assert(!strcmp(change(changes, "shutter")->value, "1/750"));
+    assert(!strcmp(change(changes, "shutter")->value, "1/800"));
     changes = Changes();
     assert(parse("{\"auto_exposureEx\":0}", fields, &count));
     image_adjustment_changes(fields, count, image, changes);
@@ -175,10 +210,15 @@ static void test_image_changes()
 
     // only targets that differ from the current setting are changes
     changes = Changes();
-    assert(parse("{\"brightness\":127,\"exposure_time\":500,\"awb_red\":300}", fields, &count));
+    assert(parse("{\"brightness\":127,\"exposure_time\":400,\"awb_red\":300}", fields, &count));
     image.wb_red = red_gain(255);
     image_adjustment_changes(fields, count, image, changes);
     assert(changes.count == 0);
+    // 500 isn't a vendor exposure: it is the nearest one, 400
+    assert(parse("{\"exposure_time\":500}", fields, &count));
+    image_adjustment_changes(fields, count, image, changes);
+    assert(changes.count == 1 && !strcmp(changes.updates[0].value, "1/400"));
+    changes = Changes();
     assert(parse("{\"brightness\":99999999999999999999,\"saturation\":-99999999999999999999}", fields, &count));
     image_adjustment_changes(fields, count, image, changes);
     assert(!strcmp(change(changes, "brightness")->value, "100") && !strcmp(change(changes, "saturation")->value, "0"));
@@ -529,6 +569,7 @@ int main()
 {
     test_json();
     test_conversions();
+    test_exposure_round_trip();
     test_image_changes();
     test_image_ex_changes();
     test_reset();

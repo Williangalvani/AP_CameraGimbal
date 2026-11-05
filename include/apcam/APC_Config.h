@@ -146,12 +146,33 @@ private:
         {"400", CA_ISO_400}, {"800", CA_ISO_800}, {"1600", CA_ISO_1600},
         {"3200", CA_ISO_3200},
     };
+    // slowest first; the other backends' tables end at CA_SHUTTER_1_2000
     inline static constexpr ca_config_option shutter_options[] = {
-        {"auto", CA_SHUTTER_AUTO}, {"1/30", CA_SHUTTER_1_30},
-        {"1/50", CA_SHUTTER_1_50}, {"1/100", CA_SHUTTER_1_100},
-        {"1/250", CA_SHUTTER_1_250}, {"1/500", CA_SHUTTER_1_500},
-        {"1/750", CA_SHUTTER_1_750}, {"1/1000", CA_SHUTTER_1_1000},
-        {"1/2000", CA_SHUTTER_1_2000},
+        {"auto", CA_SHUTTER_AUTO},
+#if APCAM_HAVE_4KCAM_COMPAT
+        {"1/12", CA_SHUTTER_1_12}, {"1/25", CA_SHUTTER_1_25},
+#endif
+        {"1/30", CA_SHUTTER_1_30}, {"1/50", CA_SHUTTER_1_50},
+#if APCAM_HAVE_4KCAM_COMPAT
+        {"1/60", CA_SHUTTER_1_60},
+#endif
+        {"1/100", CA_SHUTTER_1_100},
+#if APCAM_HAVE_4KCAM_COMPAT
+        {"1/200", CA_SHUTTER_1_200},
+#endif
+        {"1/250", CA_SHUTTER_1_250},
+#if APCAM_HAVE_4KCAM_COMPAT
+        {"1/400", CA_SHUTTER_1_400},
+#endif
+        {"1/500", CA_SHUTTER_1_500}, {"1/750", CA_SHUTTER_1_750},
+#if APCAM_HAVE_4KCAM_COMPAT
+        {"1/800", CA_SHUTTER_1_800},
+#endif
+        {"1/1000", CA_SHUTTER_1_1000}, {"1/2000", CA_SHUTTER_1_2000},
+#if APCAM_HAVE_4KCAM_COMPAT
+        {"1/4000", CA_SHUTTER_1_4000}, {"1/8000", CA_SHUTTER_1_8000},
+        {"1/10000", CA_SHUTTER_1_10000}, {"1/100000", CA_SHUTTER_1_100000},
+#endif
     };
     inline static constexpr ca_config_option metering_options[] = {
         {"average", CA_METERING_AVERAGE}, {"center", CA_METERING_CENTER},

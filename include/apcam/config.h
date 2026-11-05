@@ -88,6 +88,17 @@ enum ca_shutter_mode {
     CA_SHUTTER_1_750,
     CA_SHUTTER_1_1000,
     CA_SHUTTER_1_2000,
+    /* APCAM_HAVE_4KCAM_COMPAT only: the rest of the 4K Cam Manager's speeds */
+    CA_SHUTTER_1_12,
+    CA_SHUTTER_1_25,
+    CA_SHUTTER_1_60,
+    CA_SHUTTER_1_200,
+    CA_SHUTTER_1_400,
+    CA_SHUTTER_1_800,
+    CA_SHUTTER_1_4000,
+    CA_SHUTTER_1_8000,
+    CA_SHUTTER_1_10000,
+    CA_SHUTTER_1_100000,
 };
 
 enum ca_metering_mode {

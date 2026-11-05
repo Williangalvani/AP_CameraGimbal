@@ -2,6 +2,8 @@
 /* The 4K Cam Manager's image controls as the vendor firmware applies them to
  * this camera's ISP: settings in the extension's units in, SDK values out.
  * Gains are in 1/1024 (1024 = 1x). No SDK types, so host tests can check it. */
+#include "apcam/config.h"
+
 #include <cstdint>
 
 namespace ca_hisi_tuning {
@@ -86,6 +88,18 @@ inline uint32_t sys_gain(uint32_t again, uint32_t dgain, uint32_t isp_dgain)
 }
 
 inline uint32_t exposure_max_us(unsigned max_exposure) { return max_exposure == 0U ? 0U : 1000000U / max_exposure; }
+
+/* [image] shutter as a manual exposure time; 0 for auto. */
+inline uint32_t shutter_us(enum ca_shutter_mode shutter)
+{
+    static constexpr uint32_t exposure_us[] = {
+        0U, 33333U, 20000U, 10000U, 4000U, 2000U, 1333U, 1000U, 500U,
+        83333U, 40000U, 16666U, 5000U, 2500U, 1250U, 250U, 125U, 100U, 10U,
+    };
+    static_assert(sizeof(exposure_us) / sizeof(exposure_us[0]) == CA_SHUTTER_1_100000 + 1U,
+                  "one exposure per enum ca_shutter_mode");
+    return (unsigned)shutter <= CA_SHUTTER_1_100000 ? exposure_us[shutter] : 0U;
+}
 
 /* Auto white balance calibration and colour matrices (sign-magnitude 8.8,
  * warmest last) for green and blue water. */

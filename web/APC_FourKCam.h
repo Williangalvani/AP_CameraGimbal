@@ -175,37 +175,47 @@ inline unsigned green_blue_gain(long level) { return (unsigned)((clamp(level, 0,
 inline long red_level(unsigned gain) { return gain <= 256U ? 0 : clamp(((long)gain - 256 + 7) / 15, 0, 255); }
 inline long green_blue_level(unsigned gain) { return clamp(((long)gain + 4) / 8 - 32, 0, 255); }
 
-/* exposure_time is x in 1/x s, one of the extension's BaseExposureTimeValue. */
+/* exposure_time is x in 1/x s, one of the extension's BaseExposureTimeValue;
+ * 1/100000 overflows its uint16 to 34464. */
 constexpr unsigned vendor_exposures[] = {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000, 10000, 34464};
-/* [image] shutter's manual choices, 1/x s. */
-constexpr unsigned shutters[] = {30, 50, 100, 250, 500, 750, 1000, 2000};
+/* the [image] shutter, 1/x s, of each vendor_exposures entry */
+constexpr unsigned shutters[] = {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000, 10000, 100000};
+static_assert(sizeof(shutters) == sizeof(vendor_exposures), "one shutter per vendor exposure");
 /* [image] max_exposure as the extension's BaseMaxExposureValue, 1/x s. */
 constexpr unsigned vendor_max_exposures[] = {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000};
 
 template <size_t N>
-inline unsigned nearest(long value, const unsigned (&choices)[N])
+inline size_t nearest_index(long value, const unsigned (&choices)[N])
 {
     const double wanted = (double)clamp(value, 1, 1000000);
-    unsigned best = choices[0];
+    size_t best = 0;
     double best_distance = INFINITY;
-    for (unsigned choice : choices) {
-        const double distance = fabs(log(choice / wanted));
+    for (size_t i = 0; i < N; i++) {
+        const double distance = fabs(log(choices[i] / wanted));
         if (distance < best_distance) {
-            best = choice;
+            best = i;
             best_distance = distance;
         }
     }
     return best;
 }
 
+template <size_t N>
+inline unsigned nearest(long value, const unsigned (&choices)[N]) { return choices[nearest_index(value, choices)]; }
+
 inline unsigned exposure_time(const char *shutter)
 {
     unsigned denominator = 0;
     if (sscanf(shutter, "1/%u", &denominator) != 1 || denominator == 0U) return 60;
-    return nearest((long)denominator, vendor_exposures);
+    return vendor_exposures[nearest_index((long)denominator, shutters)];
 }
 
-inline unsigned shutter_denominator(long exposure) { return nearest(exposure, shutters); }
+inline unsigned shutter_denominator(long exposure)
+{
+    for (size_t i = 0; i < sizeof(shutters) / sizeof(shutters[0]); i++)
+        if (exposure == (long)vendor_exposures[i]) return shutters[i];
+    return nearest(exposure, shutters);
+}
 
 struct Image {
     long brightness = 50;

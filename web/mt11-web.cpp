@@ -636,10 +636,31 @@ static const struct option replacement_iso_options[] = {
     {"3200", S_OPT_ISO_3200},
 };
 static const struct option replacement_shutter_options[] = {
-    {"auto", S_OPT_AUTO}, {"1/30", S_OPT_SHUTTER_30}, {"1/50", S_OPT_SHUTTER_50},
-    {"1/100", S_OPT_SHUTTER_100}, {"1/250", S_OPT_SHUTTER_250},
+    {"auto", S_OPT_AUTO},
+#if APCAM_HAVE_4KCAM_COMPAT
+    {"1/12", S_OPT_SHUTTER_12}, {"1/25", S_OPT_SHUTTER_25},
+#endif
+    {"1/30", S_OPT_SHUTTER_30}, {"1/50", S_OPT_SHUTTER_50},
+#if APCAM_HAVE_4KCAM_COMPAT
+    {"1/60", S_OPT_SHUTTER_60},
+#endif
+    {"1/100", S_OPT_SHUTTER_100},
+#if APCAM_HAVE_4KCAM_COMPAT
+    {"1/200", S_OPT_SHUTTER_200},
+#endif
+    {"1/250", S_OPT_SHUTTER_250},
+#if APCAM_HAVE_4KCAM_COMPAT
+    {"1/400", S_OPT_SHUTTER_400},
+#endif
     {"1/500", S_OPT_SHUTTER_500}, {"1/750", S_OPT_SHUTTER_750},
+#if APCAM_HAVE_4KCAM_COMPAT
+    {"1/800", S_OPT_SHUTTER_800},
+#endif
     {"1/1000", S_OPT_SHUTTER_1000}, {"1/2000", S_OPT_SHUTTER_2000},
+#if APCAM_HAVE_4KCAM_COMPAT
+    {"1/4000", S_OPT_SHUTTER_4000}, {"1/8000", S_OPT_SHUTTER_8000},
+    {"1/10000", S_OPT_SHUTTER_10000}, {"1/100000", S_OPT_SHUTTER_100000},
+#endif
 };
 static const struct option replacement_metering_options[] = {
     {"average", S_OPT_METER_AVERAGE}, {"center", S_OPT_METER_CENTER},
@@ -774,7 +795,8 @@ static const struct parameter replacement_parameters[] = {
     {"iso", "image", "iso", S_P_ISO, S_H_ISO_APP,
      PARAM_ENUM, 0, 0, 0, replacement_iso_options, 7},
     {"shutter", "image", "shutter", S_P_SHUTTER, S_H_SHUTTER_APP,
-     PARAM_ENUM, 0, 0, 0, replacement_shutter_options, 9},
+     PARAM_ENUM, 0, 0, 0, replacement_shutter_options,
+     sizeof(replacement_shutter_options) / sizeof(replacement_shutter_options[0])},
     {"metering", "image", "metering", S_P_METERING, S_H_METERING_APP,
      PARAM_ENUM, 0, 0, 0, replacement_metering_options, 3},
     {"white_balance", "image", "white_balance", S_P_WHITE_BALANCE,

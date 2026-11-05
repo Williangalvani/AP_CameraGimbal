@@ -49,9 +49,6 @@ static td_u32 range_max(td_u32 wanted, td_u32 minimum)
 static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
 {
     using namespace ca_hisi_tuning;
-    static const td_u32 exposure_us[] = {
-        0U, 33333U, 20000U, 10000U, 4000U, 2000U, 1333U, 1000U, 500U,
-    };
     ot_isp_exposure_attr attr;
     td_s32 result = ss_mpi_isp_get_exposure_attr(pipe, &attr);
     if (result != TD_SUCCESS) return result;
@@ -107,7 +104,7 @@ static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
             range_max(exposure_max_us(config->max_exposure), attr.auto_attr.exp_time_range.min);
     } else {
         attr.manual_attr.exp_time_op_type = OT_OP_MODE_MANUAL;
-        attr.manual_attr.exp_time = exposure_us[config->shutter];
+        attr.manual_attr.exp_time = shutter_us(config->shutter);
     }
     return ss_mpi_isp_set_exposure_attr(pipe, &attr);
 }

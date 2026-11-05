@@ -147,7 +147,7 @@ Field mapping:
 | `blc_level` (0–255) | `image.backlight`: the auto-exposure brightness target (the vendor's name aside, not black level) |
 | `awb_style_red`, `awb_style_green`, `awb_style_blue` (0–255) | `image.wb_style_*`: a gain of 1 + value / 512 on that colour after colour correction |
 | `onceAWB` 1 | one-push with `wb_water`, through the same `camera.ini.wb.command` as the Photos page. The reply comes back at once; the extension then polls `getImageAdjustment` until the manual gains change and settle. Nothing reads the result, so camera-app's `camera.ini.wb.status` stays until the next one-push |
-| `auto_exposureEx` 0 / 1, `exposure_time` | `shutter` `auto` / the nearest manual shutter |
+| `auto_exposureEx` 0 / 1, `exposure_time` | `shutter` `auto` / `1/N` for each of the extension's 15 exposures (34464 is `1/100000`); any other value takes the nearest of them |
 | `max_exposure` (1/x s) | `image.max_exposure`, one of the extension's 13 values (others snap to the nearest); the longest automatic exposure. Reads report the nearest of them |
 | `max_sys_gain`, `auto_AGain_max`, `auto_DGain_max` (0–255) | `image.max_gain`, `max_again`, `max_dgain`: automatic gain limits of (48 × value + 1)×, 0.75 × value and value × (each at least 1×) |
 | `auto_gain_mode` 0 / 1 | `image.gain_mode` `auto` / `manual`. Manual lets the two enables below fix those gains; exposure time stays automatic unless `auto_exposureEx` is 1. A fixed `iso` (Photos page, MAVLink) overrides it |

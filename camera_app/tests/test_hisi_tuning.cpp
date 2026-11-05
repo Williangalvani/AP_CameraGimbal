@@ -1,7 +1,9 @@
 #include "image_tuning.h"
+#include "apcam/APC_Config.h"
 
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 
 using namespace ca_hisi_tuning;
 
@@ -48,6 +50,27 @@ int main()
     assert(sys_gain(1024, 1024, 1024) == 1024 && sys_gain(32768, 1024, 1024) == 32768);
     assert(sys_gain(4096, 1024, 2048) == 8192 && sys_gain(64512, 128914, 64512) == 511659666U);
     assert(exposure_max_us(12) == 83333 && exposure_max_us(25) == 40000 && exposure_max_us(8000) == 125);
+
+    // every [image] shutter choice, slowest first, is 1/N s; the 4K Cam Manager offers 15 of them
+    assert(shutter_us(CA_SHUTTER_AUTO) == 0 && shutter_us(CA_SHUTTER_1_12) == 83333);
+    assert(shutter_us(CA_SHUTTER_1_250) == 4000 && shutter_us(CA_SHUTTER_1_750) == 1333);
+    assert(shutter_us(CA_SHUTTER_1_100000) == 10 && shutter_us((enum ca_shutter_mode)99) == 0);
+    const APC_Config::Field *shutter = APC_Config::find("image", "shutter");
+    assert(shutter != NULL);
+    const ca_config_option *options = shutter->options;
+    const size_t option_count = shutter->option_count;
+    assert(option_count == CA_SHUTTER_1_100000 + 1U && !strcmp(options[0].name, "auto"));
+    static const unsigned vendor[] = {12, 25, 30, 50, 60, 100, 200, 400, 800, 1000, 2000, 4000, 8000, 10000, 100000};
+    unsigned offered = 0, previous = 0;
+    for (size_t i = 1; i < option_count; i++) {
+        unsigned denominator = 0;
+        char end;
+        assert(sscanf(options[i].name, "1/%u%c", &denominator, &end) == 1 && denominator > previous);
+        assert(shutter_us((enum ca_shutter_mode)options[i].value) == 1000000U / denominator);
+        for (unsigned value : vendor) offered += value == denominator;
+        previous = denominator;
+    }
+    assert(offered == sizeof(vendor) / sizeof(vendor[0]));
 
     assert(waters[1].static_wb[0] == 500 && waters[1].static_wb[3] == 504 && waters[0].static_wb[0] == 469);
     for (const Water &water : waters) {

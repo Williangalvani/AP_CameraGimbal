@@ -62,13 +62,19 @@ int main()
     assert(running.max_exposure == 8000 && running.gain_mode == CA_GAIN_MANUAL);
     assert(running.brightness + 1 == config.brightness);
 
+    write_file(path, "[image]\nshutter = 1/100000\n");
+    ca_config_defaults(&config);
+    assert(ca_config_load(&config, path, error, sizeof(error)) == 0 && config.shutter == CA_SHUTTER_1_100000);
+    write_file(path, "[image]\nshutter = 1/12\n");
+    assert(ca_config_load(&config, path, error, sizeof(error)) == 0 && config.shutter == CA_SHUTTER_1_12);
+
     const APC_Config::Field *hue = APC_Config::find("image", "hue");
     assert(hue != NULL && hue->param_name == NULL);
 
     static const char *const invalid[] = {
         "[image]\nhue = 256\n",          "[image]\nmax_exposure = 11\n", "[image]\nmax_exposure = 8001\n",
         "[image]\ngain_mode = fixed\n",  "[image]\nwb_water = red\n",    "[image]\nae_strategy = middle\n",
-        "[image]\nslow_shutter = maybe\n",
+        "[image]\nslow_shutter = maybe\n", "[image]\nshutter = 1/34464\n",
     };
     for (const char *text : invalid) {
         write_file(path, text);

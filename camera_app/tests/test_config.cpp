@@ -288,6 +288,19 @@ int main(int argc, char **argv)
         assert(ca_config_load(&config, path, error, sizeof(error)) < 0);
         assert(strstr(error, "alias") != NULL);
     }
+#if !APCAM_HAVE_4KCAM_COMPAT
+    // the 4K Cam Manager's extra speeds are past the other backends' tables
+    const char *vendor_shutters[] = {"1/12", "1/60", "1/4000", "1/100000"};
+    for (const char *shutter : vendor_shutters) {
+        fd = open(path, O_WRONLY | O_TRUNC);
+        assert(fd >= 0);
+        char text[48];
+        snprintf(text, sizeof(text), "[image]\nshutter = %s\n", shutter);
+        write_config(fd, text);
+        ca_config_defaults(&config);
+        assert(ca_config_load(&config, path, error, sizeof(error)) < 0);
+    }
+#endif
     const char *invalid_support[] = {
         "enabled = true\n", "host = bad/host\n", "network_address = 192.0.2.25\n",
         "network_address = 192.0.2.25/33\n", "network_gateway = bad\n",
