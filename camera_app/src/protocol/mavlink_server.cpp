@@ -1037,17 +1037,19 @@ static unsigned stream_count()
     return APCAM_NUM_STREAMS + (ca_thermal_stream_available() ? 1U : 0U);
 }
 
-/* The main stream bitrate in bits per second, as MAVLink reports it. A target
- * without the setting, or with it set to automatic (0), reports the nominal
- * 4096 kbps. */
+/* The main stream bitrate in bits per second, as MAVLink reports it: the
+ * setting, or for automatic (0) the target's rule at the main resolution. A
+ * target without the setting reports the nominal 4096 kbps. */
 static uint32_t main_bitrate_bps(const struct ca_mavlink_server *server)
 {
 #if APCAM_HAVE_VIDEO_BITRATE
-    if (server->settings.main_bitrate_kbps) return server->settings.main_bitrate_kbps * 1000U;
+    unsigned width, height;
+    ca_video_resolution_size(server->settings.main_resolution, &width, &height);
+    return apcam_main_bitrate_kbps(server->settings.main_bitrate_kbps, width, height) * 1000U;
 #else
     (void)server;
-#endif
     return 4096000U;
+#endif
 }
 
 static void send_stream_information(struct ca_mavlink_server *server,

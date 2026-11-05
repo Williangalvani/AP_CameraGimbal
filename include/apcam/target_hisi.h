@@ -88,6 +88,7 @@ static inline unsigned apcam_hisi_auto_bitrate_kbps(unsigned width, unsigned hei
     if (width >= 1920U || height >= 1080U) return 4096U;
     return 2048U;
 }
+#define APCAM_AUTO_MAIN_BITRATE_KBPS(width, height) apcam_hisi_auto_bitrate_kbps(width, height)
 #define APCAM_MAIN_BITRATE_MIN_KBPS 0
 #define APCAM_MAIN_BITRATE_MAX_KBPS 50000
 #define APCAM_HAVE_VIDEO_FRAME_RATE 1

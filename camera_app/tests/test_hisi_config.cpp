@@ -68,6 +68,24 @@ int main()
     write_file(path, "[image]\nshutter = 1/12\n");
     assert(ca_config_load(&config, path, error, sizeof(error)) == 0 && config.shutter == CA_SHUTTER_1_12);
 
+    // bitrate 0 (automatic) is the hisi rule for the main resolution, as both the
+    // encoder and MAVLink's VIDEO_STREAM_INFORMATION use it
+#ifndef APCAM_AUTO_MAIN_BITRATE_KBPS
+#error "hisi must define APCAM_AUTO_MAIN_BITRATE_KBPS"
+#endif
+    static const struct { enum ca_video_resolution resolution; unsigned kbps; } automatic[] = {
+        {CA_VIDEO_2160P, 12000U}, {CA_VIDEO_1080P, 4096U}, {CA_VIDEO_720P, 2048U}, {CA_VIDEO_480P, 2048U},
+    };
+    ca_config_defaults(&config);
+    assert(config.main_bitrate_kbps == 0U);
+    for (const auto &expected : automatic) {
+        unsigned width, height;
+        ca_video_resolution_size(expected.resolution, &width, &height);
+        assert(APCAM_AUTO_MAIN_BITRATE_KBPS(width, height) == apcam_hisi_auto_bitrate_kbps(width, height));
+        assert(apcam_main_bitrate_kbps(config.main_bitrate_kbps, width, height) == expected.kbps);
+        assert(apcam_main_bitrate_kbps(8000U, width, height) == 8000U);
+    }
+
     const APC_Config::Field *hue = APC_Config::find("image", "hue");
     assert(hue != NULL && hue->param_name == NULL);
 

@@ -99,7 +99,10 @@
  * APCAM_FRAME_RATE, which is also the highest frame rate offered.
  * A backend with its own bitrate rule (for example by resolution) can define
  * APCAM_MAIN_BITRATE_MIN_KBPS and APCAM_DEFAULT_MAIN_BITRATE_KBPS as 0, meaning
- * automatic: it then applies its rule when the setting is 0. */
+ * automatic: it then applies its rule when the setting is 0. It also defines
+ * APCAM_AUTO_MAIN_BITRATE_KBPS(width, height) as that rule, and both the backend
+ * and MAVLink's VIDEO_STREAM_INFORMATION/STATUS take the main stream rate from
+ * apcam_main_bitrate_kbps() below; without the macro, 0 is reported as 4096. */
 #ifndef APCAM_HAVE_VIDEO_BITRATE
 #define APCAM_HAVE_VIDEO_BITRATE 0
 #endif
@@ -115,6 +118,17 @@
 #ifndef APCAM_MAIN_BITRATE_MAX_KBPS
 #define APCAM_MAIN_BITRATE_MAX_KBPS 20000
 #endif
+static inline unsigned apcam_main_bitrate_kbps(unsigned setting_kbps, unsigned width, unsigned height)
+{
+    if (setting_kbps != 0U) return setting_kbps;
+#ifdef APCAM_AUTO_MAIN_BITRATE_KBPS
+    return APCAM_AUTO_MAIN_BITRATE_KBPS(width, height);
+#else
+    (void)width;
+    (void)height;
+    return 4096U;
+#endif
+}
 #ifndef APCAM_MAIN_FPS_MIN
 #define APCAM_MAIN_FPS_MIN 5
 #endif

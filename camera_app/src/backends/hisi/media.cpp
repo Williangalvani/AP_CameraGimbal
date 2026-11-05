@@ -389,10 +389,9 @@ static void media_cleanup(struct APC_Media_HiSi_State *media, APC_Media_HiSi *ow
 static unsigned main_bitrate(const struct APC_Media_HiSi_State *media,
                              const struct ca_config *settings)
 {
-    return settings->main_bitrate_kbps != 0U
-               ? settings->main_bitrate_kbps
-               : apcam_hisi_auto_bitrate_kbps(media->sizes.width[CA_HISI_MAIN_CHN],
-                                              media->sizes.height[CA_HISI_MAIN_CHN]);
+    return apcam_main_bitrate_kbps(settings->main_bitrate_kbps,
+                                   media->sizes.width[CA_HISI_MAIN_CHN],
+                                   media->sizes.height[CA_HISI_MAIN_CHN]);
 }
 
 int APC_Media_HiSi::init(const struct ca_media_config *config)

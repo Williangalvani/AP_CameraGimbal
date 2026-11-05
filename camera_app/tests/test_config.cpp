@@ -51,6 +51,12 @@ int main(int argc, char **argv)
     assert(config.sub_resolution == CA_VIDEO_720P);
     assert(config.recording_resolution == CA_VIDEO_2160P);
     assert(config.main_codec == CA_VIDEO_H264);
+#ifndef APCAM_AUTO_MAIN_BITRATE_KBPS
+    // without an automatic rule, MAVLink reports the nominal rate for 0
+    assert(apcam_main_bitrate_kbps(0U, 3840U, 2160U) == 4096U);
+    assert(apcam_main_bitrate_kbps(0U, 1280U, 720U) == 4096U);
+    assert(apcam_main_bitrate_kbps(8000U, 3840U, 2160U) == 8000U);
+#endif
     assert(config.brightness == 50);
     assert(config.position_targeting);
     assert(config.support.video1_port == 0U);
