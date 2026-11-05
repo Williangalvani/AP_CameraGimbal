@@ -14,7 +14,8 @@ Features:
   synchronize the camera clock to the browser;
 - firmware version and six-character Git hash on the Status page, embedded
   at build time using the same version/hash as package filenames; builds with
-  tracked local modifications append `-dirty` to the hash;
+  tracked local modifications append `-dirty` to the hash, and builds with no
+  reachable `vX.y[.z]` tag report the version as `development`;
 - live SS928V100 on-die temperature using the vendor conversion formula and
   the average of its three hardware sensor channels;
 - a Users tab for changing the `admin` password and adding or removing

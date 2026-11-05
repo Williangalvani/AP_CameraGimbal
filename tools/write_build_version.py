@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate web build identity, updating the header only when values change."""
+"""Generate web build identity, updating the header only when values change.
+
+An untagged checkout reports its version as 'development' rather than
+'unknown': the commit is still identified by the hash, and releases are
+refused without a tag by tools/build_release.py.
+"""
 import json
 import os
 from pathlib import Path
@@ -8,7 +13,7 @@ import sys
 import tempfile
 
 repo = Path(__file__).resolve().parents[1]
-version = os.environ.get('MT11_VERSION') or 'unknown'
+version = os.environ.get('MT11_VERSION') or 'development'
 git_hash = os.environ.get('MT11_GIT_HASH') or 'unknown'
 try:
     dirty = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=repo,
