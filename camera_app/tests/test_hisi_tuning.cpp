@@ -41,6 +41,12 @@ int main()
     assert(ispd_gain_max(0) == 1024 && ispd_gain_max(1) == 1024 && ispd_gain_max(3) == 3072);
     assert(manual_gain(0) == 1024 && manual_gain(7) == 1024 && manual_gain(8) == 2048);
     assert(manual_gain(128) == 32768 && manual_gain(255) == 64512);
+    assert(iso_gain(0) == 1024 && iso_gain(1) == 1024 && iso_gain(4) == 8192 && iso_gain(6) == 32768);
+    // ISO 3200 and the default manual gains exceed the default caps
+    assert(with_manual(again_max(32), iso_gain(6)) == 32768 && with_manual(again_max(32), 4096) == 24576);
+    assert(with_manual(ispd_gain_max(0), manual_gain(8)) == 2048 && with_manual(ispd_gain_max(4), 2048) == 4096);
+    assert(sys_gain(1024, 1024, 1024) == 1024 && sys_gain(32768, 1024, 1024) == 32768);
+    assert(sys_gain(4096, 1024, 2048) == 8192 && sys_gain(64512, 128914, 64512) == 511659666U);
     assert(exposure_max_us(12) == 83333 && exposure_max_us(25) == 40000 && exposure_max_us(8000) == 125);
 
     assert(waters[1].static_wb[0] == 500 && waters[1].static_wb[3] == 504 && waters[0].static_wb[0] == 469);

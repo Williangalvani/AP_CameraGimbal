@@ -81,14 +81,26 @@ static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
         attr.manual_attr.d_gain = 1024U;
         attr.manual_attr.isp_d_gain = manual_gain(config->dgain);
     } else {
-        td_u32 gain = 1024U << ((unsigned)config->iso - 1U);
         attr.manual_attr.a_gain_op_type = OT_OP_MODE_MANUAL;
         attr.manual_attr.d_gain_op_type = OT_OP_MODE_MANUAL;
         attr.manual_attr.ispd_gain_op_type = OT_OP_MODE_MANUAL;
-        attr.manual_attr.a_gain = gain;
+        attr.manual_attr.a_gain = iso_gain((unsigned)config->iso);
         attr.manual_attr.d_gain = 1024U;
         attr.manual_attr.isp_d_gain = 1024U;
     }
+    ot_isp_ae_attr &limits = attr.auto_attr;
+    const ot_isp_me_attr &fixed = attr.manual_attr;
+    if (fixed.a_gain_op_type == OT_OP_MODE_MANUAL)
+        limits.a_gain_range.max = with_manual(limits.a_gain_range.max, fixed.a_gain);
+    if (fixed.d_gain_op_type == OT_OP_MODE_MANUAL)
+        limits.d_gain_range.max = with_manual(limits.d_gain_range.max, fixed.d_gain);
+    if (fixed.ispd_gain_op_type == OT_OP_MODE_MANUAL)
+        limits.ispd_gain_range.max = with_manual(limits.ispd_gain_range.max, fixed.isp_d_gain);
+    if (attr.op_type == OT_OP_MODE_MANUAL)
+        limits.sys_gain_range.max = with_manual(limits.sys_gain_range.max,
+            sys_gain(fixed.a_gain_op_type == OT_OP_MODE_MANUAL ? fixed.a_gain : 1024U,
+                     fixed.d_gain_op_type == OT_OP_MODE_MANUAL ? fixed.d_gain : 1024U,
+                     fixed.ispd_gain_op_type == OT_OP_MODE_MANUAL ? fixed.isp_d_gain : 1024U));
     if (config->shutter == CA_SHUTTER_AUTO) {
         attr.manual_attr.exp_time_op_type = OT_OP_MODE_AUTO;
         attr.auto_attr.exp_time_range.max =

@@ -76,6 +76,14 @@ inline uint32_t again_max(unsigned max_again) { return at_least_1x(level(max_aga
 inline uint32_t ispd_gain_max(unsigned max_dgain) { return at_least_1x(level(max_dgain) * 1024U); }
 /* manual gains go in whole steps of 1x */
 inline uint32_t manual_gain(unsigned gain) { return at_least_1x(level(gain) / 4U * 1024U); }
+inline uint32_t iso_gain(unsigned iso) { return iso == 0U ? 1024U : 1024U << (iso - 1U); }
+/* The SDK clamps manual gains to the auto ranges' maxima, so a manual gain
+ * widens its range instead of being cut to the auto limit. */
+inline uint32_t with_manual(uint32_t range_max, uint32_t manual) { return manual > range_max ? manual : range_max; }
+inline uint32_t sys_gain(uint32_t again, uint32_t dgain, uint32_t isp_dgain)
+{
+    return (uint32_t)((uint64_t)again * dgain / 1024U * isp_dgain / 1024U);
+}
 
 inline uint32_t exposure_max_us(unsigned max_exposure) { return max_exposure == 0U ? 0U : 1000000U / max_exposure; }
 
