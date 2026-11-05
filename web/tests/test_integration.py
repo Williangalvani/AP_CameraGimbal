@@ -883,6 +883,29 @@ try:
         assert b"Parameters saved" not in invalid_body
         assert (root / "app" / "camera.ini").read_text() == saved_config
 
+    # A new key joins the last section of its name, ahead of its trailing
+    # blank line, instead of starting another copy of the section.
+    (root / "app" / "camera.ini").write_text(
+        "[general]\ntimezone = GMT-10\n[image]\nbrightness = 50\n\n"
+        "[recording]\nautorecord = false\n[image]\nsaturation = 50\n\n"
+    )
+    status, body, _ = form("/parameters", "initial-password", csrf, replacement_parameters)
+    assert status == 200 and b"Parameters saved" in body, body.decode()
+    merged = (root / "app" / "camera.ini").read_text()
+    sections = []
+    for line in merged.splitlines():
+        if line.startswith("["):
+            sections.append((line.strip("[]"), []))
+        elif "=" in line:
+            sections[-1][1].append(line.split("=")[0].strip())
+    names = [name for name, _ in sections]
+    assert names[:4] == ["general", "image", "recording", "image"], merged
+    assert len(set(names[4:])) == len(names) - 4 and not set(names[4:]) & set(names[:4]), merged
+    assert sections[1][1] == ["brightness"] and "resolution" in sections[2][1], merged
+    assert {"saturation", "contrast", "iso", "shutter"} <= set(sections[3][1]), merged
+    assert "brightness = 50\n\n[recording]" in merged and "\n\n[" + names[4] + "]" in merged, merged
+    (root / "app" / "camera.ini").write_text(saved_config)
+
     replacement_parameters["mavlink_tcp_port"] = "14700"
     replacement_parameters["mavlink_udp_port"] = "14701"
     status, body, _ = form(

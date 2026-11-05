@@ -2018,6 +2018,82 @@ static bool ini_needs_quotes(const char *value)
            (length >= 2U && value[0] == '"' && value[length - 1U] == '"');
 }
 
+/* The section name of a trimmed "[name]" line. */
+static bool ini_header(const char *start, const char *end, char *name, size_t size)
+{
+    if (start >= end || *start != '[') return false;
+    const char *close = (const char *)memchr(start + 1, ']', (size_t)(end - start - 1));
+    if (close == NULL) return false;
+    const char *name_start = start + 1, *name_end = close;
+    trim_span(&name_start, &name_end);
+    size_t length = (size_t)(name_end - name_start);
+    if (length >= size) length = size - 1;
+    memcpy(name, name_start, length);
+    name[length] = '\0';
+    return true;
+}
+
+static bool ini_has_header(const char *p, const char *name)
+{
+    char other[80];
+    while (*p != '\0') {
+        const char *line_end = strchr(p, '\n');
+        if (line_end == NULL) line_end = p + strlen(p);
+        const char *start = p, *end = line_end;
+        trim_span(&start, &end);
+        if (ini_header(start, end, other, sizeof(other)) && strcmp(other, name) == 0) return true;
+        p = *line_end == '\n' ? line_end + 1 : line_end;
+    }
+    return false;
+}
+
+static bool ini_append_missing(APC_StringBuffer &output, struct ini_update *updates, size_t count,
+                               const char *section)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (updates[i].found || strcmp(updates[i].section, section) != 0) continue;
+        if (!output.appendf(ini_needs_quotes(updates[i].value) ? "%s = \"%s\"\n" : "%s = %s\n",
+                            updates[i].key, updates[i].value)) return false;
+        updates[i].found = true;
+    }
+    return true;
+}
+
+/* Sections may repeat: a missing key joins the last section of its name,
+ * ahead of that section's trailing blank lines. */
+static bool ini_insert_missing(const char *config, struct ini_update *updates, size_t count,
+                               APC_StringBuffer &output)
+{
+    const char *p = config, *blanks = NULL;
+    char section[80] = "";
+    bool last = false;
+    while (*p != '\0') {
+        const char *line_end = strchr(p, '\n');
+        if (line_end == NULL) line_end = p + strlen(p);
+        const char *next = *line_end == '\n' ? line_end + 1 : line_end;
+        const char *start = p, *end = line_end;
+        trim_span(&start, &end);
+        if (start == end) {
+            if (blanks == NULL) blanks = p;
+            p = next;
+            continue;
+        }
+        char name[80];
+        const bool header = ini_header(start, end, name, sizeof(name));
+        if (header && last && !ini_append_missing(output, updates, count, section)) return false;
+        if (blanks != NULL && !output.append_n(blanks, (size_t)(p - blanks))) return false;
+        blanks = NULL;
+        if (!output.append_n(p, (size_t)(line_end - p)) || !output.append_n("\n", 1U)) return false;
+        if (header) {
+            snprintf(section, sizeof(section), "%s", name);
+            last = !ini_has_header(next, name);
+        }
+        p = next;
+    }
+    if (last && !ini_append_missing(output, updates, count, section)) return false;
+    return blanks == NULL || output.append_n(blanks, strlen(blanks));
+}
+
 static char *ini_apply_updates(const char *config, struct ini_update *updates,
                                size_t count, bool add_missing,
                                size_t *new_length,
@@ -2110,6 +2186,10 @@ static char *ini_apply_updates(const char *config, struct ini_update *updates,
         }
     }
     if (add_missing) {
+        APC_StringBuffer merged;
+        if (!ini_insert_missing(output.data(), updates, count, merged)) goto allocation_failed;
+        output.reset();
+        if (!output.append_n(merged.data(), merged.size())) goto allocation_failed;
         for (size_t i = 0; i < count; i++) {
             if (updates[i].found) continue;
             if (output.size() != 0U && output.data()[output.size() - 1U] != '\n' &&
