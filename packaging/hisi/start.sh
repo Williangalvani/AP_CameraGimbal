@@ -12,4 +12,8 @@ if ! mountpoint -q /var; then
 fi
 ifconfig lo 127.0.0.1 up
 
+# Known root password (same as web.pass.default) for recovery shell access;
+# the vendor one is unknown. rootfs still owns telnetd.
+echo 'root:ardupilot' | chpasswd
+
 exec /appfs/ap_cameragimbal/service.sh </dev/null >>/run/hisi-service.log 2>&1
