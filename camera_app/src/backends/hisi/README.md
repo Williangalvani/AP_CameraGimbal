@@ -121,6 +121,18 @@ steps (-6 darkens the picture by about 30%, +6 doubles it), and shutter
 times longer than 1/30 are held to the frame time unless `slow_shutter` is
 on.
 
+`tools/hisi_mavlink_check.py run` does the same through the MAVLink camera
+parameters (`PARAM_EXT_SET`, as QGroundControl uses them with `camera.xml`).
+The 4K Cam Manager's own controls (hue, sharpness, gamma, gains and the AE
+limits) have no MAVLink names. On the bench the camera definition, readback,
+range checks, `PARAM_SET`, brightness, contrast, saturation, exposure, ISO,
+the overlay cross, every stream setting including `VIDEO_MAIN_FPS`, and
+`MAV_CMD_IMAGE_START_CAPTURE` passed. `VIDEO_MAIN_FPS` used to be missing
+from `camera.xml`; it now saves and reports "restart camera-app to apply"
+there as through `PARAM_SET`. Shutter, metering, the white balance
+parameters, `CAM_WB_ONEPUSH` and `MOUNT_ORIENT` were not judged: the room
+went dark during the run.
+
 ## Storage
 `/appfs` is a read-only squashfs (UBI volume on mtd4). Settings (`camera.ini`,
 `web.pass`) live on the writable UBIFS `/date/ap_cameragimbal`; recordings,

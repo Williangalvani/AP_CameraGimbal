@@ -61,6 +61,15 @@
   white balance from the Sensors page, then restores every field. `list`
   shows the checks. A check this scene cannot show is UNSURE, not failed.
   Needs FFmpeg and numpy; it changes the live picture, so not in flight.
+- `hisi_mavlink_check.py run [CHECK ...]` does the same through MAVLink, as a
+  GCS on camera-app's UDP port (`CAM_MAV_PORT`, default 14550) behind a
+  stand-in flight controller heartbeat (`CAM_MAV_SYSID`, default 1). It
+  downloads `camera.xml` over MAVLink FTP and checks it against the
+  `PARAM_EXT` list, refuses bad values, sets each image and stream parameter
+  with `PARAM_EXT_SET` (and one with `PARAM_SET`), reads it back over MAVLink
+  and in the web form, judges the video, takes a photo with
+  `MAV_CMD_IMAGE_START_CAPTURE` and runs `CAM_WB_ONEPUSH`. It restarts
+  camera-app at the end so the stand-in is forgotten. Also needs pymavlink.
 
 These scripts do not download a vendor firmware bundle. Reviewed immutable
 MT11 platform images used by the package builder are under
