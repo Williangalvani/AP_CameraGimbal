@@ -108,6 +108,12 @@ mv "$TEST_ROOT/mounts.new" "$TEST_ROOT/mounts"
     for command, body in (('ifconfig', 'exit 0'),
                           ('reboot', 'echo reboot >>"$TEST_ROOT/reboots"')):
         (commands / command).write_text(f'#!/bin/sh\n{body}\n')
+    # A DHCP client that runs until SIGTERM, as udhcpc -f does.
+    (commands / 'udhcpc').write_text('''#!/bin/sh
+echo "started $*" >>"$TEST_ROOT/udhcpc.log"
+trap 'echo released >>"$TEST_ROOT/udhcpc.log"; exit 0' TERM
+while :; do sleep 1; done
+''')
     for path in commands.iterdir():
         path.chmod(0o755)
 
@@ -293,6 +299,32 @@ mv "$TEST_ROOT/mounts.new" "$TEST_ROOT/mounts"
         assert web_request('/restart', f'csrf={csrf()}')[0] == 303
         assert ready.exists() and ready.read_text() != old
 
+        # The DHCP client runs only while camera.ini asks for it, follows a
+        # saved change without a camera-app restart, and survives restarts.
+        udhcpc_log = root / 'udhcpc.log'
+        assert not udhcpc_log.exists(), 'DHCP client started while disabled'
+        parameters_page = web_request('/parameters')[1].decode()
+        dhcp_field = parameters_page[parameters_page.index('<select required name="network_dhcp"'):]
+        dhcp_help = dhcp_field[:dhcp_field.index('</div>')]
+        assert 'Applies without restarting' in dhcp_help and 'Requires' not in dhcp_help, dhcp_help
+        ini = config / 'camera.ini'
+        ini.write_text(ini.read_text().replace('dhcp = false', 'dhcp = true'))
+        wait_for(lambda: udhcpc_log.exists() and 'started' in udhcpc_log.read_text(),
+                 'DHCP client not started')
+        assert udhcpc_log.read_text().splitlines() == [
+            f'started -f -R -i eth0 -s {app}/udhcpc.sh -p {runtime}/udhcpc.pid '
+            '-x hostname:ardupilot-4kcam'], udhcpc_log.read_text()
+        started_at = time.monotonic()
+        assert web_request('/restart', f'csrf={csrf()}')[0] == 303
+        assert udhcpc_log.read_text().count('started') == 1, 'a second DHCP client started'
+        # A client that dies is started again, no sooner than 10 s after the last start.
+        os.kill(int((runtime / 'udhcpc.pid').read_text()), signal.SIGKILL)
+        wait_for(lambda: udhcpc_log.read_text().count('started') == 2, 'dead DHCP client not restarted')
+        assert time.monotonic() - started_at >= 9, 'DHCP client restarted without a pause'
+        ini.write_text(ini.read_text().replace('dhcp = true', 'dhcp = false'))
+        wait_for(lambda: 'released' in udhcpc_log.read_text(), 'DHCP client not stopped')
+        assert 'Stopping the DHCP client' in (root / 'service.log').read_text()
+
         # A crash is restarted without a request.
         old = ready.read_text()
         os.kill(pids('camera-app')[0], signal.SIGKILL)
@@ -351,7 +383,8 @@ mv "$TEST_ROOT/mounts.new" "$TEST_ROOT/mounts"
         assert len(loads('sys_config')) == 1, 'drivers reloaded on restart'
         assert not (root / 'overlap').exists(), 'concurrent camera-app instances'
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
-              'restart, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, web respawn')
+              'restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
+              'web respawn')
     finally:
         os.killpg(process.pid, signal.SIGKILL)
         process.wait()

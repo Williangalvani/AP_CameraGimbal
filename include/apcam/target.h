@@ -71,6 +71,11 @@
 #ifndef APCAM_HAVE_SDCARD
 #define APCAM_HAVE_SDCARD 0
 #endif
+/* Packaging runs a DHCP client when camera.ini sets [network] dhcp, beside
+ * the interface's fixed address; the web offers the switch. */
+#ifndef APCAM_HAVE_DHCP_CLIENT
+#define APCAM_HAVE_DHCP_CLIENT 0
+#endif
 /* Default manual gains (1/256) and colour temperature (K). A WB-tuning target
  * sets its sensor calibration's reference point. */
 #ifndef APCAM_DEFAULT_WB_RED

@@ -497,6 +497,7 @@ hisi-test: generated z1mini-test-headers
 	MKSQUASHFS='$(SQUASHFS_TOOLS_ROOT)/bin/mksquashfs' python3 tests/test_hisi_firmware.py
 	python3 tests/test_hisi_service.py
 	python3 tests/test_hisi_sdcard.py
+	python3 tests/test_hisi_dhcp.py
 .PHONY: zr10_sitl-test
 zr10_sitl-test: zr10_sitl
 	python3 sitl/test_unigcs.py $(ZR10_SITL_BUILD)/camera-app --backend zr10 --video-codec h265

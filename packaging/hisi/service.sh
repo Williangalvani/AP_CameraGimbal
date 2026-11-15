@@ -1,7 +1,8 @@
 #!/bin/sh
 # Hi3516DV500 supervisor, started by /appfs/sh/start.sh instead of xipc.
 # Loads the MPP drivers as xipc did, keeps the microSD card mounted with
-# sdcard.sh, and runs hisi-web and camera-app with the web's restart protocol:
+# sdcard.sh, runs a DHCP client when camera.ini asks for one, and runs
+# hisi-web and camera-app with the web's restart protocol:
 # the web bumps camera-app.request and waits for a ready file from a new
 # camera-app.
 # A camera-app that exits or fails to start is restarted after 2, 10 and 30 s;
@@ -37,6 +38,9 @@ web_pid=
 log_pid=
 media_pid=
 SDCARD_STATE=/run/sdcard.state
+DHCP_PID=/run/udhcpc.pid
+DHCP_INTERFACE=eth0
+dhcp_pid=
 failures=0
 web_started=0
 web_delay=1
@@ -89,7 +93,7 @@ wait_for_restart()
 {
     echo 'Camera stopped; web UI remains available for diagnosis and restart' >&2
     while ! request_changed; do
-        check_web
+        supervise
         sleep 1
     done
     failures=0
@@ -111,7 +115,7 @@ after_failure()
     shift $((failures - 1))
     echo "camera-app failed; restarting in $1 s (attempt $failures of $attempts)" >&2
     for _ in $(seq 1 "$1"); do
-        check_web
+        supervise
         request_changed && return
         sleep 1
     done
@@ -148,6 +152,7 @@ stop()
     for child in "$web_pid" "$log_pid" "$media_pid"; do
         [ -n "$child" ] && kill "$child" 2>/dev/null || true
     done
+    dhcp_running && kill "$dhcp_pid" 2>/dev/null || true
     rm -f /run/hisi-service.pid "$STARTED"
     trap - INT TERM
     exit 0
@@ -257,6 +262,60 @@ rm -f "$SDCARD_STATE"
     done
 ) 9>&- &
 media_pid=$!
+
+# camera.ini [network] dhcp = true runs udhcpc, whose udhcpc.sh puts the lease
+# beside eth0's own address. Checked every second (supervise), so a saved
+# change applies without a camera-app restart; a client that keeps exiting is
+# started again at most every DHCP_RETRY_S.
+DHCP_RETRY_S=10
+dhcp_next=0
+dhcp_wanted()
+{
+    awk '
+        /^[ \t]*\[/ {
+            section = $0
+            sub(/^[ \t]*\[[ \t]*/, "", section)
+            sub(/[ \t]*\].*$/, "", section)
+            next
+        }
+        section == "network" && /^[ \t]*dhcp[ \t]*=/ {
+            value = $0
+            sub(/^[^=]*=[ \t]*/, "", value)
+            sub(/[ \t\r]+$/, "", value)
+            gsub(/"/, "", value)
+            value = tolower(value)
+            wanted = value == "true" || value == "1" || value == "yes" || value == "on"
+        }
+        END { exit !wanted }' "$CAMERA_APP_CONFIG" 2>/dev/null
+}
+dhcp_running()
+{
+    dhcp_pid=$(cat "$DHCP_PID" 2>/dev/null) || dhcp_pid=
+    process_alive "$dhcp_pid"
+}
+apply_dhcp()
+{
+    if dhcp_wanted; then
+        dhcp_running && return 0
+        uptime_s
+        [ "$now" -ge "$dhcp_next" ] || return 0
+        dhcp_next=$((now + DHCP_RETRY_S))
+        echo "Starting the DHCP client on $DHCP_INTERFACE" >&2
+        udhcpc -f -R -i "$DHCP_INTERFACE" -s "$APP_ROOT/udhcpc.sh" -p "$DHCP_PID" \
+            -x hostname:ardupilot-4kcam 9>&- &
+        # udhcpc writes the same PID; this covers the moment before it does
+        echo $! >"$DHCP_PID"
+    elif dhcp_running; then
+        # -R: the client releases the lease and udhcpc.sh restores the route
+        echo 'Stopping the DHCP client' >&2
+        kill -TERM "$dhcp_pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+            process_alive "$dhcp_pid" || break
+            sleep 1
+        done
+    fi
+}
+
 start_web()
 {
     "$APP_ROOT/bin/hisi-web" -p "$WEB_PORT" >>"$WEB_LOG" 2>&1 9>&- &
@@ -295,8 +354,14 @@ check_web()
     start_web
     web_next=$((now + web_delay))
 }
-while true; do
+# Once a second from every wait below.
+supervise()
+{
     check_web
+    apply_dhcp
+}
+while true; do
+    supervise
     exec 8>/run/camera-app.request.lock
     flock -x 8 || exit 1
     generation=$(cat "$REQUEST" 2>/dev/null || echo 0)
@@ -342,7 +407,7 @@ while true; do
     # A web request can race the fork after its PID scan. Observe the request
     # ourselves as well, so a missed old instance cannot block a restart.
     while process_alive "$app_pid"; do
-        check_web
+        supervise
         if request_changed; then
             stop_child
             break

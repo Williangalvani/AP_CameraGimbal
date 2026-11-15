@@ -117,6 +117,9 @@ it mounts the tmpfs `/tmp` and `/var` that `xipc` used to, then runs
   `DCIM/capture` and `logs` only on a mounted card;
 - seeds `camera.ini` and `web.pass` (`ardupilot`) when they are missing or
   empty, through a temporary file;
+- runs `udhcpc` while `camera.ini` sets `[network] dhcp = true` (Parameters →
+  Network → DHCP client), checked every second, so a saved change applies
+  without a camera-app restart;
 - runs `hisi-web` on port 80 and camera-app with the web's restart protocol
   (`/run/camera-app.request` / `.started`). A camera-app that crashes or fails
   to start is restarted after 2, 10 and 30 s; after a fourth failure in a row
@@ -141,8 +144,16 @@ loaded hung the board), so a kernel or driver hang needs a power cycle.
 not run is reported and ignored, so it cannot keep the web UI down. The address
 needs no setup: the recovery updater applies the saved `eth0` MAC, IP and
 gateway from `/appfs/fconfigs/param/updatetype.ini` at boot, independently
-of `xipc`. Logs are in `/run` (`camera_app.log`, `hisi-web.log`,
-`hisi-service.log`).
+of `xipc` (192.168.2.10 via 192.168.2.1 on the units seen so far). The
+optional DHCP client adds to that rather than replacing it: `udhcpc.sh` puts
+the lease on `eth0:1` and points the default route at the lease's router, and
+when the lease ends (or the client is switched off, which releases it) the
+alias goes and the fixed gateway returns. The fixed address answers
+throughout, so a camera on a network without DHCP, or with an unknown lease,
+is still found at 192.168.2.10. DNS servers from the lease are not applied:
+`/etc/resolv.conf` points into the vendor's `fconfigs`. Logs are in `/run`
+(`camera_app.log`, `hisi-web.log`, `hisi-service.log`; udhcpc logs to the
+last).
 
 ## Updates
 `make hisi_appfs` writes `build/HISI_AP_<version>_<hash>_appfs.img`, a whole
