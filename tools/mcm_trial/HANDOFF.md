@@ -46,16 +46,29 @@ and the camera was left as found after each session.
   is the basis for `apcamsrc` (camera-app socket or MPP source + a small
   `VideoSourceGstType` variant in MCM).
 
-## Not finished
-
-- **Keyframe on request (`camera-app-keyframe.patch`): written, never run on
-  a camera.** camera-app's RTSP server ignores RTCP PLI/FIR, so MCM's
-  keyframe requests go nowhere. The patch adds
+- **Keyframe on request works** (`camera-app-keyframe.patch`, tested
+  2026-11-15 on `9cbaade` + the patch, from RAM with
+  `camera/swap_camera_app.sh`). camera-app's RTSP server used to ignore RTCP
+  PLI/FIR, so MCM's keyframe requests went nowhere. The patch adds
   `ca_rtsp_set_keyframe_callback` and makes the hisi backend call
   `ss_mpi_venc_request_idr` when a client starts playing or sends PLI/FIR
-  (at most every 500 ms per stream). It applies cleanly on this branch. The
-  RAM bring-up for testing it is in `out/kfserve/`; the session stopped
-  because another session was using the camera for microSD tests.
+  (at most every 500 ms per stream). Measured with
+  `profile/keyframe_check.py` (H.264, GOP 30 at 30 fps):
+
+  | | flashed camera-app | with the patch |
+  |---|---|---|
+  | PLAY to first IDR, main | 36–932 ms | 13–93 ms |
+  | PLI/FIR to IDR, main, TCP and UDP | 437–705 ms (next GOP) | 61–76 ms (32 of 32) |
+  | PLI to IDR, sub | — | 39–41 ms |
+
+  Requests closer than 500 ms are held to the next GOP, as intended.
+  camera_app, web and hisi host tests pass with the patch applied.
+
+## Not finished
+
+- **MCM's 4K WebRTC with the keyframe patch** has not been run: the MCM
+  bundles are on the Mac. That run says whether the default send buffer is
+  enough once MCM's PLIs are answered.
 - **Intra refresh is not an alternative**: with it enabled on VENC 0
   (`probe/venc_tune.c`), the main stream stopped producing frames (camera-app
   waits for an IDR before releasing a new RTSP client). The encoder was put
@@ -76,8 +89,8 @@ and the camera was left as found after each session.
 | `camera/` | On-camera scripts: deploy, start MCM, measure, swap in a RAM camera-app |
 | `create_streams.sh` | Creates MCM's main and sub streams over REST |
 | `probe/` | MPP cross-process probe, `venc_tune`, `tsample` (ptrace sampler) |
-| `profile/` | Sampler symbolizer, RTSP timing script, hot-thread samples |
-| `camera-app-keyframe.patch` | Keyframe on PLAY/PLI/FIR, untested |
+| `profile/` | Sampler symbolizer, RTSP timing and keyframe-request scripts, hot-thread samples |
+| `camera-app-keyframe.patch` | Keyframe on PLAY/PLI/FIR, tested (above) |
 | `out/sizes.txt`, `out/deps-*.txt`, `out/build.log` | Bundle sizes and library lists |
 | `out/kfserve/` | RAM bring-up scripts for testing the keyframe camera-app |
 
@@ -105,8 +118,9 @@ build (now `lean-debian`); the file above is the OpenSSL rebuild.
 
 ## Next steps
 
-1. Test `camera-app-keyframe.patch` in RAM (`camera/swap_camera_app.sh`) and
-   check MCM's 4K WebRTC with the default send buffer.
+1. Check MCM's 4K WebRTC with the keyframe camera-app and the default send
+   buffer (`camera/swap_camera_app.sh URL`, then `restore`). If it holds,
+   move the patch into camera_app as a commit of its own.
 2. Run PLAN.md Tasks 6–8 and apply its Decision thresholds.
 3. If the relay fails them, start `apcamsrc`; if flash is the problem, a
    trimmed MCM (no frontend, zenoh, tracy, swagger UI) or `gstreamer-full`.

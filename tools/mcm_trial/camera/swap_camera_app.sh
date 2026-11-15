@@ -30,8 +30,11 @@ restart()
     return 1
 }
 
+# The running camera-app keeps the bound binary busy, so a plain umount
+# fails; a lazy one detaches it and the restarted camera-app execs the
+# flashed binary.
 if [ "${1-}" = restore ]; then
-    if mounted; then umount "$BIN"; fi
+    if mounted; then umount -l "$BIN"; fi
     restart
     exit
 fi
@@ -39,6 +42,6 @@ mkdir -p /run/ca-test
 wget -q -O "$TEST.part" "$1"
 chmod +x "$TEST.part"
 mv "$TEST.part" "$TEST"
-if mounted; then umount "$BIN"; fi
+if mounted; then umount -l "$BIN"; fi
 mount --bind "$TEST" "$BIN"
 restart
