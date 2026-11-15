@@ -1,0 +1,5 @@
+MCM t3.26.3, GStreamer 1.26.2-2, lean: libnice 0.1.22 and libsrtp 2.6.0 with OpenSSL
+mcm-only    staged   41755240 B  squashfs   13082624 B    0 plugins    0 libraries
+lean-debian staged   93146275 B  squashfs   28667904 B   15 plugins   80 libraries
+lean        staged   76155891 B  squashfs   23552000 B   15 plugins   49 libraries
+full        staged  291613387 B  squashfs   89559040 B  257 plugins  336 libraries
