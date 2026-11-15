@@ -90,6 +90,9 @@ int main(void)
     assert(ca_video_vfov(NAN, 1920, 1080) == 0);
     assert(ca_video_vfov(71.532165f, 0, 1080) == 0);
     assert(ca_video_vfov(71.532165f, 1920, 0) == 0);
+#elif APCAM_TARGET == APCAM_TARGET_HISI
+    near(ca_lens1_hfov(1), 90);
+    near(ca_lens1_hfov(2), 53.130102f);  // 2 atan(tan(45 deg) / 2)
 #else
     near(ca_lens1_hfov(1), 88);
     assert(ca_lens1_hfov(2) > 51 && ca_lens1_hfov(2) < 52);

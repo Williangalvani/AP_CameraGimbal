@@ -12,8 +12,9 @@ inline bool apcam_parse_soc_temperature(const char *text,bool labelled_celsius,i
     if(!text || !millidegrees)return false;
     if(labelled_celsius) {
         const char prefix[]="Temperature ";
-        if(std::strncmp(text,prefix,sizeof(prefix)-1))return false;
-        text+=sizeof(prefix)-1;
+        const size_t length=sizeof(prefix)-1;
+        if(std::strlen(text)<length || std::memcmp(text,prefix,length))return false;
+        text+=length;
     }
     errno=0;char *end=nullptr;const long value=std::strtol(text,&end,10);
     if(errno==ERANGE || end==text)return false;

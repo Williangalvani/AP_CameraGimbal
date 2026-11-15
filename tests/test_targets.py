@@ -12,9 +12,10 @@ sys.path.insert(0, str(ROOT))
 from sitl.target_properties import TARGETS, transform
 from windows.test_package import check_video_size
 
-assert set(TARGETS) == {'mt11', 'a8', 'zr10', 'z1mini', 'rpi_libcam_caddx', 'zt30'}
+assert set(TARGETS) == {'mt11', 'a8', 'zr10', 'z1mini', 'rpi_libcam_caddx', 'zt30', 'hisi'}
 recording_defaults = {
     'mt11': '3840x2160',
+    'hisi': '3840x2160',
     'zt30': '3840x2160',
     'a8': '3840x2160',
     'zr10': '2560x1440',
@@ -65,7 +66,7 @@ with tempfile.TemporaryDirectory(prefix='apcam-target-test-') as temp:
                     converted = transform(target, channel, inverted, vector, rates=rates)
                     recovered = transform(target, channel, inverted, converted, rates=rates, inverse=True)
                     assert list(vector) == recovered
-print('PASS six-target compiler exports, profile defaults, orthogonal mappings and known calibration vectors')
+print('PASS seven-target compiler exports, profile defaults, orthogonal mappings and known calibration vectors')
 
 # The Windows packaged self-test must accept each native thermal geometry
 # for both live video and recordings, and reject the other camera's size.
