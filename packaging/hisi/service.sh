@@ -249,6 +249,7 @@ export CAMERA_APP_LOG_ROOT=$MEDIA/logs
 export CAMERA_APP_READY_PATH=$READY
 export SDCARD_MEDIA=$MEDIA SDCARD_STATE SDCARD_LOCK=/run/sdcard.lock
 export SDCARD_HOST=${SDCARD_HOST-10030000.SDIO}
+export SDCARD_CLOCK_REG=${SDCARD_CLOCK_REG-0x110135c0}
 export CAMERA_APP_STORAGE_STATE=$SDCARD_STATE
 export CAMERA_APP_STORAGE_TOOL=$APP_ROOT/sdcard.sh
 # The microSD card is mounted when inserted and detached when removed, about

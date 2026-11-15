@@ -15,6 +15,13 @@
 # This board's cards can come up unreadable (command timeouts, error -110);
 # binding SDCARD_HOST to its driver again initialises them, so that is tried
 # up to RESETS_MAX times until a card mounts.
+# Its cards also stay at the 400 kHz identification clock: the switch to a
+# UHS bus speed fails ("Problem setting bus speed mode!") and the kernel then
+# never raises the clock. Once a card is up, the SDIO clock select in the
+# CRG register SDCARD_CLOCK_REG is moved from 400 kHz to 25 MHz, the cards'
+# default speed, and moved back when the card goes: the kernel's clock
+# framework caches the rate it set, so it would identify the next card at
+# 25 MHz otherwise.
 set -u
 MEDIA=${SDCARD_MEDIA:-/mnt}
 STATE=${SDCARD_STATE:-/run/sdcard.state}
@@ -23,6 +30,9 @@ DISKS=${SDCARD_DISKS:-/dev/mmcblk0 /dev/mmcblk1}
 MOUNTS=${SDCARD_MOUNTS:-/proc/mounts}
 HOST=${SDCARD_HOST-}
 HOST_DRIVER=${SDCARD_HOST_DRIVER:-/sys/bus/platform/drivers/sdhci_nebula}
+CLOCK_REG=${SDCARD_CLOCK_REG-}
+# Bits 24-26 of the register: 0 is 400 kHz, 1 is 25 MHz.
+CLOCK_SHIFT=24
 RESETS_MAX=2
 # The first partition starts 4 MiB in, the erase-block alignment cards use.
 PART_START=8192
@@ -62,6 +72,37 @@ media_mount()
         options=$opts
     done <"$MOUNTS"
 }
+# bspmm ADDRESS prints "ADDRESS: VALUE"; given a VALUE as well, it writes it.
+read_clock()
+{
+    clock=$(bspmm "$CLOCK_REG" </dev/null 2>/dev/null |
+        awk -v reg="$CLOCK_REG:" '$1 == reg { print $2 }')
+    case $clock in
+    0x*|0X*) return 0 ;;
+    esac
+    return 1
+}
+# Moves the clock select from FROM to TO, leaving the other bits.
+set_clock()
+{
+    [ -n "$CLOCK_REG" ] && read_clock || return 1
+    [ $(((clock >> CLOCK_SHIFT) & 7)) -eq "$1" ] || return 1
+    bspmm "$CLOCK_REG" "$(printf '0x%08x' $(((clock & ~(7 << CLOCK_SHIFT)) | ($2 << CLOCK_SHIFT))))" \
+        </dev/null >/dev/null 2>&1
+}
+raise_clock()
+{
+    [ -e "$STATE.clock" ] && return 0
+    set_clock 0 1 || return 0
+    touch "$STATE.clock"
+    log "SDIO clock raised from 400 kHz to 25 MHz"
+}
+restore_clock()
+{
+    [ -e "$STATE.clock" ] || return 0
+    rm -f "$STATE.clock"
+    set_clock 1 0 && log "SDIO clock back to 400 kHz"
+}
 make_dirs()
 {
     mkdir -p "$MEDIA/DCIM/record" "$MEDIA/DCIM/capture" "$MEDIA/logs"
@@ -82,7 +123,11 @@ try_mount()
 }
 do_mount()
 {
-    find_disk
+    if find_disk; then
+        raise_clock
+    else
+        restore_clock
+    fi
     media_mount
     if [ -n "$mounted" ]; then
         if [ -n "$disk" ] && [ -e "$mounted" ]; then
@@ -122,6 +167,7 @@ reset_host()
     [ "$resets" -lt "$RESETS_MAX" ] || return 1
     echo $((resets + 1)) >"$STATE.resets"
     log "$disk cannot be read; binding $HOST again"
+    restore_clock
     echo "$HOST" >"$HOST_DRIVER/unbind"
     sleep 1
     echo "$HOST" >"$HOST_DRIVER/bind"
@@ -146,6 +192,7 @@ disk_sectors()
 do_format()
 {
     find_disk || { log 'no card to format'; set_state absent; return 1; }
+    raise_clock
     set_state formatting
     media_mount
     if [ -n "$mounted" ]; then

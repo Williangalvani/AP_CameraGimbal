@@ -41,6 +41,20 @@ for device; do :; done
 touch "$device"
 echo "$device" >>"$TEST_ROOT/formatted"
 ''')
+    # The board tool's output, over a register file; a second argument writes.
+    (commands / 'bspmm').write_text('''#!/bin/sh
+echo "*** Board tools : ver0.0.1_20121120 *** "
+old=$(cat "$TEST_ROOT/clock")
+if [ $# -eq 2 ]; then
+    echo "bspmm $*" >>"$TEST_ROOT/calls"
+    echo "$2" >"$TEST_ROOT/clock"
+    echo "$1: $old --> $2 "
+else
+    echo "$1: $old"
+    echo "NewValue:scanf_s failed!"
+fi
+echo "[END]"
+''')
     for path in commands.iterdir():
         path.chmod(0o755)
     state = root / 'sdcard.state'
@@ -159,4 +173,43 @@ echo "$device" >>"$TEST_ROOT/formatted"
     partition.touch()
     run('mount')
     assert current() == 'ready' and not resets.exists()
+
+    # The SDIO clock: a card left at 400 kHz (select 0 in bits 24-26) gets
+    # 25 MHz (select 1), other bits kept; a removed card gives 400 kHz back.
+    clock = root / 'clock'
+    clock.write_text('0x80000003\n')
+    env.update(SDCARD_CLOCK_REG='0x110135c0')
+    assert run('mount') == ['bspmm 0x110135c0 0x81000003']
+    assert clock.read_text() == '0x81000003\n'
+    assert run('mount') == []
+    disk.unlink()
+    partition.unlink()
+    assert run('mount') == ['bspmm 0x110135c0 0x80000003', f'umount -l {media}']
+    assert current() == 'absent' and clock.read_text() == '0x80000003\n'
+    assert run('mount') == []
+
+    # A clock the kernel did raise, or one changed since, is left alone.
+    with open(disk, 'wb') as card:
+        card.truncate(sectors * 512)
+    partition.touch()
+    clock.write_text('0x03000003\n')
+    run('mount')
+    assert current() == 'ready' and clock.read_text() == '0x03000003\n'
+    clock.write_text('0x00000003\n')
+    run('mount')
+    clock.write_text('0x02000003\n')
+    disk.unlink()
+    partition.unlink()
+    assert run('mount') == [f'umount -l {media}']
+    assert clock.read_text() == '0x02000003\n'
+
+    # Binding the controller again starts from 400 kHz too.
+    clock.write_text('0x00000003\n')
+    disk.mkdir()
+    (driver / 'unbind').unlink()
+    assert run('mount') == ['bspmm 0x110135c0 0x01000003', f'mount -o noatime {disk} {media}',
+                            'bspmm 0x110135c0 0x00000003']
+    assert current() == 'absent' and (driver / 'unbind').exists()
+    disk.rmdir()
+    run('mount')
 print('hisi sdcard tests passed')

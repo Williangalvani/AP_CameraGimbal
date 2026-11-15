@@ -104,6 +104,15 @@ camera yet. The supervisor and web UI pass `make hisi-test` on a Linux host.
 `web.pass`) live on the writable UBIFS `/date/ap_cameragimbal`; recordings,
 captures and logs go to the microSD card on `/mnt`.
 
+On the board tested so far, cards never leave the 400 kHz identification
+clock (about 170 KiB/s): the kernel's switch to a UHS bus speed fails with
+"mmc0: Problem setting bus speed mode!" and it then keeps the slowest clock.
+`sdcard.sh` works around it by moving the SDIO clock select in the CRG
+register `0x110135c0` (bits 24-26) to 25 MHz once a card is up, and back to
+400 kHz when it is removed. Reads then run at about 11 MB/s. The cause may
+be the board's 1.8 V I/O switch for the slot, since the device tree
+advertises SDR104.
+
 ## Boot (`packaging/hisi`)
 rcS starts the rootfs recovery updater, then `/appfs/sh/start.sh`, then
 telnetd. Our `start.sh` replaces the vendor one and never starts `xipc`:
