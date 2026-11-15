@@ -40,6 +40,16 @@
   [schema and timing notes](../camera_app/README.md#video-telemetry-metadata).
 - `temp_to_png.py` converts an MT11 640x512 little-endian radiometric `_I.bin`
   capture to a viewable PNG.
+- `hisi_shell.py 'COMMAND' ...` runs commands in a root telnet session on a
+  HiSilicon camera and prints each one's output and exit status.
+  `CAM_HOST` (default `192.168.2.10`) and `CAM_PW` (comma-separated root
+  passwords, default `ardupilot`) select the camera; `-t SECONDS` sets the
+  per-command timeout. Start jobs that may outlast it, such as a format, with
+  `nohup` and poll them: closing the session kills a running command.
+- `hisi_web_param.py NAME VALUE` changes one field of the camera web
+  Parameters form, keeping the others, and prints the value before and after.
+  It uses `CAM_HOST`, `CAM_WEB_USER` and `CAM_WEB_PW` (default `admin` and
+  `ardupilot`).
 
 These scripts do not download a vendor firmware bundle. Reviewed immutable
 MT11 platform images used by the package builder are under
