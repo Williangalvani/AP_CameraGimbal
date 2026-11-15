@@ -4039,14 +4039,10 @@ static_assert(APCAM_WEB_CONTROL_MAVLINK, "recording and formatting are MAVLink c
 static void sdcard_state(char *state, size_t size)
 {
     FILE *file = fopen(SDCARD_STATE_PATH, "r");
-    char line[64];
-    snprintf(state, size, "absent");
-    if (file == NULL) return;
-    if (fgets(line, sizeof(line), file) != NULL) {
-        line[strcspn(line, " \n")] = '\0';
-        if (line[0] != '\0') snprintf(state, size, "%s", line);
-    }
-    fclose(file);
+    if (file == NULL || fgets(state, (int)size, file) == NULL) state[0] = '\0';
+    if (file != NULL) fclose(file);
+    state[strcspn(state, " \n")] = '\0';
+    if (state[0] == '\0') snprintf(state, size, "absent");
 }
 
 /* Why the card cannot be written now, or NULL. */
@@ -5118,7 +5114,7 @@ static int lock_fourkcam_config(char *error, size_t error_size)
     if (snprintf(path, sizeof(path), "%s/fourkcam.lock", RUNTIME_DIR) >= (int)sizeof(path)) errno = ENAMETOOLONG;
     else lock = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX) < 0) {
-        snprintf(error, error_size, "cannot lock %s: %s", path, strerror(errno));
+        snprintf(error, error_size, "cannot lock %s/fourkcam.lock: %s", RUNTIME_DIR, strerror(errno));
         if (lock >= 0) close(lock);
         return -1;
     }

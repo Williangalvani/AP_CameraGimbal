@@ -153,10 +153,10 @@ static bool hisi_copy_file(const char *from, const char *to, char *error, size_t
         if (got <= 0) break;
         ok = hisi_write_all(output, buffer, (size_t)got);
     }
-    if (!ok) snprintf(error, error_size, "copying %s to %s: %s", from, temporary, strerror(errno));
+    if (!ok) snprintf(error, error_size, "copying %s to %s.tmp: %s", from, to, strerror(errno));
     if (input >= 0) close(input);
     if (output >= 0 && close(output) < 0 && ok) {
-        snprintf(error, error_size, "%s: %s", temporary, strerror(errno));
+        snprintf(error, error_size, "%s.tmp: %s", to, strerror(errno));
         ok = false;
     }
     if (ok && rename(temporary, to) < 0) {
