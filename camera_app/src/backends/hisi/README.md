@@ -129,9 +129,9 @@ range checks, `PARAM_SET`, brightness, contrast, saturation, exposure, ISO,
 the overlay cross, every stream setting including `VIDEO_MAIN_FPS`, and
 `MAV_CMD_IMAGE_START_CAPTURE` passed. `VIDEO_MAIN_FPS` used to be missing
 from `camera.xml`; it now saves and reports "restart camera-app to apply"
-there as through `PARAM_SET`. Shutter, metering, the white balance
-parameters, `CAM_WB_ONEPUSH` and `MOUNT_ORIENT` were not judged: the room
-went dark during the run.
+there as through `PARAM_SET`. Shutter, spot metering, every white balance
+parameter, `CAM_WB_ONEPUSH` and `MOUNT_ORIENT` passed too; centre-weighted
+metering was UNSURE for the same reason as above.
 
 ## Storage
 `/appfs` is a read-only squashfs (UBI volume on mtd4). Settings (`camera.ini`,
