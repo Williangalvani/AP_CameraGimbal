@@ -33,6 +33,19 @@ class Definitions(unittest.TestCase):
                 self.assertEqual('VIDEO_SUB_RES' in params, target != 'rpi_libcam_caddx')
                 self.assertEqual('VIDEO_SUB_CODEC' in params, target != 'rpi_libcam_caddx')
 
+    def test_frame_rate_where_it_can_be_chosen(self):
+        """Targets whose main stream frame rate can be lowered list it, as they list the bitrate."""
+        for target in ('mt11', 'a8', 'zr10', 'zt30', 'z1mini', 'rpi_libcam_caddx', 'hisi'):
+            with self.subTest(target=target):
+                root = ET.parse(ROOT / 'build/camera-definitions' / (target + '.xml')).getroot()
+                params = {p.get('name'): p for p in root.findall('parameters/parameter')}
+                chosen = target in ('rpi_libcam_caddx', 'hisi')
+                self.assertEqual('VIDEO_MAIN_FPS' in params, chosen)
+                if chosen:
+                    fps = params['VIDEO_MAIN_FPS']
+                    self.assertEqual((fps.get('type'), fps.get('min'), fps.get('max'), fps.get('default')),
+                                     ('int32', '5', '30', '30'))
+
     def test_target_capabilities(self):
         for target in ('mt11', 'a8', 'zr10', 'zt30', 'z1mini'):
             with self.subTest(target=target):
