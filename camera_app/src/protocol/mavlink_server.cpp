@@ -2419,6 +2419,8 @@ static bool live_config_parameter(size_t index)
     const char *name = ca_config_param_name(index);
     if (strcmp(name, "PHOTO_SCOPE") == 0) return true;
     if (strcmp(name, "THERMAL_PALETTE") == 0) return APCAM_HAVE_THERMAL;
+    /* In the camera definition, but the encoder takes it at startup. */
+    if (strcmp(name, "VIDEO_MAIN_FPS") == 0) return false;
     int camera_index = ca_camera_param_find(name);
     struct ca_camera_parameter p;
     return camera_index >= 0 && ca_camera_param_info((size_t)camera_index, &p) &&
@@ -2892,8 +2894,9 @@ static bool camera_parameter_get(struct ca_mavlink_server *server,
     case CA_CAMERA_MODE: *value=server->camera_mode; return true;
     case CA_CAMERA_CONFIG:
         /* Format choices describe the saved configuration, including changes
-         * waiting for a recording to finish, just as in the web UI. */
-        *value = (float)ca_config_param_get(video_format_parameter((size_t)p->config_index)
+         * waiting for a recording to finish or a restart, just as in the web UI. */
+        *value = (float)ca_config_param_get(video_format_parameter((size_t)p->config_index) ||
+                                            !live_config_parameter((size_t)p->config_index)
             ? &server->parameters : &server->settings, (size_t)p->config_index);
         return true;
     case CA_CAMERA_ZOOM:
@@ -3011,7 +3014,13 @@ static int camera_parameter_set(struct ca_mavlink_server *server,
         parameter_status(server, "Parameter saved; restart required");
         return 0;
 #else
-        return apply_camera_config(server, (size_t)p->config_index, value);
+        if (live_config_parameter((size_t)p->config_index))
+            return apply_camera_config(server, (size_t)p->config_index, value);
+        if (ca_config_param_save(&server->parameters, server->config_path,
+                                 (size_t)p->config_index, value) < 0) return -1;
+        ca_binlog_parameter(p->name, value, false);
+        parameter_status(server, "Parameter saved; restart camera-app to apply");
+        return 0;
 #endif
     case CA_CAMERA_ZOOM:
         server->zoom_rate = 0;

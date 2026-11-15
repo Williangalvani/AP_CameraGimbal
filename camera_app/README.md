@@ -622,10 +622,12 @@ for recording. MT11 thermal output remains 720p regardless of these RGB settings
 
 Writes validate ranges and enum choices and persist atomically to the same INI
 file as the web UI. Camera-definition settings described below also apply
-immediately through ordinary `PARAM_SET`. Other settings, including `MAV_SYSID`, `MAV_CAM_COMP_ID`
+immediately through ordinary `PARAM_SET`, except `VIDEO_MAIN_FPS`, which the
+encoder takes when camera-app starts. Other settings, including `MAV_SYSID`, `MAV_CAM_COMP_ID`
 and transports, require a restart, preserving the original acknowledgment link
 and system ID. Parameter reads reflect saved configuration, including web edits;
-`PARAM_EXT` reads report running camera state. Launcher environment overrides
+`PARAM_EXT` reads report running camera state, except for video formats and
+`VIDEO_MAIN_FPS`, which report the saved value until it applies. Launcher environment overrides
 for TCP/UDP ports take precedence on restart.
 
 For a camera using system ID 42 and the default camera component, connect MAVProxy to component 100:
