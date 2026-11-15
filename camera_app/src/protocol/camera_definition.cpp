@@ -82,6 +82,9 @@ static const struct ca_camera_parameter parameters[] = {
 #if APCAM_HAVE_VIDEO_BITRATE
     CONFIG("VIDEO_MAIN_KBPS", "Main RTSP bitrate (kbps)"),
 #endif
+#if APCAM_HAVE_VIDEO_FRAME_RATE
+    CONFIG("VIDEO_MAIN_FPS", "Main RGB stream frame rate (fps, applies when camera-app restarts)"),
+#endif
 #if APCAM_NUM_STREAMS >= 2
     CONFIG("VIDEO_SUB_RES", "Secondary RGB stream resolution"),
     CONFIG("VIDEO_SUB_CODEC", "Secondary RGB stream codec"),
