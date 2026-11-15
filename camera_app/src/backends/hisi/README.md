@@ -64,7 +64,9 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   Recordings then carry the main stream's overlay regardless of `osd_recording`.
 - **Rate control**: CBR. The sensor runs at 30 fps; `stream.main` `frame_rate`
   (5-30) sets the main encoder's output rate, and the sub stream and a
-  dedicated recorder stay at 30. `bitrate_kbps` / `VIDEO_MAIN_KBPS` applies
+  dedicated recorder stay at 30. The frame rate applies when camera-app
+  starts: a save reports "Restart to apply VIDEO_MAIN_FPS", and Save and
+  restart applies it. `bitrate_kbps` / `VIDEO_MAIN_KBPS` applies
   live to the main encoder (so to shared recordings too); 0 (the default) picks
   12 Mbit/s at 2160p, 4 Mbit/s at 1080p and 2 Mbit/s below.
 - **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
@@ -74,7 +76,11 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   (night). `ircut.cpp` pulses day once per process from a detached thread at
   media start-up; a missing sysfs GPIO is logged and ignored.
 - Overlay reuses `mt11/overlay.cpp` (generic `ss_mpi_rgn`); exposure and image
-  controls are mt11's ISP calls on pipe 0.
+  controls are mt11's ISP calls on pipe 0, except metering. Of the 15x17 AE
+  zones, `center` weights the middle 5x5 by 8 against 1 elsewhere, and
+  `spot` weights only the middle 3x3 (about 3.5% of the picture). mt11 still
+  weights one middle zone 15 against 1, which moved the exposure by under 1%
+  here.
 - **White balance** differs from mt11. Auto uses the vendor's AWB calibration
   for this sensor and lens (`isp.cpp`). The presets and `temperature` ask the
   ISP for that calibration's gains at a colour temperature, and fall back to
@@ -95,9 +101,25 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
 ## Status
 Runs on the camera in place of `xipc`: 4K30 H.264 on RTSP `/video1` and the
 sub stream on `/video2`, the Live page, image controls, white balance
-including one-push, and updates from the Status page. Photos, recording and
-the recording overlay need a microSD card and have not been exercised on the
-camera yet. The supervisor and web UI pass `make hisi-test` on a Linux host.
+including one-push, photos and recording to the microSD card, and updates
+from the Status page. The web UI's photo, record and format buttons work
+without a flight controller (camera-app answers commands from loopback TCP
+clients before it has a system ID). An 83 s 4K30 recording at the default
+12 Mbit/s wrote about 1.5 MB/s, decoded without errors and had every frame
+(2497). The supervisor and web UI pass `make hisi-test` on a Linux host.
+
+## Checking the controls
+`tools/hisi_image_check.py run` (see `tools/README.md`) steps each setting
+through known values on a running camera and judges the change in frames
+grabbed from RTSP, or with `ffprobe` for stream format, then restores every
+field. On the bench (indoor, still scene) every image, exposure, gain, white
+balance, overlay, orientation and stream setting passed, as did photo
+capture and one-push white balance. Centre-weighted metering was UNSURE:
+the scene's centre is within 5% of its average, so it cannot show it. Some
+effects are uneven by design: exposure compensation follows the vendor's
+steps (-6 darkens the picture by about 30%, +6 doubles it), and shutter
+times longer than 1/30 are held to the frame time unless `slow_shutter` is
+on.
 
 ## Storage
 `/appfs` is a read-only squashfs (UBI volume on mtd4). Settings (`camera.ini`,
@@ -109,7 +131,8 @@ clock (about 170 KiB/s): the kernel's switch to a UHS bus speed fails with
 "mmc0: Problem setting bus speed mode!" and it then keeps the slowest clock.
 `sdcard.sh` works around it by moving the SDIO clock select in the CRG
 register `0x110135c0` (bits 24-26) to 25 MHz once a card is up, and back to
-400 kHz when it is removed. Reads then run at about 11 MB/s. The cause may
+400 kHz when it is removed. Reads then run at about 11 MB/s and writes at
+about 10 MB/s, well above a 4K recording's 1.5 MB/s. The cause may
 be the board's 1.8 V I/O switch for the slot, since the device tree
 advertises SDR104.
 
