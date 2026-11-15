@@ -73,6 +73,7 @@
 
 struct mavlink_client {
     int fd;
+    bool loopback;
     struct ca_mavlink_parser parser;
 };
 
@@ -330,6 +331,16 @@ static bool route_valid(const struct ca_mavlink_server *server,
            server->clients[route->client].fd >= 0;
 }
 
+/* A TCP client on this host, such as the web UI. Its commands are answered
+ * before a flight controller sets the system ID; nothing else is sent until
+ * then, so a vehicle link never sees system ID 0. */
+static bool local_route(const struct ca_mavlink_server *server,
+                        const struct route *route)
+{
+    return route->kind == ROUTE_TCP && route_valid(server, route) &&
+           server->clients[route->client].loopback;
+}
+
 static bool have_peer(const struct ca_mavlink_server *server)
 {
     if (server->support || server->have_udp_peer || server->uart_fd >= 0 || server->have_mcu_peer) return true;
@@ -494,7 +505,8 @@ static int send_message(struct ca_mavlink_server *server,
 {
     uint8_t packet[MAVLINK_MAX_PACKET_LEN];
     size_t length;
-    if (server->system_id == 0U) return 0;
+    if (server->system_id == 0U &&
+        !(message->msgid == MAVLINK_MSG_ID_COMMAND_ACK && local_route(server, route))) return 0;
     /* The MCU already provides the UART gimbal component. Only publish our
      * camera service here, avoiding competing identities and duplicate ACKs. */
     if (route->kind == ROUTE_MCU && message->compid == server->gimbal_component_id) return 0;
@@ -3243,7 +3255,8 @@ static void process_message(struct ca_mavlink_server *server,
                server->system_id, message->sysid, message->compid);
         broadcast_heartbeats(server);
     }
-    if (server->system_id == 0U) return;
+    if (server->system_id == 0U &&
+        !(message->msgid == MAVLINK_MSG_ID_COMMAND_LONG && local_route(server, route))) return;
     if (message->msgid == MAVLINK_MSG_ID_HEARTBEAT && message->len >= 7U &&
         message->sysid == server->system_id &&
         message->compid == MAV_COMP_ID_AUTOPILOT1) {
@@ -3404,6 +3417,7 @@ static int accept_clients(struct ca_mavlink_server *server)
             continue;
         }
         server->clients[slot].fd = fd;
+        server->clients[slot].loopback = (ntohl(address.sin_addr.s_addr) >> 24) == 127U;
         set_send_buffer(fd);
         ca_mavlink_parser_init(&server->clients[slot].parser);
         ca_poll_event event = {

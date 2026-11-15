@@ -537,8 +537,12 @@ Parameters page as **MAVLink system ID**. The default, 0, waits for the first
 flight controller HEARTBEAT and adopts its system ID for the lifetime of the
 process. GCS heartbeats and heartbeats with `MAV_AUTOPILOT_INVALID` cannot
 select the ID. A second flight controller cannot replace the first. No MAVLink
-messages are emitted or commands accepted before automatic selection. Set
-1–255 for a fixed ID, including standalone operation without a flight controller.
+messages are emitted or commands accepted before automatic selection, except
+that a TCP client on the camera itself (127.0.0.0/8), such as the web UI, gets
+a `COMMAND_ACK` for each `COMMAND_LONG`, sent from system ID 0. The web UI's
+photo, recording and microSD format buttons therefore work without a flight
+controller. Set 1–255 for a fixed ID, including standalone operation without a
+flight controller.
 Changes take effect after restarting camera-app.
 
 **MAVLink camera component ID** selects Camera 1–6, IDs 100–105

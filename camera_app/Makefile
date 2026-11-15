@@ -1019,6 +1019,11 @@ manual-control-test: tests/test_manual_control
 mavlink-components-test: host
 	$(PYTHON) tests/test_mavlink_components.py ./$(HOST_TARGET) ../sitl/gimbal_sim.py
 
+.PHONY: mavlink-local-test
+mavlink-local-test: $(HOST_TARGET)
+	$(PYTHON) tests/test_mavlink_local_commands.py ./$(HOST_TARGET) ../sitl/gimbal_sim.py
+test: mavlink-local-test
+
 tests/test_manual_control: tests/test_manual_control.cpp src/protocol/manual_control.cpp include/camera_app/manual_control.h ../include/apcam/manual_control.h include/camera_app/backend.h
 	$(call progress,Linking $@)
 	$(HOST_CXX) -Wall -Wextra -Werror -std=gnu++17 -Wno-missing-field-initializers -DAPCAM_TARGET=APCAM_TARGET_MT11 -I../include -Iinclude -o $@ $< -lm
