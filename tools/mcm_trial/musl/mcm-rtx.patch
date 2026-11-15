@@ -1,0 +1,74 @@
+diff --git a/src/lib/stream/sink/webrtc_sink.rs b/src/lib/stream/sink/webrtc_sink.rs
+index 8a13479..1f51230 100644
+--- a/src/lib/stream/sink/webrtc_sink.rs
++++ b/src/lib/stream/sink/webrtc_sink.rs
+@@ -117,7 +117,7 @@ impl SinkInterface for WebRTCSink {
+         // without waiting for buffer caps on the sink pad.  The queue src
+         // pad carries a BLOCK probe that prevents buffers (and their
+         // associated sticky caps) from reaching webrtcbin until the
+-        // RED/FEC/RTX encoders are excised on Connected.  Without
++        // RED/FEC encoders are excised on Connected.  Without
+         // codec-preferences, on-negotiation-needed never fires because
+         // webrtcbin defers negotiation until caps arrive.
+         //
+@@ -166,7 +166,7 @@ impl SinkInterface for WebRTCSink {
+         link_sink_to_tee(tee_src_pad, pipeline, elements)?;
+ 
+         // Block data at the boundary between the proxy bridge and webrtcbin
+-        // so no buffers reach the internal RED/FEC/RTX encoders before they
++        // so no buffers reach the internal RED/FEC encoders before they
+         // are excised on Connected. On "warm" connections the tee already
+         // has data flowing; without this block those buffers would pass
+         // through rtpredenc (payload type not in the SDP), causing permanent
+@@ -1080,15 +1080,16 @@ fn install_playout_delay_probe(src_pad: &gst::Pad) {
+ 
+ /// Optimise the webrtcbin send path once `connection-state → Connected`:
+ ///
+-/// 1. **Excise FEC/RED/RTX encoders** – `rtpulpfecenc`, `rtpredenc`, and
+-///    `rtprtxsend` are created even with `fec-type=None`; we surgically
+-///    unlink and remove them.
++/// 1. **Excise FEC/RED encoders** – `rtpulpfecenc` and `rtpredenc` are
++///    created even with `fec-type=None`; we surgically unlink and remove
++///    them. `rtprtxsend` stays to answer NACKs, with its history sized by
++///    time so it covers a whole keyframe at any resolution.
+ /// 2. **Disable sync on all internal sinks** – setting `sync=false` on
+ ///    every element that exposes the property (clocksync pacing elements
+ ///    AND transport sinks like nicesink) prevents clock-based packet pacing.
+ /// 3. **Remove the pre-excision BLOCK probe** – data is allowed to flow
+ ///    through the proxysrc internal queue into webrtcbin now that the
+-///    FEC/RED/RTX elements are gone and the negotiated SDP is in effect.
++///    FEC/RED elements are gone and the negotiated SDP is in effect.
+ ///
+ /// All excision is done inside a `BLOCK_DOWNSTREAM` probe on the tee src
+ /// pad to guarantee no data races.
+@@ -1097,7 +1098,8 @@ fn optimise_send_path(
+     block_pad_slot: &Arc<Mutex<Option<glib::WeakRef<gst::Pad>>>>,
+     block_probe_slot: &Arc<Mutex<Option<gst::PadProbeId>>>,
+ ) {
+-    const EXCISABLE_PREFIXES: &[&str] = &["rtpulpfecenc", "rtpredenc", "rtprtxsend"];
++    const EXCISABLE_PREFIXES: &[&str] = &["rtpulpfecenc", "rtpredenc"];
++    const RTX_HISTORY_MS: u32 = 500;
+ 
+     if let Some(bin) = webrtcbin.downcast_ref::<gst::Bin>() {
+         let elements = bin
+@@ -1120,6 +1122,11 @@ fn optimise_send_path(
+                     Err(error) => warn!("Failed to excise {name}: {error:#}"),
+                 }
+             }
++            if name.starts_with("rtprtxsend") {
++                element.set_property("max-size-packets", 0u32);
++                element.set_property("max-size-time", RTX_HISTORY_MS);
++                debug!("Kept {name} with {RTX_HISTORY_MS} ms of history");
++            }
+             if force_sync_false_on_element(&element) {
+                 debug!("Disabled sync on {name}");
+             }
+@@ -1127,7 +1134,7 @@ fn optimise_send_path(
+     }
+ 
+     // Release the pre-excision BLOCK on the proxysrc queue src pad. Doing
+-    // this last ensures all FEC/RED/RTX shaping happens before the first
++    // this last ensures all FEC/RED excision happens before the first
+     // buffer reaches webrtcbin.
+     let pad = block_pad_slot
+         .lock()

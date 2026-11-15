@@ -1,0 +1,26 @@
+diff --git a/src/lib/helper/threads.rs b/src/lib/helper/threads.rs
+index e6117d3..01e3561 100644
+--- a/src/lib/helper/threads.rs
++++ b/src/lib/helper/threads.rs
+@@ -97,7 +97,7 @@ pub fn lower_thread_priority() {
+ pub fn lower_to_background_priority() {
+     #[cfg(target_os = "linux")]
+     unsafe {
+-        let param = libc::sched_param { sched_priority: 0 };
++        let param: libc::sched_param = std::mem::zeroed();
+         libc::sched_setscheduler(0, libc::SCHED_OTHER, &param);
+         libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+     }
+diff --git a/src/lib/stream/sink/image_sink.rs b/src/lib/stream/sink/image_sink.rs
+index 36c53f5..ccc3ccf 100644
+--- a/src/lib/stream/sink/image_sink.rs
++++ b/src/lib/stream/sink/image_sink.rs
+@@ -628,7 +628,7 @@ impl ImageSink {
+         let result =
+             tokio::time::timeout(tokio::time::Duration::from_secs(5), receiver.recv()).await;
+ 
+-        #[cfg(target_os = "linux")]
++        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+         unsafe {
+             libc::malloc_trim(0);
+         }
