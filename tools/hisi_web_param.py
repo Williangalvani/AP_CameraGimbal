@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Change one field of the camera web Parameters form.
+"""Change fields of the camera web Parameters form.
 
-Usage: hisi_web_param.py NAME VALUE
+Usage: hisi_web_param.py [--restart] NAME VALUE [NAME VALUE...]
 
 Logs in, submits the /parameters form with every other field unchanged, and
-prints the value before and after. CAM_HOST selects the camera (default
-192.168.2.10); CAM_WEB_USER and CAM_WEB_PW default to admin and ardupilot.
+prints each value before and after and the camera's reply. --restart uses
+"Save and restart", for settings that apply only when camera-app starts.
+CAM_HOST selects the camera (default 192.168.2.10); CAM_WEB_USER and
+CAM_WEB_PW default to admin and ardupilot. Other tools import CameraWeb.
 """
 from html.parser import HTMLParser
 import http.cookiejar
@@ -14,10 +16,6 @@ import re
 import sys
 import urllib.parse
 import urllib.request
-
-HOST = 'http://' + os.environ.get('CAM_HOST', '192.168.2.10')
-USER = os.environ.get('CAM_WEB_USER', 'admin')
-PASSWORD = os.environ.get('CAM_WEB_PW', 'ardupilot')
 
 
 class Form(HTMLParser):
@@ -53,34 +51,78 @@ class Form(HTMLParser):
             self.inside = False
 
 
-def read_form(opener):
-    form = Form()
-    form.feed(opener.open(HOST + '/parameters').read().decode())
-    return dict(form.fields)
+class CameraWeb:
+    """A logged-in session with the camera web server."""
+
+    def __init__(self, host=None, user=None, password=None):
+        self.host = host or os.environ.get('CAM_HOST', '192.168.2.10')
+        self.url = 'http://' + self.host
+        self.user = user or os.environ.get('CAM_WEB_USER', 'admin')
+        self.password = password or os.environ.get('CAM_WEB_PW', 'ardupilot')
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self.login()
+
+    def login(self):
+        page = self.get('/login')
+        token = re.search(r'name=token value="([0-9a-f]+)"', page).group(1)
+        self.post('/login', {'token': token, 'username': self.user,
+                             'password': self.password, 'lang': 'en'})
+
+    def get(self, path, timeout=30):
+        return self.opener.open(self.url + path, timeout=timeout).read().decode()
+
+    def post(self, path, fields, timeout=60):
+        data = urllib.parse.urlencode(fields).encode()
+        return self.opener.open(self.url + path, data, timeout=timeout).read().decode()
+
+    def form(self):
+        """The Parameters form's current fields, csrf included."""
+        parser = Form()
+        parser.feed(self.get('/parameters'))
+        fields = dict(parser.fields)
+        if 'csrf' not in fields:
+            raise RuntimeError(f'{self.host}: no Parameters form; is the login correct?')
+        return fields
+
+    def save(self, changes, restart=False):
+        """Submit the form with CHANGES applied; return the camera's messages."""
+        fields = self.form()
+        unknown = sorted(set(changes) - set(fields))
+        if unknown:
+            raise KeyError(f'not fields of the Parameters form: {", ".join(unknown)}')
+        fields.update({name: str(value) for name, value in changes.items()})
+        if restart:
+            fields['action'] = 'save_restart'
+        return notices(self.post('/parameters', fields, timeout=120))
+
+    def csrf(self, page):
+        """The csrf token of the form posting to PAGE's first action."""
+        return re.search(r'name=csrf value="([^"]+)"', self.get(page)).group(1)
+
+
+def notices(page):
+    return re.findall(r'class="?(?:error|notice|ok|message)[^>]*>([^<]{1,300})', page)
 
 
 def main():
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    restart = args[:1] == ['--restart']
+    if restart:
+        args = args[1:]
+    if not args or len(args) % 2:
         sys.exit(__doc__)
-    name, value = sys.argv[1], sys.argv[2]
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    page = opener.open(HOST + '/login').read().decode()
-    token = re.search(r'name=token value="([0-9a-f]+)"', page).group(1)
-    opener.open(HOST + '/login', urllib.parse.urlencode(
-        {'token': token, 'username': USER, 'password': PASSWORD, 'lang': 'en'}).encode())
-    fields = read_form(opener)
-    if name not in fields:
-        sys.exit(f'{name}: not a field of the Parameters form '
-                 f'({len(fields)} fields; is the login correct?)')
-    print(f'{name} was {fields[name]!r}')
-    fields[name] = value
-    response = opener.open(HOST + '/parameters',
-                           urllib.parse.urlencode(list(fields.items())).encode())
-    messages = re.findall(r'class="?(?:error|notice|ok|message)[^>]*>([^<]{0,200})',
-                          response.read().decode())
-    print('saved:', response.status, messages[:3])
-    print(f'{name} now {read_form(opener).get(name)!r}')
+    changes = dict(zip(args[0::2], args[1::2]))
+    web = CameraWeb()
+    before = web.form()
+    for name in changes:
+        if name not in before:
+            sys.exit(f'{name}: not a field of the Parameters form')
+        print(f'{name} was {before[name]!r}')
+    print('saved:', web.save(changes, restart)[:3])
+    after = web.form()
+    for name in changes:
+        print(f'{name} now {after[name]!r}')
 
 
 if __name__ == '__main__':

@@ -46,10 +46,21 @@
   passwords, default `ardupilot`) select the camera; `-t SECONDS` sets the
   per-command timeout. Start jobs that may outlast it, such as a format, with
   `nohup` and poll them: closing the session kills a running command.
-- `hisi_web_param.py NAME VALUE` changes one field of the camera web
-  Parameters form, keeping the others, and prints the value before and after.
-  It uses `CAM_HOST`, `CAM_WEB_USER` and `CAM_WEB_PW` (default `admin` and
-  `ardupilot`).
+- `hisi_web_param.py [--restart] NAME VALUE ...` changes fields of the camera
+  web Parameters form, keeping the others, and prints each value before and
+  after and the camera's reply; `--restart` uses Save and restart. It uses
+  `CAM_HOST`, `CAM_WEB_USER` and `CAM_WEB_PW` (default `admin` and
+  `ardupilot`), and other tools import its `CameraWeb` session.
+- `hisi_image_check.py` checks the camera's controls against its RTSP video.
+  `stats` prints what the current frames measure (luma, contrast, saturation,
+  colour ratios, hue, sharpness); `set NAME=VALUE ...` changes settings and
+  prints the measurements before and after, restoring the old values unless
+  `--keep`; `run [CHECK ...]` steps each image, exposure, white balance,
+  overlay, orientation and stream setting through known values and judges
+  the change (stream format by `ffprobe`), plus photo capture and one-push
+  white balance from the Sensors page, then restores every field. `list`
+  shows the checks. A check this scene cannot show is UNSURE, not failed.
+  Needs FFmpeg and numpy; it changes the live picture, so not in flight.
 
 These scripts do not download a vendor firmware bundle. Reviewed immutable
 MT11 platform images used by the package builder are under
