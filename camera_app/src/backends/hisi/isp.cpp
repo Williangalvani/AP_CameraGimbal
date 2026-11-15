@@ -120,8 +120,15 @@ static td_s32 set_metering(ot_vi_pipe pipe, enum ca_metering_mode mode)
             }
         }
     } else if (mode == CA_METERING_SPOT) {
-        stats.ae_cfg.weight[OT_ISP_AE_ZONE_ROW / 2U]
-                           [OT_ISP_AE_ZONE_COLUMN / 2U] = 15U;
+        /* Only the middle 3x3 zones, about 3.5% of the picture: one zone
+         * weighted among 254 others moves the exposure by about 1%. */
+        memset(stats.ae_cfg.weight, 0, sizeof(stats.ae_cfg.weight));
+        for (unsigned row = OT_ISP_AE_ZONE_ROW / 2U - 1U; row <= OT_ISP_AE_ZONE_ROW / 2U + 1U; row++) {
+            for (unsigned column = OT_ISP_AE_ZONE_COLUMN / 2U - 1U;
+                 column <= OT_ISP_AE_ZONE_COLUMN / 2U + 1U; column++) {
+                stats.ae_cfg.weight[row][column] = 15U;
+            }
+        }
     }
     return ss_mpi_isp_set_stats_cfg(pipe, &stats);
 }
