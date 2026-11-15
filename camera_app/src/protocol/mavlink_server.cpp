@@ -2674,6 +2674,15 @@ static void config_status(struct ca_mavlink_server *server, uint64_t hash,
     } else unlink(temporary);
 }
 
+#if !defined(CAMERA_APP_ZT30_RAM) && !defined(CAMERA_APP_ZT30_DEV)
+/* Add NAME to a comma-separated LIST; a full list keeps the names it has. */
+static void append_name(char *list, size_t size, const char *name)
+{
+    const size_t used = strlen(list);
+    if (used + 1 < size) snprintf(list + used, size - used, "%s%s", used ? ", " : "", name);
+}
+#endif
+
 static void reload_config(struct ca_mavlink_server *server, uint64_t now)
 {
 #ifdef CAMERA_APP_ZT30_RAM
@@ -2765,16 +2774,25 @@ static void reload_config(struct ca_mavlink_server *server, uint64_t now)
         config_status(server, hash, "error", server->network_error);
         return;
     }
-    bool restart = memcmp(&desired.support, &server->settings.support, sizeof(desired.support)) != 0 ||
-        memcmp(&desired.network, &server->settings.network, sizeof(desired.network)) != 0 ||
-        strcmp(desired.main_alias, server->settings.main_alias) != 0 ||
-        strcmp(desired.sub_alias, server->settings.sub_alias) != 0;
+    char waiting[160] = "";
+    if (memcmp(&desired.support, &server->settings.support, sizeof(desired.support)) != 0)
+        append_name(waiting, sizeof(waiting), "SupportProxy");
+    if (memcmp(&desired.network, &server->settings.network, sizeof(desired.network)) != 0)
+        append_name(waiting, sizeof(waiting), "network");
+    if (strcmp(desired.main_alias, server->settings.main_alias) != 0 ||
+        strcmp(desired.sub_alias, server->settings.sub_alias) != 0)
+        append_name(waiting, sizeof(waiting), "stream alias");
     for (size_t i = 0; i < ca_config_param_count(); i++) {
-        if (!live_config_parameter(i) && ca_config_param_get(&desired, i) != ca_config_param_get(&server->settings, i)) restart = true;
+        if (!live_config_parameter(i) && ca_config_param_get(&desired, i) != ca_config_param_get(&server->settings, i))
+            append_name(waiting, sizeof(waiting), ca_config_param_name(i));
     }
-    config_status(server, hash, restart ? "restart" : "applied", restart ?
-        "Live settings applied. Restart to apply mount, identity, transport, network, stream alias or SupportProxy changes." :
-        "All saved settings applied without restarting the camera app.");
+    if (waiting[0] != '\0') {
+        char message[sizeof(waiting) + 48];
+        snprintf(message, sizeof(message), "Live settings applied. Restart to apply %s.", waiting);
+        config_status(server, hash, "restart", message);
+    } else {
+        config_status(server, hash, "applied", "All saved settings applied without restarting the camera app.");
+    }
 #endif
 #endif
 }
