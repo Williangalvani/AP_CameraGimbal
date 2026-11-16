@@ -235,6 +235,7 @@ THERMAL_TEST_TARGET := tests/test_thermal
 RAW_THERMAL_TEST_TARGET := tests/test_raw_thermal
 RAW_THERMAL_SERVER_TEST_TARGET := tests/test_raw_thermal_server
 LIVE_VIDEO_SERVER_TEST_TARGET := tests/test_live_video_server
+FRAME_SOCKET_TEST_TARGET := tests/test_frame_socket
 STILL_TEST_TARGET := tests/test_still
 AUTOFOCUS_TEST_TARGET := tests/test_autofocus
 CONFIG_TEST_TARGET := tests/test_config
@@ -331,6 +332,7 @@ A8_XOP_OBJECTS := $(patsubst $(RTSP_ROOT)/%.cpp,build/$(CAMERA_BACKEND)/xop/%.o,
 	build/$(CAMERA_BACKEND)/xop/xop/RtpConnection.o
 ARM_APP_OBJECTS := $(patsubst %.cpp,build/$(CAMERA_BACKEND)/c/%.o,$(COMMON_SOURCES) \
 	src/streaming/live_video_server.cpp src/recording/mp4_minimp4.cpp \
+	$(if $(filter hisi,$(CAMERA_BACKEND)),src/streaming/frame_socket.cpp) \
 	$(BACKEND_DIR)/media.cpp $(BACKEND_DIR)/pipeline.cpp $(if $(filter rpi_libcam_caddx,$(CAMERA_BACKEND)),$(BACKEND_DIR)/jpeg.cpp) $(if $(filter a8 zr10,$(CAMERA_BACKEND)),src/backends/siyi/overlay.cpp) $(if $(filter a8 hisi,$(CAMERA_BACKEND)),$(BACKEND_DIR)/isp.cpp) $(if $(filter hisi,$(CAMERA_BACKEND)),src/backends/mt11/overlay.cpp $(BACKEND_DIR)/ircut.cpp) $(if $(filter zr10,$(CAMERA_BACKEND)),src/compat/zr10_uclibc.cpp) $(if $(filter z1mini,$(CAMERA_BACKEND)),$(BACKEND_DIR)/glibc_compat.cpp $(BACKEND_DIR)/native.cpp))
 HISI_SDK_OBJECTS := $(if $(filter hisi,$(CAMERA_BACKEND)),$(patsubst %,build/hisi/sdk/sample_comm_%.o,sys isp vi vpss) \
 	build/hisi/sdk/imx678_cmos.o build/hisi/sdk/imx678_sensor_ctl.o build/hisi/sdk/sensor_stubs.o \
@@ -824,6 +826,11 @@ $(RAW_THERMAL_SERVER_TEST_TARGET): tests/test_raw_thermal_server.cpp \
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(CPPFLAGS) $(APP_CXXFLAGS) -o $@ $^ -lpthread
 
+$(FRAME_SOCKET_TEST_TARGET): tests/test_frame_socket.cpp src/streaming/frame_socket.cpp \
+                             include/camera_app/frame_socket.h src/log.cpp
+	$(call progress,Linking $@)
+	$(HOST_CXX) $(CPPFLAGS) $(APP_CXXFLAGS) -o $@ $(filter %.cpp,$^) -lpthread
+
 $(LIVE_VIDEO_SERVER_TEST_TARGET): tests/test_live_video_server.cpp \
                                   src/streaming/live_video_server.cpp \
                                   src/recording/mp4_minimp4.cpp src/log.cpp \
@@ -840,7 +847,7 @@ test: survey-test rpi_libcam_caddx-test timezone-test hisi-image-test system-sta
 	$(MP4_ROLLOVER_TEST_TARGET) \
 	$(THERMAL_TEST_TARGET) $(RAW_THERMAL_TEST_TARGET) \
 	$(RAW_THERMAL_SERVER_TEST_TARGET) $(STILL_TEST_TARGET) \
-	$(LIVE_VIDEO_SERVER_TEST_TARGET) \
+	$(LIVE_VIDEO_SERVER_TEST_TARGET) $(FRAME_SOCKET_TEST_TARGET) \
 	$(AUTOFOCUS_TEST_TARGET) $(CONFIG_TEST_TARGET) $(TARGETING_TEST_TARGET) \
 	$(MT11_IMX586_TEST_TARGET) \
 	$(HOST_TARGET) $(A8_HOST_TARGET) $(RPI_HOST_TARGET)
@@ -860,6 +867,7 @@ test: survey-test rpi_libcam_caddx-test timezone-test hisi-image-test system-sta
 	./$(THERMAL_TEST_TARGET)
 	./$(RAW_THERMAL_TEST_TARGET)
 	./$(RAW_THERMAL_SERVER_TEST_TARGET)
+	./$(FRAME_SOCKET_TEST_TARGET)
 	./$(STILL_TEST_TARGET)
 	./$(AUTOFOCUS_TEST_TARGET)
 	./$(MT11_IMX586_TEST_TARGET)
@@ -911,7 +919,7 @@ clean:
 	rm -f tests/test_gimbal_rate
 	rm -f tests/test_telemetry_time tests/test_mavlink_time
 	rm -f tests/test_support_mavlink tests/test_thermal_monitor $(MP4_SYNC_TEST_TARGET) $(MP4_ROLLOVER_TEST_TARGET)
-	rm -f tests/test_system_stats tests/test_binlog_sys tests/test_manual_control $(TARGET) $(COMMON_SOURCES:.cpp=.o) $(COMMON_SOURCES:.cpp=.d) $(TEST_TARGET) $(MAVLINK_TEST_TARGET) $(MP4_TEST_TARGET) $(E5739_TEST_TARGET) $(THERMAL_TEST_TARGET) $(RAW_THERMAL_TEST_TARGET) $(RAW_THERMAL_SERVER_TEST_TARGET) $(LIVE_VIDEO_SERVER_TEST_TARGET) $(VIDEO_METADATA_TEST_TARGET) $(STILL_TEST_TARGET) $(AUTOFOCUS_TEST_TARGET) $(CONFIG_TEST_TARGET) $(TARGETING_TEST_TARGET) $(MT11_IMX586_TEST_TARGET) $(HOST_TARGET) $(A8_HOST_TARGET) $(RPI_HOST_TARGET)
+	rm -f tests/test_system_stats tests/test_binlog_sys tests/test_manual_control $(TARGET) $(COMMON_SOURCES:.cpp=.o) $(COMMON_SOURCES:.cpp=.d) $(TEST_TARGET) $(MAVLINK_TEST_TARGET) $(MP4_TEST_TARGET) $(E5739_TEST_TARGET) $(THERMAL_TEST_TARGET) $(RAW_THERMAL_TEST_TARGET) $(RAW_THERMAL_SERVER_TEST_TARGET) $(LIVE_VIDEO_SERVER_TEST_TARGET) $(FRAME_SOCKET_TEST_TARGET) $(VIDEO_METADATA_TEST_TARGET) $(STILL_TEST_TARGET) $(AUTOFOCUS_TEST_TARGET) $(CONFIG_TEST_TARGET) $(TARGETING_TEST_TARGET) $(MT11_IMX586_TEST_TARGET) $(HOST_TARGET) $(A8_HOST_TARGET) $(RPI_HOST_TARGET)
 	rm -f tests/test.h264 tests/test.mp4 tests/test.mp4.fragmented \
 		tests/test.ffprobe.err tests/test.fragmented.ffprobe.err
 	rm -rf build

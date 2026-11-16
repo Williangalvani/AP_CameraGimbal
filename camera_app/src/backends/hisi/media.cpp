@@ -16,6 +16,7 @@
 #include "pipeline.h"
 
 #include "camera_app/APC_Media_Backend.h"
+#include "camera_app/frame_socket.h"
 #include "camera_app/live_video_server.h"
 #include "camera_app/log.h"
 #include "camera_app/mp4.h"
@@ -79,6 +80,7 @@ struct APC_Media_HiSi_State {
     struct ca_rtsp *rtsp;
     unsigned sub_rtsp_stream;
     struct ca_live_video_server *live_video;
+    struct ca_frame_socket *frames;
     struct ca_mp4 *mp4;
     char recording_path[PATH_MAX];
     atomic_bool encoded_frame_logged[CA_HISI_VENC_COUNT];
@@ -234,6 +236,9 @@ static void consume_frame(struct APC_Media_HiSi_State *media, unsigned channel,
     }
     if (channel <= CA_HISI_SUB_VENC) {
         unsigned stream = channel == CA_HISI_MAIN_VENC ? 0U : media->sub_rtsp_stream;
+        // first: the RTSP push takes ~15 ms on a 4K key frame, and longer
+        // while its server thread holds the lock
+        ca_frame_socket_publish(media->frames, channel, data, length, pts, key_frame);
         (void)ca_rtsp_push_video(media->rtsp, stream, data, length, key_frame, hfov_deg);
         (void)ca_live_video_server_publish(media->live_video, channel, data,
                                             length, pts, key_frame, hfov_deg);
@@ -241,6 +246,12 @@ static void consume_frame(struct APC_Media_HiSi_State *media, unsigned channel,
     if (channel == record_venc(media) && atomic_load(&media->recording)) {
         write_recording(media, data, length, pts, key_frame);
     }
+}
+
+static void request_keyframe(void *context, unsigned stream)
+{
+    (void)context;
+    (void)ss_mpi_venc_request_idr(stream == 0U ? CA_HISI_MAIN_VENC : CA_HISI_SUB_VENC, TD_TRUE);
 }
 
 static void *capture_thread(void *opaque)
@@ -361,6 +372,8 @@ static void media_cleanup(struct APC_Media_HiSi_State *media, APC_Media_HiSi *ow
         pthread_join(media->thread, NULL);
         media->thread_started = false;
     }
+    ca_frame_socket_close(media->frames);
+    media->frames = NULL;
     ca_live_video_server_close(media->live_video);
     media->live_video = NULL;
     (void)owner->set_recording(false);
@@ -509,6 +522,18 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
             media->live_video, 1U, sizes->width[CA_HISI_SUB_CHN],
             sizes->height[CA_HISI_SUB_CHN], APCAM_FRAME_RATE,
             settings->sub_codec == CA_VIDEO_H264) < 0) goto fail;
+    // for MAVLink Camera Manager's apcamsrc; the camera works without it
+    if (ca_frame_socket_open(&media->frames, CA_FRAME_SOCKET_NAME, request_keyframe, media) < 0 ||
+        ca_frame_socket_configure(media->frames, 0U, settings->main_codec,
+                                  sizes->width[CA_HISI_MAIN_CHN], sizes->height[CA_HISI_MAIN_CHN],
+                                  config->frame_rate) < 0 ||
+        ca_frame_socket_configure(media->frames, 1U, settings->sub_codec,
+                                  sizes->width[CA_HISI_SUB_CHN], sizes->height[CA_HISI_SUB_CHN],
+                                  APCAM_FRAME_RATE) < 0) {
+        ca_log("frame socket startup failed: %s", strerror(errno));
+        ca_frame_socket_close(media->frames);
+        media->frames = NULL;
+    }
     if (settings->orientation == CA_MOUNT_INVERTED && set_inverted(true) < 0) {
         stage = "inverted output configuration";
         goto fail;

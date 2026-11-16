@@ -21,6 +21,7 @@ tests/test_thermal_monitor
 tests/test_raw_thermal
 tests/test_raw_thermal_server
 tests/test_live_video_server
+tests/test_frame_socket
 tests/test_config
 tests/test_still
 tests/test_autofocus
