@@ -1,0 +1,80 @@
+{
+  "header": {
+    "name": "Camera Manager",
+    "version": 0
+  },
+  "mavlink_endpoint": "udpin:127.0.0.1:14560",
+  "streams": [
+    {
+      "name": "4K Cam main (on camera)",
+      "stream_information": {
+        "endpoints": [
+          "rtsp://0.0.0.0:8564/cam_main"
+        ],
+        "configuration": {
+          "type": "video",
+          "encode": "H264",
+          "height": 2160,
+          "width": 3840,
+          "frame_interval": {
+            "numerator": 1,
+            "denominator": 30
+          }
+        },
+        "extended_configuration": {
+          "thermal": false,
+          "disable_mavlink": true,
+          "disable_zenoh": true,
+          "disable_thumbnails": true,
+          "disable_lazy": false,
+          "disable_recording": true
+        }
+      },
+      "video_source": {
+        "Gst": {
+          "name": "camera-app main stream",
+          "source": {
+            "ApCam": "apcam:main"
+          }
+        }
+      },
+      "mavlink": null
+    },
+    {
+      "name": "4K Cam sub (on camera)",
+      "stream_information": {
+        "endpoints": [
+          "rtsp://0.0.0.0:8564/cam_sub"
+        ],
+        "configuration": {
+          "type": "video",
+          "encode": "H264",
+          "height": 720,
+          "width": 1280,
+          "frame_interval": {
+            "numerator": 1,
+            "denominator": 30
+          }
+        },
+        "extended_configuration": {
+          "thermal": false,
+          "disable_mavlink": true,
+          "disable_zenoh": true,
+          "disable_thumbnails": true,
+          "disable_lazy": false,
+          "disable_recording": true
+        }
+      },
+      "video_source": {
+        "Gst": {
+          "name": "camera-app sub stream",
+          "source": {
+            "ApCam": "apcam:sub"
+          }
+        }
+      },
+      "mavlink": null
+    }
+  ],
+  "blocked_sources": []
+}

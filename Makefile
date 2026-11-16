@@ -479,22 +479,27 @@ hisi: hisi_dependencies generated
 # on TCP 9091. Package only: nothing here contacts a camera. HISI_DEVICE_CODE
 # is the camera's updatetype.ini code, which picks the appfs layout: 19/2/51
 # (U35.5 firmware, UBI in mtd4) or 19/2/35 (MAIN firmware, squashfs in mtd5).
+# HISI_MCM_BUNDLE, a MAVLink Camera Manager bundle staged by tools/mcm_trial,
+# adds MCM to the image (docs/hisi-appfs-layouts.md).
 HISI_DEVICE_CODE ?= 19/2/51
+HISI_MCM_BUNDLE ?=
 HISI_BUILD_HASH := $(MT11_GIT_HASH)$(shell git diff --quiet HEAD -- || printf -- -dirty)
 HISI_APPFS_SUFFIX := $(if $(filter 19/2/51,$(HISI_DEVICE_CODE)),,_p$(lastword $(subst /, ,$(HISI_DEVICE_CODE))))
-HISI_APPFS_OUT ?= build/HISI_AP_$(MT11_VERSION)_$(HISI_BUILD_HASH)_appfs$(HISI_APPFS_SUFFIX).img
+HISI_APPFS_OUT ?= build/HISI_AP_$(MT11_VERSION)_$(HISI_BUILD_HASH)$(if $(HISI_MCM_BUNDLE),_mcm)_appfs$(HISI_APPFS_SUFFIX).img
 SQUASHFS_TOOLS_ROOT ?= $(abspath $(DEPS_ROOT)/squashfs-tools)
 .PHONY: hisi_appfs hisi-test
 hisi_appfs: hisi
 	tools/bootstrap_squashfs_tools.sh '$(SQUASHFS_TOOLS_ROOT)'
 	python3 tools/build_hisi_appfs.py --mksquashfs '$(SQUASHFS_TOOLS_ROOT)/bin/mksquashfs' \
 		--device-code '$(HISI_DEVICE_CODE)' \
+		$(if $(HISI_MCM_BUNDLE),--mcm-bundle '$(HISI_MCM_BUNDLE)') \
 		--lib-dir '$(HISI_B040_ROOT)/openipc/general/package/hisilicon-osdrv-hi3519dv500/files/lib' \
 		--loader '$(HISI_TOOLCHAIN)/aarch64-buildroot-linux-musl/sysroot/lib/libc.so' \
 		camera_app/build/hisi/camera-app web/hisi-web '$(HISI_APPFS_OUT)'
 hisi-test: generated z1mini-test-headers
 	tools/bootstrap_squashfs_tools.sh '$(SQUASHFS_TOOLS_ROOT)'
 	MKSQUASHFS='$(SQUASHFS_TOOLS_ROOT)/bin/mksquashfs' python3 tests/test_hisi_firmware.py
+	python3 tests/test_build_hisi_appfs.py
 	python3 tests/test_hisi_service.py
 	python3 tests/test_hisi_sdcard.py
 	python3 tests/test_hisi_dhcp.py

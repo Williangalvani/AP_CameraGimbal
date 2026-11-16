@@ -10,6 +10,10 @@ ap_cameragimbal/.
 camera-app links the B040 MPP shared libraries, which are musl builds; the
 rootfs has only glibc, so ap_cameragimbal/lib carries musl's loader and every
 library camera-app needs. hisi-web stays static.
+
+--mcm-bundle adds MAVLink Camera Manager: the bundle tools/mcm_trial stages
+(run.sh, bin/, lib/; musl, with its own loader) is copied as it is, symlinks
+included, to ap_cameragimbal/mcm, beside mcm.sh and its stream settings.
 """
 import argparse
 from pathlib import Path
@@ -103,7 +107,17 @@ def stage_libraries(camera_app, lib_dir, loader, staging):
         pending.extend((source, dependency) for dependency in needed)
 
 
-def stage(camera_app, web, lib_dir, loader, staging):
+def stage_mcm(bundle, app):
+    for name in ('run.sh', 'bin/mavlink-camera-manager'):
+        if not (bundle / name).is_file():
+            raise ValueError(f'{bundle}: not an MCM bundle, {name} is missing')
+    packaging = ROOT / 'packaging/hisi'
+    shutil.copytree(bundle, app / 'mcm', symlinks=True)
+    install(packaging / 'mcm.sh', app / 'mcm.sh', 0o755)
+    install(packaging / 'mcm-settings.json', app / 'mcm-settings.json', 0o644)
+
+
+def stage(camera_app, web, lib_dir, loader, staging, mcm_bundle=None):
     if elf_info(web)[0] is not None:
         raise ValueError(f'{web}: dynamically linked; hisi-web must be static')
     packaging = ROOT / 'packaging/hisi'
@@ -124,8 +138,11 @@ def stage(camera_app, web, lib_dir, loader, staging):
         raise ValueError(f'{webroot}: missing web assets')
     for path in assets:
         install(path, app / 'webroot' / path.relative_to(webroot), 0o644)
+    if mcm_bundle is not None:
+        stage_mcm(mcm_bundle, app)
+    # chmod() follows symlinks, which may point out of the staging
     for path in [staging, *staging.rglob('*')]:
-        if path.is_dir():
+        if path.is_dir() and not path.is_symlink():
             path.chmod(0o755)
 
 
@@ -144,11 +161,13 @@ def main():
                         default=hisi_firmware.DEVICE_CODE,
                         help="the camera's updatetype.ini DEV/SDK/PLATFORM (default %d/%d/%d)"
                         % hisi_firmware.DEVICE_CODE)
+    parser.add_argument('--mcm-bundle', type=Path,
+                        help='MAVLink Camera Manager bundle to ship in ap_cameragimbal/mcm')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory() as temporary:
         staging = Path(temporary) / 'appfs'
         staging.mkdir()
-        stage(args.camera_app, args.web, args.lib_dir, args.loader, staging)
+        stage(args.camera_app, args.web, args.lib_dir, args.loader, staging, args.mcm_bundle)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         hisi_firmware.build_appfs(staging, args.output, args.mksquashfs, device_code=args.device_code)
 

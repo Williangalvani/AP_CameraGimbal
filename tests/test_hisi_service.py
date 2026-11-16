@@ -165,6 +165,17 @@ while :; do sleep 1; done
     script = app / 'service.sh'
     script.write_text(service)
     shutil.copy(repo / 'packaging/hisi/sdcard.sh', app / 'sdcard.sh')
+    # The real mcm.sh, and an MCM bundle whose run.sh records its PID and
+    # arguments, then stays up as MCM does.
+    mcm = re.sub(r'(?<![\w.])/run/', str(runtime) + '/', (repo / 'packaging/hisi/mcm.sh').read_text())
+    (app / 'mcm.sh').write_text(mcm)
+    (app / 'mcm.sh').chmod(0o755)
+    mcm_settings = (repo / 'packaging/hisi/mcm-settings.json').read_bytes()
+    (app / 'mcm-settings.json').write_bytes(mcm_settings)
+    (app / 'mcm/bin').mkdir(parents=True)
+    mcm_run = app / 'mcm/run.sh'
+    mcm_run.write_text('#!/bin/sh\necho "$$ $*" >>"$TEST_ROOT/mcm.starts"\nexec sleep 1000\n')
+    mcm_run.chmod(0o755)
 
     # A broken bring-up override and a seed cut short by a full /date.
     config.mkdir(parents=True)
@@ -234,6 +245,23 @@ while :; do sleep 1; done
         return [line for line in insmod_log.read_text().splitlines()
                 if line.split()[0].endswith('/' + name + '.ko')]
 
+    def alive(pid):
+        try:
+            return not Path(f'/proc/{pid}/stat').read_text().split(') ')[1].startswith('Z ')
+        except OSError:
+            return False
+
+    mcm_starts = root / 'mcm.starts'
+
+    def mcm_runs():
+        return mcm_starts.read_text().splitlines() if mcm_starts.exists() else []
+
+    def mcm_pid():
+        return int(mcm_runs()[-1].split()[0])
+
+    def service_log():
+        return (root / 'service.log').read_text()
+
     try:
         # A driver failure leaves only the web UI running.
         wait_for(lambda: pids('hisi-web') and 'did not load' in (root / 'service.log').read_text(),
@@ -252,6 +280,8 @@ while :; do sleep 1; done
         assert loads('ot_pwm') == [f'{komod}/extdrv/ot_pwm.ko'], loads('ot_pwm')
         assert not loads('ot_wdt'), 'watchdog loaded with nothing to feed it'
         wait_for(lambda: web_request('/')[0] == 200, 'web UI not reachable')
+        time.sleep(2)
+        assert not mcm_runs(), 'MCM started before camera-app was ready'
 
         # The retry loads only the missing driver, then starts camera-app.
         insmod_fail.unlink()
@@ -264,6 +294,16 @@ while :; do sleep 1; done
                  'camera-app output not logged')
         assert f'config={config}/camera.ini record={media}/DCIM/record' in \
             (runtime / 'camera_app.log').read_text()
+
+        # MCM starts once camera-app is ready, from /run/mcm/root, with fresh settings.
+        wait_for(mcm_runs, 'MCM not started once camera-app was ready')
+        mcm_state = runtime / 'mcm/state'
+        assert mcm_runs()[0].split(' ', 1)[1] == (
+            '--mavlink udpin:127.0.0.1:14560 --rtsp-port 8564 --disable-onvif '
+            f'--settings-file {mcm_state}/settings.json --log-path {mcm_state}/logs'), mcm_runs()
+        assert os.readlink(runtime / 'mcm/root') == str(app / 'mcm')
+        assert (mcm_state / 'settings.json').read_bytes() == mcm_settings
+        first_mcm = mcm_pid()
 
         # A card inserted while running is mounted and prepared, and detached
         # once removed.
@@ -298,6 +338,44 @@ while :; do sleep 1; done
         old = ready.read_text()
         assert web_request('/restart', f'csrf={csrf()}')[0] == 303
         assert ready.exists() and ready.read_text() != old
+        assert len(mcm_runs()) == 1 and alive(first_mcm), 'a camera-app restart restarted MCM'
+
+        # An MCM that exits is restarted after 2 s, then 4 s, with its settings
+        # copied again.
+        (mcm_state / 'settings.json').write_text('{}')
+        os.kill(first_mcm, signal.SIGKILL)
+        wait_for(lambda: len(mcm_runs()) == 2, 'MCM not restarted after it exited')
+        assert 'MCM exited; restarting it in 2 s' in service_log()
+        assert (mcm_state / 'settings.json').read_bytes() == mcm_settings
+        killed_at = time.monotonic()
+        os.kill(mcm_pid(), signal.SIGKILL)
+        wait_for(lambda: len(mcm_runs()) == 3, 'MCM not restarted after it exited again')
+        assert 'MCM exited; restarting it in 4 s' in service_log()
+        assert time.monotonic() - killed_at >= 3, 'MCM restart delay did not double'
+
+        # mcm.disable stops MCM and keeps it stopped; so does a missing bundle.
+        disable = config / 'mcm.disable'
+        for remove, restore in ((disable.touch, disable.unlink),
+                                (lambda: mcm_run.rename(mcm_run.with_suffix('.off')),
+                                 lambda: mcm_run.with_suffix('.off').rename(mcm_run))):
+            runs, pid = len(mcm_runs()), mcm_pid()
+            remove()
+            wait_for(lambda: not alive(pid), 'MCM not stopped')
+            time.sleep(2)
+            assert len(mcm_runs()) == runs, 'MCM started while disabled or without its bundle'
+            restore()
+            wait_for(lambda: len(mcm_runs()) == runs + 1, 'MCM not started again')
+        assert service_log().count('Stopping MCM') == 2
+
+        # MCM's log folder is kept under 4 MiB, oldest files first.
+        mcm_logs = mcm_state / 'logs'
+        mcm_logs.mkdir(exist_ok=True)
+        for age, name in enumerate(('new', 'middle', 'old')):
+            path = mcm_logs / f'{name}.log'
+            path.write_bytes(b'x' * (1536 << 10))
+            os.utime(path, (time.time() - 100 * (age + 1),) * 2)
+        wait_for(lambda: not (mcm_logs / 'old.log').exists(), 'oldest MCM log not removed', timeout=12)
+        assert sorted(path.name for path in mcm_logs.iterdir()) == ['middle.log', 'new.log']
 
         # The DHCP client runs only while camera.ini asks for it, follows a
         # saved change without a camera-app restart, and survives restarts.
@@ -382,10 +460,21 @@ while :; do sleep 1; done
         assert web_request('/restart', f'csrf={csrf()}')[0] == 303
         assert len(loads('sys_config')) == 1, 'drivers reloaded on restart'
         assert not (root / 'overlap').exists(), 'concurrent camera-app instances'
+
+        # Stopping the service stops MCM too.
+        pid = mcm_pid()
+        assert alive(pid), 'MCM not running before the stop'
+        process.terminate()
+        assert process.wait(timeout=30) == 0, service_log()
+        assert not alive(pid), 'MCM left running by stop'
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
               'restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
-              'web respawn')
+              'web respawn, MCM start after ready, restart backoff, mcm.disable, missing bundle, '
+              'log pruning and stop')
     finally:
-        os.killpg(process.pid, signal.SIGKILL)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait()
         log.close()

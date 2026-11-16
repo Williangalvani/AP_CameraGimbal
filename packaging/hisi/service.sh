@@ -12,6 +12,11 @@
 # that fails on that reboots the camera, at most STALE_REBOOT_MAX times in a
 # row. No hardware watchdog is fed (ot_wdt is not loaded), so a kernel or
 # driver hang still needs a power cycle.
+# An appfs built with an MCM bundle also runs MAVLink Camera Manager (mcm.sh)
+# once camera-app has been ready since boot. It reconnects to camera-app's
+# frame socket by itself, so a camera-app restart leaves it running; one that
+# exits is restarted after 2 s, doubling up to 60 s. $CONFIG_ROOT/mcm.disable
+# stops it and keeps it stopped.
 set -u
 umask 077
 APP_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -45,6 +50,17 @@ failures=0
 web_started=0
 web_delay=1
 web_next=0
+MCM_LOG=/run/mcm.log
+MCM_LOGS=/run/mcm/state/logs
+MCM_LOGS_MAX_KB=4096
+MCM_DISABLE=$CONFIG_ROOT/mcm.disable
+MCM_DELAY_MIN_S=2
+MCM_DELAY_MAX_S=60
+mcm_pid=
+mcm_started=0
+mcm_delay=0
+mcm_next=0
+app_ready_once=false
 
 # The lock is a kernel flock, so stale files do not prevent recovery.
 exec 9>/run/hisi-service.lock
@@ -84,6 +100,17 @@ stop_child()
     # BusyBox ash can stall in wait after SIGCHLD already reaped a job.
     app_pid=
     rm -f "$READY"
+}
+stop_mcm()
+{
+    [ -n "$mcm_pid" ] || return 0
+    kill -TERM "$mcm_pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        process_alive "$mcm_pid" || break
+        sleep 1
+    done
+    process_alive "$mcm_pid" && kill -KILL "$mcm_pid" 2>/dev/null
+    mcm_pid=
 }
 request_changed()
 {
@@ -148,6 +175,7 @@ reboot_if_isp_stale()
 stop()
 {
     trap '' INT TERM
+    stop_mcm
     stop_child
     for child in "$web_pid" "$log_pid" "$media_pid"; do
         [ -n "$child" ] && kill "$child" 2>/dev/null || true
@@ -326,13 +354,26 @@ start_web()
 }
 start_web
 (
+    set -f
     while sleep 5; do
-        for file in "$APP_LOG" "$WEB_LOG" /run/hisi-service.log; do
+        for file in "$APP_LOG" "$WEB_LOG" "$MCM_LOG" /run/hisi-service.log; do
             [ -f "$file" ] || continue
             if [ "$(wc -c <"$file")" -gt 524288 ]; then
                 tail -c 131072 "$file" >"$file.1"
                 : >"$file"
             fi
+        done
+        # MCM's own logs: the oldest files go first; the newest, which MCM
+        # still writes, is emptied instead.
+        while [ -d "$MCM_LOGS" ] &&
+            [ "$(du -sk "$MCM_LOGS" | cut -f1)" -gt "$MCM_LOGS_MAX_KB" ]; do
+            set -- $(ls -t "$MCM_LOGS")
+            if [ $# -le 1 ]; then
+                [ $# -eq 0 ] || : >"$MCM_LOGS/$1"
+                break
+            fi
+            shift $(($# - 1))
+            rm -f "$MCM_LOGS/$1" || break
         done
     done
 ) 9>&- &
@@ -355,10 +396,53 @@ check_web()
     start_web
     web_next=$((now + web_delay))
 }
+
+mcm_wanted()
+{
+    [ -x "$APP_ROOT/mcm.sh" ] && [ -f "$APP_ROOT/mcm/run.sh" ] && [ ! -e "$MCM_DISABLE" ]
+}
+start_mcm()
+{
+    "$APP_ROOT/mcm.sh" >>"$MCM_LOG" 2>&1 9>&- 8>&- &
+    mcm_pid=$!
+    uptime_s
+    mcm_started=$now
+}
+# MCM waits for camera-app's first ready since boot. One that exits is
+# restarted after MCM_DELAY_MIN_S, doubling up to MCM_DELAY_MAX_S, and back to
+# the minimum once a run lasted MCM_DELAY_MAX_S.
+check_mcm()
+{
+    if ! mcm_wanted; then
+        if [ -n "$mcm_pid" ]; then
+            echo 'Stopping MCM' >&2
+            stop_mcm
+        fi
+        return 0
+    fi
+    [ "$app_ready_once" = true ] || return 0
+    process_alive "$mcm_pid" && return 0
+    uptime_s
+    if [ -n "$mcm_pid" ]; then
+        mcm_pid=
+        if [ $((now - mcm_started)) -ge "$MCM_DELAY_MAX_S" ]; then
+            mcm_delay=$MCM_DELAY_MIN_S
+        else
+            mcm_delay=$((mcm_delay * 2))
+            [ "$mcm_delay" -ge "$MCM_DELAY_MIN_S" ] || mcm_delay=$MCM_DELAY_MIN_S
+            [ "$mcm_delay" -le "$MCM_DELAY_MAX_S" ] || mcm_delay=$MCM_DELAY_MAX_S
+        fi
+        mcm_next=$((now + mcm_delay))
+        echo "MCM exited; restarting it in ${mcm_delay} s" >&2
+    fi
+    [ "$now" -ge "$mcm_next" ] || return 0
+    start_mcm
+}
 # Once a second from every wait below.
 supervise()
 {
     check_web
+    check_mcm
     apply_dhcp
 }
 while true; do
@@ -401,6 +485,7 @@ while true; do
         fi
         continue
     fi
+    app_ready_once=true
     if [ -e "$STALE_REBOOTS" ]; then
         rm -f "$STALE_REBOOTS"
         sync
