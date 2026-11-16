@@ -253,6 +253,9 @@ those copies are gone.
 |---|---|---|
 | `out/mcm-lean.sqfs` (glibc, OpenSSL libnice/libsrtp) | 23552000 | `27774f15760f9c7f4c99e18c125cd4018bdacf9da944d415f40e44ab57ea301f` |
 | `out/mcm-musl.sqfs` (with apcam, on willpc) | 23629824 | `ed5aba4a15b96b133680c6f8cbe0d61a9e29230a8c2a7c4a1ef92249608bb392` |
+| `out/mcm-musl-pruned.sqfs` (Task 8, 64 KiB blocks) | 23314432 | `0b6443538e9567800d0e832b77f75c03efa85793b80dea4fe754cc573f1e9c74` |
+| `out/mcm-musl-pruned-b1048576.sqfs` (1 MiB blocks) | 20828160 | `5ac258e2f3e336bae0ca31eee2c6f7eef47fd8b8aeb8bc1bd9a971b734ee09e5` |
+| camera-app `cb71401` + frame socket (scratch merge `170ff3c`, `~/git/apcam-mcmscratch`) | 1936024 | `dcdfa622987a70720e77a74a5212ce8147cda16c27c17e2b8dbc549987fb70be` |
 | `apcamsrc/build/musl/libgstapcam.so` | 67320 | `255ba0d1b3e5f3346bc1f6351b8aa9c6634af558e6a8aac169497477718ebdac` |
 | `camera_app/build/hisi/camera-app` (`5e9f113`, frame socket) | 1930536 | `029e79792f2ba56a274b269c01708ec00441c7cac43afebbc9d26c6bc01f3308` |
 | `out/cam4k_8s.h264` (4K test clip) | 46509296 | `c1a8d6140f8900e9ec87b055552d81346de064745aed0702bd79262022864317` |
