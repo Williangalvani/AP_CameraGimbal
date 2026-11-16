@@ -72,6 +72,14 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
 - **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
   `max_num_reorder_frames = 0`. Without it Chrome's decoder holds the level's
   whole DPB (5 frames at 4K) before showing the first one.
+- **Frame socket** (`frame_socket.h`): the main and sub encoders' access units
+  on the abstract Unix socket `@apcam/video`, for MAVLink Camera Manager's
+  `apcamsrc` (`tools/mcm_trial/apcamsrc`). A client names a stream, gets its
+  codec, size and rate, then every access unit with its encoder timestamp,
+  starting at a key frame. It can ask for a key frame (an IDR, at most every
+  250 ms per stream). Up to 4 clients; one that falls 15 frames behind skips
+  to the next key frame. Frames go to the socket before RTSP, whose push takes
+  ~15 ms on a 4K key frame. With no client connected, publishing costs nothing.
 - **IR-cut**: a two-wire motor on sysfs GPIO 72 (day, filter in) and 73
   (night). `ircut.cpp` pulses day once per process from a detached thread at
   media start-up; a missing sysfs GPIO is logged and ignored.
@@ -120,6 +128,18 @@ effects are uneven by design: exposure compensation follows the vendor's
 steps (-6 darkens the picture by about 30%, +6 doubles it), and shutter
 times longer than 1/30 are held to the frame time unless `slow_shutter` is
 on.
+
+`tools/hisi_mavlink_check.py run` does the same through the MAVLink camera
+parameters (`PARAM_EXT_SET`, as QGroundControl uses them with `camera.xml`).
+The 4K Cam Manager's own controls (hue, sharpness, gamma, gains and the AE
+limits) have no MAVLink names. On the bench the camera definition, readback,
+range checks, `PARAM_SET`, brightness, contrast, saturation, exposure, ISO,
+the overlay cross, every stream setting including `VIDEO_MAIN_FPS`, and
+`MAV_CMD_IMAGE_START_CAPTURE` passed. `VIDEO_MAIN_FPS` used to be missing
+from `camera.xml`; it now saves and reports "restart camera-app to apply"
+there as through `PARAM_SET`. Shutter, spot metering, every white balance
+parameter, `CAM_WB_ONEPUSH` and `MOUNT_ORIENT` passed too; centre-weighted
+metering was UNSURE for the same reason as above.
 
 ## Storage
 `/appfs` is a read-only squashfs (UBI volume on mtd4). Settings (`camera.ini`,
