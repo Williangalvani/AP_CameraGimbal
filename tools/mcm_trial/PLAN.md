@@ -168,12 +168,15 @@ For each state also check camera-app still delivers 30 fps to its own RTSP
 
 Same stopwatch method as HANDOFF §18: glass to glass through MCM's WebRTC
 on 720p and 4K, against camera-app's direct RTSP. Six samples each.
+Results on apcamsrc: "Tasks 6–8 on apcamsrc" below (glass to glass not
+measured; per-frame path latency instead).
 
 ## Task 7: soak
 
 `webrtc-main` for 30 minutes with `measure.sh` every 5 minutes. Pass if MCM's
 RSS and thread count level off. Then restart camera-app from the web UI and
 check MCM's streams come back by themselves (MCM retries for 300 s by default).
+Done 2026-11-16 on apcamsrc: passed (below).
 
 ## Task 8: prune and size the lean bundle
 
@@ -183,6 +186,7 @@ lean with the smaller plugin list, rerun Task 2, and record the new
 `out/sizes.txt`. That number is the honest flash cost of the stock-Debian
 route. A `gstreamer-full` static build and a trimmed MCM (no embedded
 frontend, zenoh, tracy or swagger UI) are the next steps if it is too big.
+Done 2026-11-16 for the musl apcam bundle: 23.3 MB (below).
 
 ## Decision
 
@@ -316,3 +320,135 @@ What each step found:
   stream over WebRTC (30 fps, 0 freezes, 2.1 Mbit/s) work from apcam too.
 - The few lost packets are not dropped on the camera (`Udp6SndbufErrors`
   and the NIC counters do not move); retransmission recovers them.
+
+## Tasks 6–8 on apcamsrc (2026-11-16)
+
+Run from willpc, everything in RAM, nothing flashed. camera-app was the
+flashed build `cb71401` (`4kcam-sdcard`: CORS, vendor WB stepper, keyframe on
+PLAY/PLI/FIR) with `mcm-trial` merged on a local scratch branch for the frame
+socket (merged cleanly; not pushed), swapped in with
+`camera/swap_camera_app.sh`. MCM: `out/mcm-musl.sqfs` (sha256 `ed5aba4a…`,
+apcam), `--disable-onvif`, streams from `create_streams.sh … apcam`.
+`net.core.wmem_*` stayed at the default 212992 throughout. Raw logs:
+`out/t678/`.
+
+### Task 6: latency
+
+**Glass to glass was not measured.** The camera faces a desk (no screen in
+view) and nobody could point it at one, so the stopwatch method was not
+possible. Measured instead, frame by frame, with `profile/path_latency.py`
+(sniffs camera-app's direct RTSP over UDP and MCM's WebRTC at the same time
+on `br0`, pairs frames by their size sequence; 1200 of 1200 paired, RTP
+deltas 100% consistent) and Chrome's `getStats` (`probe/webrtc_stats.py`,
+`processing_ms` = first packet received to frame decoded, includes the
+jitter buffer):
+
+| 40 s, WebRTC minus direct RTSP arrival | 4K main | 720p sub |
+|---|---|---|
+| ordinary frames, last packet, median (p90 / p99) | +2.5 ms (3.3 / 6.9) | +0.8 ms (1.2 / 1.8) |
+| keyframes, last packet, median (p90 / max) | −31.8 ms (−22.5 / 58.6) | +9.2 ms (9.7 / 12.3) |
+| Chrome receive to decoded (`processing_ms`) | 15.7–17.4 ms | 2.1–2.4 ms |
+| Chrome jitter buffer / decode | 8.8–10.5 / 6.9 ms | 1.1–1.4 / 0.9 ms |
+
+The WebRTC path reaches the host as fast as camera-app's own RTSP: the
+frame socket is written before RTSP, so 4K keyframes even arrive ~30 ms
+earlier through MCM. MCM adds no measurable network-side delay; on the
+receiver Chrome adds ~17 ms at 4K (a direct-RTSP player adds its own
+buffer, not measured). Encoder and sensor latency are common to both paths
+and were not measured. With an extra 4K RTSP client on camera-app at the
+same time (this test) the WebRTC view froze 4 times in 60 s; alone it does
+not (Task 7).
+
+### Task 7: soak
+
+30.7 min of 4K WebRTC (one headless Chrome), `measure.sh` 30 s every 5 min:
+
+| min | MemAvailable | CPU camera-app + MCM | RSS camera-app / MCM | MCM threads |
+|---|---|---|---|---|
+| 0 | 254.5 MB | 16.9% + 17.6% | 7.22 / 44.9 MB | 30 |
+| 5 | 253.8 MB | 17.2% + 17.3% | 7.23 / 45.6 MB | 30 |
+| 10 | 254.6 MB | 16.8% + 17.1% | 7.26 / 44.9 MB | 30 |
+| 15 | 254.3 MB | 17.0% + 17.6% | 7.26 / 44.8 MB | 30 |
+| 20 | 253.4 MB | 17.3% + 17.2% | 7.28 / 45.7 MB | 30 |
+| 25 | 253.8 MB | 17.0% + 17.6% | 7.31 / 45.0 MB | 30 |
+| 30 (session ending) | 255.5 MB | 16.8% + 15.4% | 7.36 / 43.7 MB | 28 |
+
+Browser over 1839 s: 3840x2160 at 29.99 fps, **2 freezes (0.37 s total)**,
+2 packets lost (both retransmitted), 2 NACK, 0 PLI, 0 frames dropped,
+12.2 Mbit/s, jitter buffer 8.8 ms. Camera `SndbufErrors` and
+`Udp6SndbufErrors` stayed 0. **Pass:** MCM RSS stays 44.8–45.7 MB and 30
+threads (VmHWM 47.3 MB from the first sample on); camera-app RSS grew
+136 kB in 30 min (7.22 → 7.36 MB), worth watching in a longer run.
+
+camera-app restart mid-session (the service restart request): new
+camera-app ready in 5 s, the same WebRTC session went black 2.7 s (one
+freeze) and resumed at 30 fps on its own; MCM's streams were untouched.
+
+Other states (MCM restarted with its registry cached, see Task 8):
+
+| State | MemAvailable | CPU camera-app + MCM | MCM RSS | Result |
+|---|---|---|---|---|
+| idle | 261.2 MB | 15.0% + 0.2% | 25.2 MB | — |
+| webrtc-main (+ ffprobe on :8554) | 254.8 MB | 21.3% + 18.0% | 44.0 MB | 29.99 fps, 3 freezes / 60 s |
+| webrtc-sub | 255.7 MB | 16.2% + 8.2% | 42.7 MB | 30.0 fps, 0 freezes |
+| webrtc-2 (main + sub, + ffprobe) | 252.5 MB | 21.8% + 25.8% | 45.6 MB | 4K 30.1 fps 1 freeze, 720p 30.0 fps 0 |
+| MCM RTSP main UDP + sub TCP | 254.7 MB | 18.2% + 20.1% | 43.6 MB | both ~30 fps |
+
+camera-app's own RTSP (`ffprobe -count_frames`, 10 s on `stream_0`) gave 301
+frames with webrtc-main and with webrtc-2. The extra 4K RTSP reader on
+camera-app is what costs the freezes in those rows (as in Task 6).
+
+### Task 8: prune and size
+
+With `GST_REGISTRY_FORK=no` (run.sh) the first start scans the registry in
+MCM's own process and maps every plugin, so `maps-*` from that run lists
+everything. With the registry cached (MCM restarted) the union of
+`maps-{idle,webrtc-main,webrtc-sub,webrtc-2,rtsp-main}` (`out/t678/keep.txt`,
+60 files) leaves out only the `rtsp` (rtspsrc), `sctp` and
+`typefindfunctions` plugins. Every library is mapped: each is a NEEDED
+dependency of something that is. `video4linux2` stays (MCM's device monitor
+needs a provider).
+
+`KEEP=/work/PATH/keep.txt sh musl/stage_musl_bundle.sh` drops those three
+plugins plus `gst-launch-1.0`, `gst-inspect-1.0` and `gst-plugin-scanner`
+(1.0 MB uncompressed):
+
+| Bundle | Squashfs |
+|---|---|
+| `mcm-musl.sqfs` (before) | 23,629,824 |
+| `mcm-musl-pruned.sqfs`, 64 KiB blocks (appfs) | **23,314,432** (sha256 `0b644353…`) |
+| same, 1 MiB blocks (a separate image file) | 20,828,160 |
+
+`-Xbcj arm` gives no gain; this mksquashfs has no arm64 BCJ filter.
+`verify_bundle.sh` on the pruned stage (built with `KEEP_TOOLS=1`): every
+element ok except `rtspsrc`, `sctpenc`, `sctpdec` (dropped on purpose; the
+ONVIF/RTSP-relay route no longer works with this bundle), MCM answers REST.
+On the camera, from RAM: 4K WebRTC 30.3 fps 0 freezes / 60 s, 720p WebRTC
+30.0 fps 0 freezes / 30 s, MCM RTSP `cam_main` 301 frames / 10 s; the
+1 MiB-block image: 4K WebRTC 30.2 fps 0 freezes / 30 s.
+
+`fit_appfs.sh` (test only, never flashed; now takes a device code):
+
+- 19/2/51 (UBI in mtd4): `HISI_AP_e72af0_appfs.img` + pruned bundle:
+  200 of 265 LEBs, 8.3 MB left.
+- 19/2/35 (raw squashfs in mtd5, this camera's layout): flashed
+  `HISI_AP__cb7140_appfs_p35.img` (2.0 MB) + pruned bundle: 25.3 MB of
+  50.3 MB, 25.0 MB left. hisi-web's check passes for both.
+
+The bundle is the MCM binary (8.1 MB of xz alone, 13.1 MB at 64 KiB blocks)
+plus GStreamer/GLib/OpenSSL/GnuTLS. Below ~20 MB needs the next steps from
+Task 8: libnice on OpenSSL (drops GnuTLS, unistring, p11-kit, nettle,
+hogweed, gmp, idn2, tasn1: ~1.8 MB xz), an MCM without frontend, zenoh,
+tracy and swagger UI, or `gstreamer-full`.
+
+### Decision outcome (apcamsrc, 2026-11-16)
+
+| Threshold | Measured | Result |
+|---|---|---|
+| Flash ≤ ~20 MB | 23.3 MB pruned at appfs's 64 KiB blocks (20.8 MB at 1 MiB) | **Fail** (by 3.3 MB). On 19/2/35 mtd5 it still leaves 25 MB; on 19/2/51 8.3 MB, under the 10 MB wanted |
+| RAM: MemAvailable > 64 MB with two WebRTC clients | 252.5 MB | Pass |
+| CPU ≤ ~140% with one 4K client, camera-app RTSP 30 fps | ~35% (17% + 17.5%); 301 frames / 10 s | Pass |
+| Latency: WebRTC adds ≤ ~100 ms over direct RTSP | ~0 ms network-side (4K +2.5 ms median, keyframes earlier; 720p +0.8 ms) + ~17 ms Chrome at 4K | Pass for what was measured; glass to glass not measured |
+
+Per this section's rule, flash failing means a lean GStreamer and MCM build
+comes first; CPU, RAM and latency leave apcamsrc as the route to keep.

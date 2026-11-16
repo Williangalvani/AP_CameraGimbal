@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Play one MCM stream over WebRTC in headless Chrome and report receiver stats.
 
-Usage: webrtc_stats.py [--camera IP] [--stream NAME] [--seconds N]
+Usage: webrtc_stats.py [--camera IP] [--stream NAME] [--seconds N] [--every N]
 Needs google-chrome-stable and the websockets module. Drives MCM's own
 /webrtc page, so it exercises the same signalling as the frontend.
 """
@@ -51,6 +51,10 @@ STATS = """
       jitterBufferDelay: r.jitterBufferDelay,
       jitterBufferEmittedCount: r.jitterBufferEmittedCount,
       totalDecodeTime: r.totalDecodeTime, decoder: r.decoderImplementation,
+      totalProcessingDelay: r.totalProcessingDelay,
+      totalAssemblyTime: r.totalAssemblyTime,
+      framesAssembledFromMultiplePackets: r.framesAssembledFromMultiplePackets,
+      totalInterFrameDelay: r.totalInterFrameDelay, framesReceived: r.framesReceived,
     });
   });
   return out;
@@ -117,19 +121,23 @@ async def run(args, port):
             return 1
         print(f"first frame {time.monotonic() - added:.2f} s after the session was added", flush=True)
         start = time.monotonic()
-        previous = first
-        for _ in range(args.seconds):
+        previous = last = first
+        for second in range(1, args.seconds + 1):
             await asyncio.sleep(1)
-            now = await cdp.evaluate(STATS)
-            print(f"t={time.monotonic() - start:4.1f} fps={delta(previous, now, 'framesDecoded'):3d} "
-                  f"freezes={now.get('freezeCount')} lost={now.get('packetsLost')} "
-                  f"nack={now.get('nackCount')} pli={now.get('pliCount')} "
-                  f"kbit/s={delta(previous, now, 'bytesReceived') * 8 // 1000}", flush=True)
-            previous = now
+            last = await cdp.evaluate(STATS)
+            if second % args.every:
+                continue
+            print(f"t={time.monotonic() - start:4.1f} "
+                  f"fps={round(delta(previous, last, 'framesDecoded') / args.every):3d} "
+                  f"freezes={last.get('freezeCount')} lost={last.get('packetsLost')} "
+                  f"nack={last.get('nackCount')} pli={last.get('pliCount')} "
+                  f"kbit/s={delta(previous, last, 'bytesReceived') * 8 // 1000 // args.every} "
+                  f"freezes_since_first={delta(first, last, 'freezeCount')}", flush=True)
+            previous = last
         elapsed = time.monotonic() - start
-        last = previous
         emitted = delta(first, last, "jitterBufferEmittedCount")
         decoded = delta(first, last, "framesDecoded")
+        assembled = delta(first, last, "framesAssembledFromMultiplePackets")
         summary = {
             "resolution": f"{last.get('frameWidth')}x{last.get('frameHeight')}",
             "fps": round(decoded / elapsed, 2),
@@ -147,6 +155,10 @@ async def run(args, port):
             "decode_ms": round(1000 * delta(first, last, "totalDecodeTime") / decoded, 2)
             if decoded else None,
             "decoder": last.get("decoder"),
+            "processing_ms": round(1000 * delta(first, last, "totalProcessingDelay") / decoded, 1)
+            if decoded else None,
+            "assembly_ms": round(1000 * delta(first, last, "totalAssemblyTime") / assembled, 2)
+            if assembled else None,
         }
         print("summary", json.dumps(summary))
         return 0
@@ -157,6 +169,7 @@ def main():
     parser.add_argument("--camera", default="192.168.2.10")
     parser.add_argument("--stream", default="cam_main")
     parser.add_argument("--seconds", type=int, default=30)
+    parser.add_argument("--every", type=int, default=1, help="print every N seconds")
     parser.add_argument("--warmup", type=float, default=15)
     parser.add_argument("--port", type=int, default=9333)
     args = parser.parse_args()
