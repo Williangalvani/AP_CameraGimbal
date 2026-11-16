@@ -72,6 +72,14 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
 - **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
   `max_num_reorder_frames = 0`. Without it Chrome's decoder holds the level's
   whole DPB (5 frames at 4K) before showing the first one.
+- **Frame socket** (`frame_socket.h`): the main and sub encoders' access units
+  on the abstract Unix socket `@apcam/video`, for MAVLink Camera Manager's
+  `apcamsrc` (`tools/mcm_trial/apcamsrc`). A client names a stream, gets its
+  codec, size and rate, then every access unit with its encoder timestamp,
+  starting at a key frame. It can ask for a key frame (an IDR, at most every
+  250 ms per stream). Up to 4 clients; one that falls 15 frames behind skips
+  to the next key frame. Frames go to the socket before RTSP, whose push takes
+  ~15 ms on a 4K key frame. With no client connected, publishing costs nothing.
 - **IR-cut**: a two-wire motor on sysfs GPIO 72 (day, filter in) and 73
   (night). `ircut.cpp` pulses day once per process from a detached thread at
   media start-up; a missing sysfs GPIO is logged and ignored.
