@@ -53,7 +53,9 @@ EOF
     chmod +x "$CACHE/bin/aarch64-cc" "$CACHE/bin/aarch64-c++"
 
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$CACHE/bin/aarch64-cc
-    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static"
+    # musl gives threads 128 KiB unless PT_GNU_STACK asks for more; RTSP over
+    # TCP puts a 4K keyframe's whole RTP list on the stack and overflows it.
+    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static -C link-arg=-Wl,-z,stack-size=2097152"
     export CC_aarch64_unknown_linux_musl=$CACHE/bin/aarch64-cc
     export CXX_aarch64_unknown_linux_musl=$CACHE/bin/aarch64-c++
     export AR_aarch64_unknown_linux_musl=llvm-ar

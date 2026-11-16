@@ -36,6 +36,9 @@ cp "$RT/usr/libexec/gstreamer-1.0/gst-plugin-scanner" "$STAGE/lib/" 2>/dev/null 
 for p in $PLUGINS; do
     cp "$RT/usr/lib/gstreamer-1.0/libgst$p.so" "$STAGE/lib/gstreamer-1.0/"
 done
+# apcamsrc (apcamsrc/build_musl.sh), when built
+APCAM=/work/apcamsrc/build/musl/libgstapcam.so
+[ ! -f "$APCAM" ] || cp "$APCAM" "$STAGE/lib/gstreamer-1.0/"
 cp -L "$RT/lib/ld-musl-aarch64.so.1" "$STAGE/lib/"
 ln -s ld-musl-aarch64.so.1 "$STAGE/lib/libc.musl-aarch64.so.1"
 

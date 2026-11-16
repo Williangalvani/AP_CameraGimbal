@@ -253,3 +253,66 @@ gaps and <=103 ms arrival gaps at keyframes; through MCM keyframes arrive
 ~190 ms after the previous frame (Chrome's freeze threshold ~183 ms)
 because MCM's udpsrc thread runs rtspsrc, two depay+parse branches, pay and
 tee per packet (~0.35 ms each). A native capture element removes this hop.
+
+## apcamsrc (2026-11-15)
+
+camera-app publishes each encoded access unit on the abstract Unix socket
+`@apcam/video` (`camera_app/include/camera_app/frame_socket.h`); `apcamsrc`
+(`apcamsrc/`, a GstPushSrc) reads it, and MCM's `ApCam` source type
+(`musl/mcm-apcam.patch`) builds `apcamsrc ! h264parse ! tee ! rtph264pay !
+tee`. No RTSP, no depayloading. Sources are `apcam:main` and `apcam:sub`;
+MCM lists them when the plugin is present and reads their format from the
+socket. A GstForceKeyUnit event (MCM sends one on PLI and when ICE connects)
+becomes an IDR request.
+
+Measured with `probe/webrtc_stats.py` (headless Chrome on MCM's own /webrtc
+page, `getStats` every second) and `profile/rtp_gaps.py` (frame arrival gaps
+sniffed on the host; SRTP leaves RTP headers in clear). 4K main stream,
+12 Mbit/s, GOP 30; the camera's link is 100 Mbit/s.
+
+| Setup | Freezes | Lost (all retransmitted) | CPU camera-app + MCM |
+|---|---|---|---|
+| Relay, 4 MiB `wmem` (above) | ~2 / 20 s | 0 | 23% + 49% |
+| apcamsrc, default 208 KB `wmem` | 37 / 40 s | 12026 / 40 s | 17% + 30% |
+| apcamsrc, 4 MiB `wmem` | 2–5 / 90 s | 2–14 | 17% + 21% |
+| + frame socket before RTSP, `--enable-realtime-threads` | 1 / 180 s | 21 | — |
+| + `--disable-onvif`, default priorities | 0 / 180 s | 4 | 17% + 17% |
+| + ICE socket `SO_SNDBUFFORCE`, default `wmem` (final) | 0 / 180 s | 3 | 16.7% + 17.3% |
+
+All runs played 3840x2160 at 30.0 fps. Final run: keyframe arrival gaps p99
+129 ms, max 162 ms; MCM 43 MB RSS, camera-app 6 MB.
+
+What each step found:
+
+- **Keyframes are the whole problem.** A 4K IDR is ~600 KB, ~450 packets:
+  at least 50 ms on a 100 Mbit/s wire, and it arrives ~130 ms after the
+  previous frame, against Chrome's ~183 ms freeze threshold. Anything that
+  delays a keyframe by ~50 ms freezes the picture.
+- **Default send buffer:** as with the relay, each keyframe overflows the
+  208 KB socket buffer. MCM now sets 4 MiB with `SO_SNDBUFFORCE` on the
+  selected ICE socket (`enlarge_ice_send_buffer` in `webrtc_sink.rs`; the
+  kernel reports 8 MiB), so no sysctl is needed. MCM runs as root here.
+- **camera-app ordering:** per 4K keyframe, `get_stream` plus the copy out of
+  VENC takes 10.7 ms and `ca_rtsp_push_video` 15.5 ms even with no RTSP
+  viewer (SEI insertion copies the frame, then xop's locks), up to 42 ms
+  when the RTSP server thread holds them. The frame socket now publishes
+  first (0.8 ms). Measured with temporary timers in `consume_frame`.
+- **MCM's ONVIF discovery** runs every ~26.5 s and opens RTSP sessions to
+  camera-app on both camera addresses (and to other cameras on the LAN).
+  On two cores that delayed a keyframe by ~40 ms every 27 s. With apcam
+  sources ONVIF is not needed: run MCM with `--disable-onvif`.
+- **MCM thread priorities:** without `--enable-realtime-threads`, MCM puts
+  every pipeline streaming thread at nice 19 (`lower_to_background_priority`)
+  although `--help` says "normal scheduling". Realtime threads hid the ONVIF
+  bursts; with ONVIF off the defaults are enough.
+- **Session start:** MCM waits for the pipeline position to advance before
+  adding a WebRTC session, else 3 s. The bin asks only its sinks, which see
+  no data on an idle stream; `apcamsrc` now answers POSITION and MCM asks
+  the sources too. First frame 0.82 s after the session request (was 3.7 s),
+  0.66 s when the stream already runs.
+- **camera-app restart:** the WebRTC session resumes on its own after the
+  ~3 s restart; `apcamsrc` reconnects every 500 ms and starts on a key frame.
+- MCM RTSP (`rtsp://CAMERA:8564/cam_main`, TCP and UDP) and the 720p sub
+  stream over WebRTC (30 fps, 0 freezes, 2.1 Mbit/s) work from apcam too.
+- The few lost packets are not dropped on the camera (`Udp6SndbufErrors`
+  and the NIC counters do not move); retransmission recovers them.

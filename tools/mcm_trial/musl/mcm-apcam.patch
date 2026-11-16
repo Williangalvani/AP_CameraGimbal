@@ -1,0 +1,389 @@
+diff --git a/src/lib/stream/manager.rs b/src/lib/stream/manager.rs
+index 6f2ec30..cbd2208 100644
+--- a/src/lib/stream/manager.rs
++++ b/src/lib/stream/manager.rs
+@@ -646,7 +646,17 @@ impl Manager {
+                     }
+ 
+                     let since = *playing_since.get_or_insert_with(tokio::time::Instant::now);
+-                    if let Some(pos) = pipeline.query_position::<gst::ClockTime>() {
++                    // The bin asks only its sinks, which see no data while
++                    // the stream has no consumer; a source may still answer.
++                    let position = pipeline.query_position::<gst::ClockTime>().or_else(|| {
++                        pipeline
++                            .iterate_sources()
++                            .into_iter()
++                            .filter_map(Result::ok)
++                            .filter_map(|source| source.query_position::<gst::ClockTime>())
++                            .max()
++                    });
++                    if let Some(pos) = position {
+                         let advanced = last_position.is_some_and(|prev| pos > prev);
+                         last_position = Some(pos);
+                         if advanced {
+diff --git a/src/lib/stream/pipeline/apcam_pipeline.rs b/src/lib/stream/pipeline/apcam_pipeline.rs
+new file mode 100644
+index 0000000..4b22d93
+--- /dev/null
++++ b/src/lib/stream/pipeline/apcam_pipeline.rs
+@@ -0,0 +1,107 @@
++use std::sync::Arc;
++
++use anyhow::{Result, anyhow};
++use gst::prelude::*;
++use tracing::*;
++
++use crate::{
++    stream::types::CaptureConfiguration,
++    video::{
++        types::{VideoEncodeType, VideoSourceType},
++        video_source_gst::{VideoSourceGstType, apcam},
++    },
++    video_stream::types::VideoAndStreamInformation,
++};
++
++use super::{
++    PIPELINE_FILTER_NAME, PIPELINE_RTP_TEE_NAME, PIPELINE_VIDEO_TEE_NAME,
++    PipelineGstreamerInterface, PipelineState,
++};
++
++/// camera-app's encoded video straight from its frame socket: no RTSP, no
++/// RTP depayloading, one payloader.
++#[derive(Debug)]
++pub struct ApcamPipeline {
++    pub state: PipelineState,
++}
++
++impl ApcamPipeline {
++    #[instrument(level = "debug", skip_all)]
++    pub fn try_new(
++        pipeline_id: &Arc<uuid::Uuid>,
++        video_and_stream_information: &VideoAndStreamInformation,
++    ) -> Result<gst::Pipeline> {
++        let configuration = match &video_and_stream_information
++            .stream_information
++            .configuration
++        {
++            CaptureConfiguration::Video(configuration) => configuration,
++            unsupported => {
++                return Err(anyhow!("{unsupported:?} is not supported as ApCam Pipeline"));
++            }
++        };
++
++        let stream = match &video_and_stream_information.video_source {
++            VideoSourceType::Gst(source) => match &source.source {
++                VideoSourceGstType::ApCam(source) => apcam::stream(source),
++                _ => None,
++            },
++            _ => None,
++        }
++        .ok_or_else(|| {
++            anyhow!(
++                "VideoSourceType {:?} is not supported as ApCam Pipeline",
++                video_and_stream_information.video_source
++            )
++        })?;
++
++        let filter_name = format!("{PIPELINE_FILTER_NAME}-{pipeline_id}");
++        let video_tee_name = format!("{PIPELINE_VIDEO_TEE_NAME}-{pipeline_id}");
++        let rtp_tee_name = format!("{PIPELINE_RTP_TEE_NAME}-{pipeline_id}");
++
++        let (codec, stream_format) = match &configuration.encode {
++            VideoEncodeType::H264 => ("h264", "avc"),
++            VideoEncodeType::H265 => ("h265", "byte-stream"),
++            unsupported => {
++                return Err(anyhow!(
++                    "Encode {unsupported:?} is not supported for ApCam Pipeline"
++                ));
++            }
++        };
++
++        let description = format!(
++            concat!(
++                "apcamsrc stream={stream}",
++                " ! {codec}parse config-interval=-1",
++                " ! capsfilter name={filter_name} caps=video/x-{codec},stream-format={stream_format},alignment=au",
++                " ! tee name={video_tee_name} allow-not-linked=true",
++                " ! rtp{codec}pay aggregate-mode=zero-latency config-interval=-1 pt=96",
++                " ! tee name={rtp_tee_name} allow-not-linked=true",
++            ),
++            stream = stream,
++            codec = codec,
++            stream_format = stream_format,
++            filter_name = filter_name,
++            video_tee_name = video_tee_name,
++            rtp_tee_name = rtp_tee_name,
++        );
++
++        debug!("pipeline_description: {description:#?}");
++        let pipeline = gst::parse::launch(&description)?;
++
++        let pipeline = pipeline
++            .downcast::<gst::Pipeline>()
++            .expect("Couldn't downcast pipeline");
++
++        pipeline.set_property("name", format!("pipeline-apcam-{pipeline_id}"));
++
++        Ok(pipeline)
++    }
++}
++
++impl PipelineGstreamerInterface for ApcamPipeline {
++    #[instrument(level = "trace")]
++    fn is_running(&self) -> bool {
++        self.state.pipeline_runner.is_running()
++    }
++}
+diff --git a/src/lib/stream/pipeline/mod.rs b/src/lib/stream/pipeline/mod.rs
+index 2de8d71..510213b 100644
+--- a/src/lib/stream/pipeline/mod.rs
++++ b/src/lib/stream/pipeline/mod.rs
+@@ -1,3 +1,4 @@
++pub mod apcam_pipeline;
+ pub mod fake_pipeline;
+ pub mod onvif_pipeline;
+ pub mod qr_pipeline;
+@@ -23,6 +24,7 @@ use crate::{
+     video_stream::types::VideoAndStreamInformation,
+ };
+ 
++use apcam_pipeline::ApcamPipeline;
+ use fake_pipeline::FakePipeline;
+ use onvif_pipeline::OnvifPipeline;
+ use qr_pipeline::QrPipeline;
+@@ -44,6 +46,7 @@ pub enum Pipeline {
+     V4l(V4lPipeline),
+     Fake(FakePipeline),
+     QR(QrPipeline),
++    ApCam(ApcamPipeline),
+     Onvif(OnvifPipeline),
+     Redirect(RedirectPipeline),
+ }
+@@ -55,6 +58,7 @@ impl Pipeline {
+             Pipeline::V4l(pipeline) => &mut pipeline.state,
+             Pipeline::Fake(pipeline) => &mut pipeline.state,
+             Pipeline::QR(pipeline) => &mut pipeline.state,
++            Pipeline::ApCam(pipeline) => &mut pipeline.state,
+             Pipeline::Onvif(pipeline) => &mut pipeline.state,
+             Pipeline::Redirect(pipeline) => &mut pipeline.state,
+         }
+@@ -66,6 +70,7 @@ impl Pipeline {
+             Pipeline::V4l(pipeline) => &pipeline.state,
+             Pipeline::Fake(pipeline) => &pipeline.state,
+             Pipeline::QR(pipeline) => &pipeline.state,
++            Pipeline::ApCam(pipeline) => &pipeline.state,
+             Pipeline::Onvif(pipeline) => &pipeline.state,
+             Pipeline::Redirect(pipeline) => &pipeline.state,
+         }
+@@ -91,6 +96,11 @@ impl Pipeline {
+                         state: pipeline_state,
+                     })
+                 }
++                crate::video::video_source_gst::VideoSourceGstType::ApCam(_) => {
++                    Pipeline::ApCam(ApcamPipeline {
++                        state: pipeline_state,
++                    })
++                }
+             },
+             #[cfg(target_os = "linux")]
+             VideoSourceType::Local(_) => Pipeline::V4l(V4lPipeline {
+@@ -147,6 +157,9 @@ impl PipelineState {
+                 crate::video::video_source_gst::VideoSourceGstType::QR(_) => {
+                     QrPipeline::try_new(pipeline_id, video_and_stream_information)
+                 }
++                crate::video::video_source_gst::VideoSourceGstType::ApCam(_) => {
++                    ApcamPipeline::try_new(pipeline_id, video_and_stream_information)
++                }
+             },
+             #[cfg(target_os = "linux")]
+             VideoSourceType::Local(_) => {
+diff --git a/src/lib/stream/sink/webrtc_sink.rs b/src/lib/stream/sink/webrtc_sink.rs
+index 1f51230..59bdf7d 100644
+--- a/src/lib/stream/sink/webrtc_sink.rs
++++ b/src/lib/stream/sink/webrtc_sink.rs
+@@ -350,6 +350,16 @@ impl WebRTCSink {
+                     agent.set_property("upnp", false);
+                     debug!("Disabled UPnP/IGD on NiceAgent");
+                 }
++                agent.connect("new-selected-pair-full", false, |args| {
++                    if let (Ok(agent), Ok(stream), Ok(component)) = (
++                        args[0].get::<glib::Object>(),
++                        args[1].get::<u32>(),
++                        args[2].get::<u32>(),
++                    ) {
++                        enlarge_ice_send_buffer(&agent, stream, component);
++                    }
++                    None
++                });
+             }
+         }
+ 
+@@ -1078,6 +1088,55 @@ fn install_playout_delay_probe(src_pad: &gst::Pad) {
+     debug!("Playout-delay probe installed on pad (ext ID {PLAYOUT_DELAY_EXT_ID})");
+ }
+ 
++/// nicesink sends each frame's RTP packets back to back. A 4K keyframe is
++/// ~450 packets and the default 208 KB socket send buffer holds ~90, so the
++/// kernel drops the rest and every keyframe waits for retransmissions.
++/// `SO_SNDBUFFORCE` (root or `CAP_NET_ADMIN`) is not capped by `wmem_max`.
++const ICE_SEND_BUFFER_BYTES: i32 = 4 << 20;
++
++fn enlarge_ice_send_buffer(agent: &glib::Object, stream: u32, component: u32) {
++    use gio::prelude::*;
++
++    type GetSelectedSocket = unsafe extern "C" fn(
++        *mut glib::gobject_ffi::GObject,
++        u32,
++        u32,
++    ) -> *mut gio::ffi::GSocket;
++
++    // GStreamer loads libnice privately with its plugin, so look it up by name
++    static GET_SELECTED_SOCKET: std::sync::OnceLock<Option<GetSelectedSocket>> =
++        std::sync::OnceLock::new();
++    let get_selected_socket = GET_SELECTED_SOCKET.get_or_init(|| unsafe {
++        let library = libc::dlopen(c"libnice.so.10".as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD);
++        if library.is_null() {
++            return None;
++        }
++        let symbol = libc::dlsym(library, c"nice_agent_get_selected_socket".as_ptr());
++        (!symbol.is_null()).then(|| std::mem::transmute::<*mut libc::c_void, GetSelectedSocket>(symbol))
++    });
++    let Some(get_selected_socket) = get_selected_socket else {
++        warn!("libnice has no nice_agent_get_selected_socket; ICE send buffer left at default");
++        return;
++    };
++
++    let socket = unsafe { get_selected_socket(agent.as_ptr() as *mut _, stream, component) };
++    if socket.is_null() {
++        debug!("ICE stream {stream} component {component}: no local socket (relayed?)");
++        return;
++    }
++    let socket: gio::Socket = unsafe { glib::translate::from_glib_full(socket) };
++    if socket
++        .set_option(libc::SOL_SOCKET, libc::SO_SNDBUFFORCE, ICE_SEND_BUFFER_BYTES)
++        .is_err()
++    {
++        let _ = socket.set_option(libc::SOL_SOCKET, libc::SO_SNDBUF, ICE_SEND_BUFFER_BYTES);
++    }
++    match socket.option(libc::SOL_SOCKET, libc::SO_SNDBUF) {
++        Ok(size) => info!("ICE stream {stream} component {component}: send buffer {size} bytes"),
++        Err(error) => warn!("ICE send buffer size unknown: {error}"),
++    }
++}
++
+ /// Optimise the webrtcbin send path once `connection-state → Connected`:
+ ///
+ /// 1. **Excise FEC/RED encoders** – `rtpulpfecenc` and `rtpredenc` are
+diff --git a/src/lib/video/video_source_gst.rs b/src/lib/video/video_source_gst.rs
+index 61275c0..c9539c9 100644
+--- a/src/lib/video/video_source_gst.rs
++++ b/src/lib/video/video_source_gst.rs
+@@ -18,6 +18,8 @@ pub enum VideoSourceGstType {
+     Local(VideoSourceLocal),
+     Fake(String),
+     QR(String),
++    /// camera-app's encoded video through apcamsrc: "apcam:main" or "apcam:sub"
++    ApCam(String),
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+@@ -117,10 +119,68 @@ impl VideoSourceFormats for VideoSourceGst {
+                     },
+                 ]
+             }
++            VideoSourceGstType::ApCam(source) => apcam::format(source).into_iter().collect(),
+         }
+     }
+ }
+ 
++pub mod apcam {
++    use std::io::{Read, Write};
++
++    use super::*;
++
++    pub const SOCKET: &[u8] = b"apcam/video";
++    pub const SOURCES: [(&str, &str); 2] = [
++        ("apcam:main", "camera-app main stream"),
++        ("apcam:sub", "camera-app sub stream"),
++    ];
++
++    pub fn stream(source: &str) -> Option<u8> {
++        match source {
++            "apcam:main" => Some(0),
++            "apcam:sub" => Some(1),
++            _ => None,
++        }
++    }
++
++    /// Asks camera-app's frame socket what the stream is; see camera-app's
++    /// frame_socket.h for the protocol.
++    pub fn format(source: &str) -> Option<Format> {
++        use std::os::linux::net::SocketAddrExt;
++        use std::os::unix::net::{SocketAddr, UnixStream};
++
++        let stream = stream(source)?;
++        let address = SocketAddr::from_abstract_name(SOCKET).ok()?;
++        let mut socket = UnixStream::connect_addr(&address).ok()?;
++        let timeout = Some(std::time::Duration::from_secs(1));
++        socket.set_read_timeout(timeout).ok()?;
++        socket.set_write_timeout(timeout).ok()?;
++        socket.write_all(&[b'A', b'P', b'V', b'R', 1, stream, 0, 0]).ok()?;
++        let mut info = [0u8; 16];
++        socket.read_exact(&mut info).ok()?;
++        if &info[..4] != b"APVS" || info[4] != 1 || info[5] != 0 {
++            return None;
++        }
++        let encode = match info[6] {
++            1 => VideoEncodeType::H264,
++            2 => VideoEncodeType::H265,
++            _ => return None,
++        };
++        let u16_at = |i: usize| u16::from_le_bytes([info[i], info[i + 1]]) as u32;
++        Some(Format {
++            encode,
++            sizes: vec![Size {
++                width: u16_at(8),
++                height: u16_at(10),
++                intervals: vec![FrameInterval {
++                    numerator: 1,
++                    denominator: u16_at(12),
++                }],
++            }],
++        })
++    }
++}
++
+ impl VideoSource for VideoSourceGst {
+     fn name(&self) -> &String {
+         &self.name
+@@ -131,6 +191,7 @@ impl VideoSource for VideoSourceGst {
+             VideoSourceGstType::Local(local) => local.source_string(),
+             VideoSourceGstType::Fake(string) => string,
+             VideoSourceGstType::QR(string) => string,
++            VideoSourceGstType::ApCam(string) => string,
+         }
+     }
+ 
+@@ -177,6 +238,7 @@ impl VideoSource for VideoSourceGst {
+                 _ => false,
+             },
+             VideoSourceGstType::QR(_) => true,
++            VideoSourceGstType::ApCam(string) => apcam::stream(string).is_some(),
+         }
+     }
+ 
+@@ -197,6 +259,14 @@ impl VideoSourceAvailable for VideoSourceGst {
+                 source: VideoSourceGstType::QR("QRTimeStamp".into()),
+             }));
+         };
++        if is_gst_plugin_available(&PluginRequirement::new("apcamsrc")) {
++            sources.extend(apcam::SOURCES.iter().map(|(source, name)| {
++                VideoSourceType::Gst(VideoSourceGst {
++                    name: (*name).into(),
++                    source: VideoSourceGstType::ApCam((*source).into()),
++                })
++            }));
++        }
+         sources
+     }
+ }
