@@ -1,0 +1,12 @@
+$ /run/mcm/measure.sh rtsp-main 20
+== rtsp-main 3947.83
+MemTotal:         363388 kB
+MemAvailable:     254744 kB
+Shmem:             25788 kB
+cpu over interval (100% = one core): camera-app 18.2%  mcm 20.1%
+camera-app pid 14644: VmHWM: 8972 kB VmRSS: 7188 kB Threads: 12 Pss: 7184 kB
+
+mavlink-camera- pid 15645: VmHWM: 46888 kB VmRSS: 43592 kB Threads: 34 Pss: 43548 kB
+
+mcm maps 60 libraries -> /run/mcm/state/maps-rtsp-main.txt
+[exit 0]

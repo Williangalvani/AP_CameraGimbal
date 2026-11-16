@@ -1,0 +1,5 @@
+$ grep -E "^Udp6?:" /proc/net/snmp; grep Udp6SndbufErrors /proc/net/snmp6
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti
+Udp: 544 24 0 127483 0 0 0 1153
+Udp6SndbufErrors                        0
+[exit 0]

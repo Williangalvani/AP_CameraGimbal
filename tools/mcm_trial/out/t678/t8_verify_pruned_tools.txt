@@ -1,0 +1,48 @@
+element capsfilter: ok
+element queue: ok
+element tee: ok
+element valve: ok
+element identity: ok
+element appsrc: ok
+element appsink: ok
+element proxysrc: ok
+element proxysink: ok
+element rtspsrc: MISSING
+element rtph264depay: ok
+element rtph265depay: ok
+element h264parse: ok
+element h265parse: ok
+element rtph264pay: ok
+element rtph265pay: ok
+element rtpbin: ok
+element rtpjitterbuffer: ok
+element rtpulpfecenc: ok
+element rtpredenc: ok
+element udpsrc: ok
+element multiudpsink: ok
+element webrtcbin: ok
+element nicesrc: ok
+element nicesink: ok
+element dtlssrtpenc: ok
+element dtlssrtpdec: ok
+element srtpenc: ok
+element srtpdec: ok
+element sctpenc: MISSING
+element sctpdec: MISSING
+mavlink-camera-manager 0.2.4
+MCM REST /streams: []
+[{"name":"Fake source","source":"ball","formats":[{"encode":"H264","sizes":[{"width":160,"height":120,"intervals":[{"numerator":1,"denominator":60},{"numerator":1,"denominator":30},{"numerator":1,"denominator":24},{"numerator":1,"denominator":16},{"numerator":1,"denominator":10},{"numerator":1,"denominator":5}]},{"width":320,"height":240,"intervals":[{"numerator":1,"denominator":60},{"numerator":1
+--- MCM plugin warnings and errors
+2026-11-16T15:26:41.181341Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement videoconvert is not met: Some features may not be available
+2026-11-16T15:26:41.181469Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement timeoverlay is not met: Some features may not be available
+2026-11-16T15:26:41.181560Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement jpegenc is not met: Some features may not be available
+2026-11-16T15:26:41.181610Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement x264enc is not met: Some features may not be available
+2026-11-16T15:26:41.181657Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement x265enc is not met: Some features may not be available
+2026-11-16T15:26:41.181707Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement avdec_h264 is not met: Some features may not be available
+2026-11-16T15:26:41.181755Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement avdec_h265 is not met: Some features may not be available
+2026-11-16T15:26:41.181802Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement jpegdec is not met: Some features may not be available
+2026-11-16T15:26:41.181852Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement shmsrc is not met: Some features may not be available
+2026-11-16T15:26:41.181903Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement videotestsrc is not met: Some features may not be available
+2026-11-16T15:26:41.181949Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement qrtimestampsrc is not met: Some features may not be available
+2026-11-16T15:26:41.182043Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement rtspsrc is not met: Some features may not be available
+2026-11-16T15:26:41.182110Z  WARN src/lib/stream/gst/utils.rs:114: Optional GStreamer plugin requirement shmsink is not met: Some features may not be available

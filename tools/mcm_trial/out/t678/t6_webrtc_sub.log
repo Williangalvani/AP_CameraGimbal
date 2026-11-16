@@ -1,0 +1,12 @@
+session added
+0.25 s: connection new
+0.31 s: connection connecting
+0.41 s: connection connected
+first frame 0.77 s after the session was added
+t=10.1 fps= 30 freezes=0 lost=0 nack=0 pli=1 kbit/s=2067 freezes_since_first=0
+t=20.1 fps= 30 freezes=0 lost=0 nack=0 pli=1 kbit/s=2093 freezes_since_first=0
+t=30.2 fps= 30 freezes=0 lost=0 nack=0 pli=1 kbit/s=2088 freezes_since_first=0
+t=40.2 fps= 30 freezes=0 lost=0 nack=0 pli=1 kbit/s=2091 freezes_since_first=0
+t=50.3 fps= 30 freezes=0 lost=0 nack=0 pli=1 kbit/s=2083 freezes_since_first=0
+t=60.3 fps= 30 freezes=0 lost=0 nack=0 pli=1 kbit/s=2066 freezes_since_first=0
+summary {"resolution": "1280x720", "fps": 29.99, "freezes": 0, "freeze_seconds": 0, "packets_lost": 0, "retransmitted": 0, "nack": 0, "pli": 0, "keyframes": 60, "frames_dropped": 0, "mbit_s": 2.07, "jitter_buffer_ms": 1.2, "decode_ms": 0.94, "decoder": null, "processing_ms": 2.2, "assembly_ms": 0.75}

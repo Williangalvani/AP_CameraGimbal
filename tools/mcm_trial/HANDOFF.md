@@ -84,6 +84,27 @@ and the camera was left as found after each session.
   Requests closer than 500 ms are held to the next GOP, as intended.
   camera_app, web and hisi host tests pass with the patch applied.
 
+- **Tasks 6–8 ran on 2026-11-16** (PLAN.md "Tasks 6–8 on apcamsrc"), with
+  camera-app `cb71401` (the flashed `4kcam-sdcard` build) plus the frame
+  socket, merged locally on a scratch branch (clean merge, not pushed):
+  - **Latency:** glass to glass not measured (the camera faces a desk, not a
+    screen). Frame by frame (`profile/path_latency.py`), MCM's WebRTC
+    reaches the host as fast as camera-app's own RTSP: 4K +2.5 ms median
+    (keyframes ~30 ms *earlier*, the socket is written before RTSP), 720p
+    +0.8 ms; Chrome adds ~17 ms at 4K, ~2 ms at 720p, receive to decoded.
+  - **Soak:** 30.7 min of 4K WebRTC: 29.99 fps, 2 freezes (0.37 s), 2 lost
+    packets (retransmitted); MCM 44.8–45.7 MB RSS, 30 threads, ~17.5% CPU,
+    flat; camera-app ~17%, 7.22 → 7.36 MB. A camera-app restart costs the
+    session 2.7 s and it resumes by itself.
+  - **Pruning:** with a cached registry MCM maps every library; only the
+    `rtsp`, `sctp` and `typefindfunctions` plugins (and the gst tools) go.
+    `mcm-musl-pruned.sqfs` is **23.3 MB** (1 MiB blocks: 20.8 MB) and serves
+    4K and 720p WebRTC and RTSP from RAM. `fit_appfs.sh`: 8.3 MB left on
+    19/2/51 (UBI), 25.0 MB left in mtd5 on 19/2/35 (this camera).
+  - **Decision:** RAM, CPU and (measured) latency pass; flash fails (23.3 MB
+    against ~20 MB), so a leaner build comes first (libnice on OpenSSL saves
+    ~1.8 MB, then a trimmed MCM or `gstreamer-full`).
+
 ## Not finished
 
 - **The relay with the keyframe patch** was not measured; apcamsrc made it
@@ -96,8 +117,9 @@ and the camera was left as found after each session.
   (`probe/venc_tune.c`), the main stream stopped producing frames (camera-app
   waits for an IDR before releasing a new RTSP client). The encoder was put
   back to GOP 30, QP delta 2, refresh off.
-- PLAN.md Tasks 6 to 8 (glass-to-glass latency, 30-minute soak, pruning the
-  bundle from the libraries actually mapped) were not run.
+- Glass-to-glass latency (needs the camera pointed at a screen with a
+  clock), and a soak longer than 30 min (camera-app grew 136 kB).
+- Getting the bundle under ~20 MB (PLAN.md Task 8, last paragraph).
 
 ## Running MCM with apcamsrc
 
@@ -165,7 +187,19 @@ Measure with:
   `/tmp/cdpvenv/bin/python3`, which `/tmp` may have lost);
 - `sudo python3 profile/rtp_gaps.py --seconds 60 --threshold 100` meanwhile
   (keyframe arrival gaps on `br0`);
-- `/run/mcm/measure.sh LABEL SECONDS` on the camera (CPU and RSS).
+- `/run/mcm/measure.sh LABEL SECONDS` on the camera (CPU and RSS);
+- `sudo python3 profile/path_latency.py --seconds 40` while camera-app's
+  RTSP is read over UDP (`ffmpeg -rtsp_transport udp -i
+  rtsp://192.168.2.10:8554/stream_0 -c copy -f null -`) and a WebRTC
+  session plays: per-frame WebRTC-minus-RTSP arrival.
+
+If `/tmp/cdpvenv/bin/python3` stops finding `websockets`, use the system
+Python with `PYTHONPATH=/tmp/cdpvenv/lib/python3.14/site-packages`. For the
+pruned bundle pass `-e KEEP=/work/PATH/keep.txt` (e.g. a copy of this
+folder's `out/t678/keep.txt`) to the stage step (see
+`musl/stage_musl_bundle.sh`), then `deploy_mcm.sh URL musl-pruned`.
+`fit_appfs.sh` takes the device code as a 4th argument and needs the
+`4kcam-sdcard` `tools/hisi_firmware.py` in `/work/tools`.
 
 Put the camera back when done:
 
@@ -174,10 +208,11 @@ kill $(pidof mavlink-camera-manager); sleep 2
 umount /run/mcm/root; rm -rf /run/mcm
 /run/swap_camera_app.sh restore
 rm -rf /run/ca-test /run/swap_camera_app.sh /run/deploy_mcm.sh
-md5sum /appfs/ap_cameragimbal/bin/camera-app   # flashed: ef558a5b...
+md5sum /appfs/ap_cameragimbal/bin/camera-app   # flashed cb71401: f1ffcc59...
 ```
 
-The camera was left like that on 2026-11-16: flashed camera-app running, no
+The camera was left like that on 2026-11-16 (after Tasks 6–8, flashed
+`cb71401` camera-app `f1ffcc59…`, `camera.ini` md5 `5d0cfa3e…` unchanged): flashed camera-app running, no
 MCM, `net.core.wmem_*` at the default 212992. The user's image settings must
 survive any test: white balance manual, red 337, green 256, blue 256,
 orientation auto (`/date/ap_cameragimbal/camera.ini`).
@@ -196,6 +231,8 @@ orientation auto (`/date/ap_cameragimbal/camera.ini`).
 | `probe/` | MPP cross-process probe, `venc_tune`, `tsample` (ptrace sampler), `webrtc_stats.py` (headless Chrome WebRTC stats) |
 | `profile/` | Sampler symbolizer, RTSP timing, keyframe-request and RTP arrival-gap scripts, hot-thread samples |
 | `camera-app-keyframe.patch` | Keyframe on PLAY/PLI/FIR, tested (above) |
+| `profile/path_latency.py` | Per-frame arrival of WebRTC vs camera-app's RTSP (Task 6) |
+| `out/t678/` | Tasks 6–8 logs: latency, soak, maps union (`keep.txt`), staging, fit_appfs |
 | `out/sizes.txt`, `out/deps-*.txt`, `out/build.log` | Bundle sizes and library lists |
 | `out/kfserve/` | RAM bring-up scripts for testing the keyframe camera-app |
 
@@ -228,11 +265,13 @@ build (now `lean-debian`); the file above is the OpenSSL rebuild.
 
 ## Next steps
 
-1. Run PLAN.md Tasks 6–8 (latency, 30-minute soak, pruning) on apcamsrc and
-   apply its Decision thresholds.
-2. Decide how MCM ships: from appfs (flash budget above), with
+1. Shrink the bundle: libnice built on OpenSSL, then MCM without frontend,
+   zenoh, tracy and swagger UI; re-measure with `KEEP=` staging. If the
+   flash budget on 19/2/35 (25 MB left in mtd5) is acceptable instead, say so.
+2. Glass to glass with the camera facing a screen, if wanted.
+3. Decide how MCM ships: from appfs (flash budget above), with
    `--disable-onvif` and the apcam streams created at boot.
-3. Offer the ICE send-buffer and readiness fixes to BlueOS's MCM separately
+4. Offer the ICE send-buffer and readiness fixes to BlueOS's MCM separately
    from the apcam source.
 
 Check who else is using the camera before taking over its video pipeline.

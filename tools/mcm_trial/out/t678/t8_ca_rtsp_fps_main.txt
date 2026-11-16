@@ -1,0 +1,3 @@
+[STREAM]
+nb_read_frames=301
+[/STREAM]

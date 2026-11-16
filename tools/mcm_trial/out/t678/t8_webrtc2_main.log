@@ -1,0 +1,7 @@
+session added
+0.25 s: connection new
+0.41 s: connection connecting
+0.51 s: connection connected
+first frame 1.02 s after the session was added
+t=60.3 fps= 30 freezes=3 lost=2 nack=2 pli=1 kbit/s=12265 freezes_since_first=3
+summary {"resolution": "3840x2160", "fps": 29.99, "freezes": 3, "freeze_seconds": 0.601, "packets_lost": 2, "retransmitted": 2, "nack": 2, "pli": 0, "keyframes": 60, "frames_dropped": 0, "mbit_s": 12.2, "jitter_buffer_ms": 9.9, "decode_ms": 6.92, "decoder": null, "processing_ms": 16.9, "assembly_ms": 5.43}

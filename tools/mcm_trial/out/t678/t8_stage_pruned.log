@@ -1,0 +1,12 @@
+removed      67328 bin/gst-launch-1.0
+removed      67504 bin/gst-inspect-1.0
+removed      67320 lib/gst-plugin-scanner
+removed     395392 lib/gstreamer-1.0/libgstsctp.so
+removed     138112 lib/gstreamer-1.0/libgsttypefindfunctions.so
+removed     264464 lib/gstreamer-1.0/libgstrtsp.so
+removed 1000120 bytes in total
+[=============================================================\] 1195/1195 100%
+-rwxr-xr-x    2 root     root      41515256 Nov 16 04:32 /work/musl/cache/target-gnu/aarch64-unknown-linux-musl/release/mavlink-camera-manager
+-rw-r--r--    1 root     root      23314432 Nov 16 15:25 /work/out/mcm-musl-pruned.sqfs
+74548685	/work/out/stage-musl-pruned
+41629625	/work/out/stage-musl-pruned/bin/mavlink-camera-manager

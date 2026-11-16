@@ -1,0 +1,67 @@
+session added
+0.26 s: connection new
+0.31 s: connection connecting
+0.46 s: connection connected
+first frame 0.87 s after the session was added
+t=30.1 fps= 30 freezes=0 lost=0 nack=0 pli=1 kbit/s=12021 freezes_since_first=0
+t=60.3 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12186 freezes_since_first=0
+t=90.4 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12270 freezes_since_first=0
+t=120.6 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12308 freezes_since_first=0
+t=150.8 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12463 freezes_since_first=0
+t=180.9 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12441 freezes_since_first=0
+t=211.0 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12396 freezes_since_first=0
+t=241.2 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12287 freezes_since_first=0
+t=271.4 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12377 freezes_since_first=0
+t=301.5 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12359 freezes_since_first=0
+t=331.6 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12398 freezes_since_first=0
+t=361.8 fps= 30 freezes=0 lost=2 nack=2 pli=1 kbit/s=12248 freezes_since_first=0
+t=391.9 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12394 freezes_since_first=1
+t=422.1 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12246 freezes_since_first=1
+t=452.2 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12393 freezes_since_first=1
+t=482.4 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12196 freezes_since_first=1
+t=512.5 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12415 freezes_since_first=1
+t=542.7 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12179 freezes_since_first=1
+t=572.8 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12213 freezes_since_first=1
+t=603.0 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12190 freezes_since_first=1
+t=633.1 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12161 freezes_since_first=1
+t=663.3 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12284 freezes_since_first=1
+t=693.5 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12269 freezes_since_first=1
+t=723.6 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12114 freezes_since_first=1
+t=753.7 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12229 freezes_since_first=1
+t=783.9 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12138 freezes_since_first=1
+t=814.0 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12022 freezes_since_first=1
+t=844.2 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12062 freezes_since_first=1
+t=874.3 fps= 30 freezes=1 lost=2 nack=2 pli=1 kbit/s=12224 freezes_since_first=1
+t=904.5 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12172 freezes_since_first=2
+t=934.6 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12445 freezes_since_first=2
+t=964.8 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12304 freezes_since_first=2
+t=994.9 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12194 freezes_since_first=2
+t=1025.1 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12363 freezes_since_first=2
+t=1055.2 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12288 freezes_since_first=2
+t=1085.4 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12249 freezes_since_first=2
+t=1115.5 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12395 freezes_since_first=2
+t=1145.6 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12549 freezes_since_first=2
+t=1175.8 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12335 freezes_since_first=2
+t=1206.0 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12272 freezes_since_first=2
+t=1236.1 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12276 freezes_since_first=2
+t=1266.2 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12271 freezes_since_first=2
+t=1296.4 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12301 freezes_since_first=2
+t=1326.6 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12701 freezes_since_first=2
+t=1356.7 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12163 freezes_since_first=2
+t=1386.9 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12317 freezes_since_first=2
+t=1417.0 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12312 freezes_since_first=2
+t=1447.2 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12274 freezes_since_first=2
+t=1477.3 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12272 freezes_since_first=2
+t=1507.5 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12192 freezes_since_first=2
+t=1537.6 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12311 freezes_since_first=2
+t=1567.8 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12246 freezes_since_first=2
+t=1597.9 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12270 freezes_since_first=2
+t=1628.1 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12241 freezes_since_first=2
+t=1658.2 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12360 freezes_since_first=2
+t=1688.4 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12305 freezes_since_first=2
+t=1718.6 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12294 freezes_since_first=2
+t=1748.7 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12634 freezes_since_first=2
+t=1778.9 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12321 freezes_since_first=2
+t=1809.0 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12309 freezes_since_first=2
+t=1839.2 fps= 30 freezes=2 lost=2 nack=2 pli=1 kbit/s=12331 freezes_since_first=2
+summary {"resolution": "3840x2160", "fps": 29.99, "freezes": 2, "freeze_seconds": 0.373, "packets_lost": 2, "retransmitted": 2, "nack": 2, "pli": 0, "keyframes": 1838, "frames_dropped": 0, "mbit_s": 12.23, "jitter_buffer_ms": 8.8, "decode_ms": 6.85, "decoder": null, "processing_ms": 15.7, "assembly_ms": 4.97}

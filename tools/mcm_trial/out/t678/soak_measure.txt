@@ -1,0 +1,99 @@
+11:39:37
+$ /run/mcm/measure.sh soak-00 30; grep -E '^Udp6?:' /proc/net/snmp | tail -1
+== soak-00 1248.45
+MemTotal:         363388 kB
+MemAvailable:     254456 kB
+Shmem:             25380 kB
+cpu over interval (100% = one core): camera-app 16.9%  mcm 17.6%
+camera-app pid 9856: VmHWM: 9568 kB VmRSS: 7220 kB Threads: 11 Pss: 7216 kB
+
+mavlink-camera- pid 10093: VmHWM: 47264 kB VmRSS: 44852 kB Threads: 30 Pss: 44844 kB
+
+mcm maps 63 libraries -> /run/mcm/state/maps-soak-00.txt
+Udp: 552 36 0 127503 0 0 0 1196
+[exit 0]
+11:44:36
+$ /run/mcm/measure.sh soak-05 30; grep -E '^Udp6?:' /proc/net/snmp | tail -1
+== soak-05 1547.22
+MemTotal:         363388 kB
+MemAvailable:     253772 kB
+Shmem:             25384 kB
+cpu over interval (100% = one core): camera-app 17.2%  mcm 17.3%
+camera-app pid 9856: VmHWM: 9568 kB VmRSS: 7228 kB Threads: 11 Pss: 7224 kB
+
+mavlink-camera- pid 10093: VmHWM: 47264 kB VmRSS: 45572 kB Threads: 30 Pss: 45564 kB
+
+mcm maps 63 libraries -> /run/mcm/state/maps-soak-05.txt
+Udp: 563 36 0 127514 0 0 0 1507
+[exit 0]
+11:49:35
+$ /run/mcm/measure.sh soak-10 30; grep -E '^Udp6?:' /proc/net/snmp | tail -1
+== soak-10 1846.02
+MemTotal:         363388 kB
+MemAvailable:     254616 kB
+Shmem:             25388 kB
+cpu over interval (100% = one core): camera-app 16.8%  mcm 17.1%
+camera-app pid 9856: VmHWM: 9568 kB VmRSS: 7256 kB Threads: 11 Pss: 7252 kB
+
+mavlink-camera- pid 10093: VmHWM: 47264 kB VmRSS: 44936 kB Threads: 30 Pss: 44928 kB
+
+mcm maps 63 libraries -> /run/mcm/state/maps-soak-10.txt
+Udp: 575 36 0 127526 0 0 0 1787
+[exit 0]
+11:54:33
+$ /run/mcm/measure.sh soak-15 30; grep -E '^Udp6?:' /proc/net/snmp | tail -1
+== soak-15 2144.81
+MemTotal:         363388 kB
+MemAvailable:     254336 kB
+Shmem:             25392 kB
+cpu over interval (100% = one core): camera-app 17.0%  mcm 17.6%
+camera-app pid 9856: VmHWM: 9568 kB VmRSS: 7260 kB Threads: 11 Pss: 7284 kB
+
+mavlink-camera- pid 10093: VmHWM: 47264 kB VmRSS: 44828 kB Threads: 30 Pss: 44820 kB
+
+mcm maps 63 libraries -> /run/mcm/state/maps-soak-15.txt
+Udp: 587 36 0 127538 0 0 0 2097
+[exit 0]
+11:59:32
+$ /run/mcm/measure.sh soak-20 30; grep -E '^Udp6?:' /proc/net/snmp | tail -1
+== soak-20 2443.56
+MemTotal:         363388 kB
+MemAvailable:     253432 kB
+Shmem:             25396 kB
+cpu over interval (100% = one core): camera-app 17.3%  mcm 17.2%
+camera-app pid 9856: VmHWM: 9568 kB VmRSS: 7284 kB Threads: 11 Pss: 7280 kB
+
+mavlink-camera- pid 10093: VmHWM: 47264 kB VmRSS: 45720 kB Threads: 30 Pss: 45700 kB
+
+mcm maps 63 libraries -> /run/mcm/state/maps-soak-20.txt
+Udp: 599 36 0 127550 0 0 0 2381
+[exit 0]
+12:04:31
+$ /run/mcm/measure.sh soak-25 30; grep -E '^Udp6?:' /proc/net/snmp | tail -1
+== soak-25 2742.27
+MemTotal:         363388 kB
+MemAvailable:     253772 kB
+Shmem:             25400 kB
+cpu over interval (100% = one core): camera-app 17.0%  mcm 17.6%
+camera-app pid 9856: VmHWM: 9568 kB VmRSS: 7308 kB Threads: 11 Pss: 7304 kB
+
+mavlink-camera- pid 10093: VmHWM: 47264 kB VmRSS: 44956 kB Threads: 30 Pss: 44948 kB
+
+mcm maps 63 libraries -> /run/mcm/state/maps-soak-25.txt
+Udp: 611 36 0 127562 0 0 0 2665
+[exit 0]
+12:09:30
+$ /run/mcm/measure.sh soak-30 30; grep -E '^Udp6?:' /proc/net/snmp | tail -1
+== soak-30 3041.05
+MemTotal:         363388 kB
+MemAvailable:     255508 kB
+Shmem:             25412 kB
+cpu over interval (100% = one core): camera-app 16.8%  mcm 15.4%
+camera-app pid 9856: VmHWM: 9568 kB VmRSS: 7356 kB Threads: 10 Pss: 7352 kB
+
+mavlink-camera- pid 10093: VmHWM: 47264 kB VmRSS: 43744 kB Threads: 28 Pss: 43736 kB
+
+mcm maps 63 libraries -> /run/mcm/state/maps-soak-30.txt
+Udp: 622 36 0 127573 0 0 0 2973
+[exit 0]
+SOAK_DONE

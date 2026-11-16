@@ -1,0 +1,12 @@
+$ /run/mcm/measure.sh webrtc-sub 20
+== webrtc-sub 3779.59
+MemTotal:         363388 kB
+MemAvailable:     255680 kB
+Shmem:             25636 kB
+cpu over interval (100% = one core): camera-app 16.2%  mcm 8.2%
+camera-app pid 14644: VmHWM: 8804 kB VmRSS: 7072 kB Threads: 11 Pss: 7068 kB
+
+mavlink-camera- pid 15645: VmHWM: 45900 kB VmRSS: 42708 kB Threads: 30 Pss: 42700 kB
+
+mcm maps 58 libraries -> /run/mcm/state/maps-webrtc-sub.txt
+[exit 0]

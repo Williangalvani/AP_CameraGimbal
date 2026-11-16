@@ -1,0 +1,15 @@
+kernel: 42269 packets, 0 dropped
+ssrc        port  ip  pt  packets  frames  bytes/frame  pkts/frame
+0xb1ad132f 12254  v4  96     9421    1200       8895.4           5  direct
+0x6f71beb2 48895  v6  96     8285    1200       8676.0           4  webrtc
+0xb1ad132f: 1200 frames, 9421 packets, 0 sequence gaps; arrival gap median 33.3 ms, p99 62.3 ms, max 64.9 ms
+0x6f71beb2: 1200 frames, 8285 packets, 0 sequence gaps; arrival gap median 33.4 ms, p99 62.2 ms, max 64.9 ms
+
+webrtc 0x6f71beb2 vs direct 0xb1ad132f:
+  offset 0 frames, log-size correlation 1.000 over 1200 frames, rtp deltas equal within 2 ms for 100.0%
+  matched 1200 frames (webrtc minus direct)
+  keyframes first packet:  n=40 median    2.6 p10   -1.3 p90    8.8 p99   11.3 max   11.3 ms
+  keyframes marker packet: n=40 median    9.2 p10   -8.3 p90    9.7 p99   12.3 max   12.3 ms
+  other     first packet:  n=1160 median    1.1 p10    0.8 p90    1.4 p99    2.0 max    3.6 ms
+  other     marker packet: n=1160 median    0.8 p10    0.6 p90    1.2 p99    1.8 max    3.2 ms
+wrote 1200 rows to /home/will/mcm_trial/results/t6_sub_pairs.json
