@@ -5,9 +5,11 @@ which holds the method, every task and the raw results.
 
 ## What this branch is
 
-`mcm-trial` is `4kcam-sdcard` (`9cbaade`) plus this folder, `tools/mcm_trial/`.
-It changes nothing outside the folder: **no camera-app, hisi-web or build
-change is on this branch**, and nothing here is part of an appfs image.
+`mcm-trial` is `4kcam-sdcard` (`9cbaade`) plus this folder, `tools/mcm_trial/`,
+and one camera-app change: the hisi backend's **frame socket**
+(`camera_app/include/camera_app/frame_socket.h`), which `apcamsrc` reads.
+No hisi-web or build change is on this branch, and MCM is not part of an
+appfs image.
 
 "MCM" here means **MAVLink Camera Manager** (the BlueOS service), not the
 vendor's **4K Cam Manager**. The 4K Cam Manager compatibility work is already
@@ -40,6 +42,15 @@ and the camera was left as found after each session.
     camera-app 23%, still ~2 freezes (~200 ms) per 20 s.
   - Those freezes come from the relay hop: keyframes reach the browser
     ~190 ms after the previous frame, past Chrome's ~183 ms freeze threshold.
+- **apcamsrc works and is the route to keep** (PLAN.md "apcamsrc"). MCM reads
+  camera-app's encoded frames from the frame socket instead of relaying its
+  RTSP. 4K WebRTC: 30 fps, **0 freezes in 3 minutes**, camera-app 17% + MCM
+  17% CPU (relay: 23% + 49%), first frame 0.8 s after the session request,
+  with the default socket send buffer. It needed, beyond the element:
+  `musl/mcm-apcam.patch` (the `ApCam` source, a 4 MiB send buffer on the ICE
+  socket, a faster readiness check), frames sent to the socket before RTSP
+  in camera-app, and MCM started with `--disable-onvif` (its ONVIF discovery
+  probes camera-app's RTSP every ~26 s, which delays keyframes).
 - **A native capture element is feasible.** `probe/mpp_xproc_probe.c` read and
   set VENC, ISP and VPSS state from a second process beside camera-app
   without disturbing its stream, also through the musl bundle's loader. That
@@ -66,17 +77,47 @@ and the camera was left as found after each session.
 
 ## Not finished
 
-- **MCM's 4K WebRTC with the keyframe patch** has not been run: the MCM
-  bundles are on the Mac. That run says whether the default send buffer is
-  enough once MCM's PLIs are answered.
+- **The relay with the keyframe patch** was not measured; apcamsrc made it
+  moot (the frame socket answers key frame requests itself). The patch still
+  helps RTSP viewers of camera-app.
+- **MCM's own patches are not upstream**: `mcm-apcam.patch` mixes the
+  apcam source with two general fixes (the ICE send buffer and the
+  readiness check) that BlueOS could take on their own.
 - **Intra refresh is not an alternative**: with it enabled on VENC 0
   (`probe/venc_tune.c`), the main stream stopped producing frames (camera-app
   waits for an IDR before releasing a new RTSP client). The encoder was put
   back to GOP 30, QP delta 2, refresh off.
 - PLAN.md Tasks 6 to 8 (glass-to-glass latency, 30-minute soak, pruning the
   bundle from the libraries actually mapped) were not run.
-- **No decision yet** between keeping the RTSP relay (needs the 4 MiB send
-  buffer and accepts the freezes) and writing `apcamsrc`.
+
+## Running MCM with apcamsrc
+
+On the host, from `tools/mcm_trial/` (the musl build expects MCM `t3.26.3`
+in `mcm-src/` with `musl/mcm-musl.patch`, `musl/mcm-rtx.patch` and
+`musl/mcm-apcam.patch` applied, in that order):
+
+```sh
+(cd apcamsrc && make test)    # host build and 15 checks against the real frame socket
+(cd apcamsrc && docker run --rm --platform linux/arm64 --network host \
+    -v $PWD:/work -w /work alpine:3.22 sh build_musl.sh)
+docker run --rm --network host -v $PWD:/work -w /work debian:trixie-slim \
+    sh musl/build_musl_mcm.sh build
+docker run --rm --network host -v $PWD:/work -w /work alpine:3.22 \
+    sh musl/stage_musl_bundle.sh    # copies libgstapcam.so into the bundle
+```
+
+The camera needs a camera-app with the frame socket (its log says
+`frame socket ready on @apcam/video`). On the camera:
+
+```sh
+sh /run/deploy_mcm.sh http://HOST:8088 musl
+setsid nohup /run/mcm/start_mcm.sh --disable-onvif >/run/mcm/state/mcm.out 2>&1 </dev/null &
+```
+
+Then from the host `sh create_streams.sh CAMERA_IP apcam`, and play
+`cam_main` from MCM's `/webrtc` page or `rtsp://CAMERA_IP:8564/cam_main`.
+`probe/webrtc_stats.py --stream '4K Cam main (on camera)'` measures a
+session; `sudo profile/rtp_gaps.py` shows keyframe arrival gaps meanwhile.
 
 ## Files
 
@@ -84,12 +125,13 @@ and the camera was left as found after each session.
 |---|---|
 | `PLAN.md` | Goal, constraints, tasks 1–8, all measurements |
 | `build_bundle.sh`, `run.sh`, `verify_bundle.sh` | glibc (Debian) bundles and their check |
-| `musl/` | musl MCM build, bundle staging, `mcm-musl.patch`, `mcm-rtx.patch` |
+| `musl/` | musl MCM build, bundle staging, `mcm-musl.patch`, `mcm-rtx.patch`, `mcm-apcam.patch` |
+| `apcamsrc/` | GStreamer source for camera-app's frame socket, its tests and musl build |
 | `fit_appfs.sh` | Test-only appfs image with the bundle, for sizing; not for flashing |
 | `camera/` | On-camera scripts: deploy, start MCM, measure, swap in a RAM camera-app |
 | `create_streams.sh` | Creates MCM's main and sub streams over REST |
-| `probe/` | MPP cross-process probe, `venc_tune`, `tsample` (ptrace sampler) |
-| `profile/` | Sampler symbolizer, RTSP timing and keyframe-request scripts, hot-thread samples |
+| `probe/` | MPP cross-process probe, `venc_tune`, `tsample` (ptrace sampler), `webrtc_stats.py` (headless Chrome WebRTC stats) |
+| `profile/` | Sampler symbolizer, RTSP timing, keyframe-request and RTP arrival-gap scripts, hot-thread samples |
 | `camera-app-keyframe.patch` | Keyframe on PLAY/PLI/FIR, tested (above) |
 | `out/sizes.txt`, `out/deps-*.txt`, `out/build.log` | Bundle sizes and library lists |
 | `out/kfserve/` | RAM bring-up scripts for testing the keyframe camera-app |
@@ -107,7 +149,8 @@ Mac; rebuild them with the scripts here if that copy is gone.
 | File | Size | SHA-256 |
 |---|---|---|
 | `out/mcm-lean.sqfs` (glibc, OpenSSL libnice/libsrtp) | 23552000 | `27774f15760f9c7f4c99e18c125cd4018bdacf9da944d415f40e44ab57ea301f` |
-| `out/mcm-musl.sqfs` | 23609344 | `714b7825c53ce85afe486920989b60c7b3cbb3c990c7037de3ceb0eea5d9437c` |
+| `out/mcm-musl.sqfs` (with apcam, on willpc) | 23629824 | `ed5aba4a15b96b133680c6f8cbe0d61a9e29230a8c2a7c4a1ef92249608bb392` |
+| `apcamsrc/build/musl/libgstapcam.so` | 67320 | `255ba0d1b3e5f3346bc1f6351b8aa9c6634af558e6a8aac169497477718ebdac` |
 | `out/cam4k_8s.h264` (4K test clip) | 46509296 | `c1a8d6140f8900e9ec87b055552d81346de064745aed0702bd79262022864317` |
 | `out/kfserve/ours.sqfs` (`7cc9b93` appfs, reassembled) | 1982464 | `7a4141eabbaec756d40d8e7739e7932b4c3d214768f281dd7a9a5cdfe4797ce2` |
 | `out/kfserve/bin/camera-app` (keyframe patch) | — | `80cc659fe42e38a4e2427c886b2361c3f5e3a90f8f7db0cdf16647a3953a7fd7` |
@@ -118,11 +161,11 @@ build (now `lean-debian`); the file above is the OpenSSL rebuild.
 
 ## Next steps
 
-1. Check MCM's 4K WebRTC with the keyframe camera-app and the default send
-   buffer (`camera/swap_camera_app.sh URL`, then `restore`). If it holds,
-   move the patch into camera_app as a commit of its own.
-2. Run PLAN.md Tasks 6–8 and apply its Decision thresholds.
-3. If the relay fails them, start `apcamsrc`; if flash is the problem, a
-   trimmed MCM (no frontend, zenoh, tracy, swagger UI) or `gstreamer-full`.
+1. Run PLAN.md Tasks 6–8 (latency, 30-minute soak, pruning) on apcamsrc and
+   apply its Decision thresholds.
+2. Decide how MCM ships: from appfs (flash budget above), with
+   `--disable-onvif` and the apcam streams created at boot.
+3. Offer the ICE send-buffer and readiness fixes to BlueOS's MCM separately
+   from the apcam source.
 
 Check who else is using the camera before taking over its video pipeline.
