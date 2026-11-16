@@ -1,16 +1,18 @@
 --- RtspConnection.cpp
 +++ RtspConnection.cpp
-@@ -13,6 +13,9 @@
-
+@@ -14,6 +14,11 @@
  using namespace xop;
  using namespace std;
-+
+ 
 +extern "C" void ca_rtsp_mark_satip_client(const void *client);
 +extern std::string ca_rtsp_sdp(xop::MediaSession *session, const std::string &ip);
-
++extern void ca_rtsp_client_playing(xop::MediaSessionId session_id);
++extern void ca_rtsp_rtcp_received(xop::MediaSessionId session_id, const uint8_t *data, size_t size);
++
  RtspConnection::RtspConnection(std::shared_ptr<Rtsp> rtsp, TaskScheduler *task_scheduler, SOCKET sockfd)
      : TcpConnection(task_scheduler, sockfd)
-@@ -22,11 +25,14 @@
+     , rtsp_(rtsp)
+@@ -22,11 +27,14 @@
      , rtsp_request_(new RtspRequest)
      , rtsp_response_(new RtspResponse)
  {
@@ -21,22 +23,46 @@
 +    this->SetReadCallback([this](std::shared_ptr<TcpConnection> /*conn*/, xop::BufferReader& buffer) {
          return this->OnRead(buffer);
      });
-
+ 
 -    this->SetCloseCallback([this](std::shared_ptr<TcpConnection> conn) {
 +    this->SetCloseCallback([this](std::shared_ptr<TcpConnection> /*conn*/) {
          this->OnClose();
      });
-
-@@ -263,7 +269,7 @@
+ 
+@@ -207,7 +215,10 @@
+ {
+     char *peek = buffer.Peek();
+     if(peek[0] == '$' &&  buffer.ReadableBytes() > 4) {
+-        uint32_t pkt_size = peek[2]<<8 | peek[3];
++        uint32_t pkt_size = (uint8_t)peek[2]<<8 | (uint8_t)peek[3];
++        if(pkt_size + 4 <= buffer.ReadableBytes()) {
++            ca_rtsp_rtcp_received(session_id_, (const uint8_t *)peek + 4, pkt_size);
++        }
+         if(pkt_size +4 >=  buffer.ReadableBytes()) {
+             buffer.Retrieve(pkt_size +4);
+         }
+@@ -217,8 +228,10 @@
+ void RtspConnection::HandleRtcp(SOCKET sockfd)
+ {
+     char buf[1024] = {0};
+-    if(recv(sockfd, buf, 1024, 0) > 0) {
++    int size = recv(sockfd, buf, 1024, 0);
++    if(size > 0) {
+         KeepAlive();
++        ca_rtsp_rtcp_received(session_id_, (const uint8_t *)buf, (size_t)size);
+     }
+ }
+ 
+@@ -263,7 +276,7 @@
              }
          }
-
+ 
 -        std::string sdp = media_session->GetSdpMessage(SocketUtil::GetSocketIp(this->GetSocket()), rtsp->GetVersion());
 +        std::string sdp = ca_rtsp_sdp(media_session.get(), SocketUtil::GetSocketIp(this->GetSocket()));
          if(sdp == "") {
              size = rtsp_request_->BuildServerErrorRes(res.get(), 4096);
          }
-@@ -290,6 +296,36 @@
+@@ -290,6 +303,36 @@
      auto rtsp = rtsp_.lock();
      if (rtsp) {
          media_session = rtsp->LookMediaSession(session_id_);
@@ -71,12 +97,20 @@
 +            }
 +        }
      }
-
+ 
      if(!rtsp || !media_session)  {
-@@ -478,7 +514,7 @@
+@@ -373,6 +416,7 @@
+ 
+     conn_state_ = START_PLAY;
+     rtp_conn_->Play();
++    ca_rtsp_client_playing(session_id_);
+ 
+     uint16_t session_id = rtp_conn_->GetRtpSessionId();
+     std::shared_ptr<char> res(new char[2048], std::default_delete<char[]>());
+@@ -478,7 +522,7 @@
          }
      }
-
+ 
 -    std::string sdp = media_session->GetSdpMessage(SocketUtil::GetSocketIp(this->GetSocket()), rtsp->GetVersion());
 +    std::string sdp = ca_rtsp_sdp(media_session.get(), SocketUtil::GetSocketIp(this->GetSocket()));
      if (sdp == "") {

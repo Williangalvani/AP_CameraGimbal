@@ -37,6 +37,11 @@ int ca_rtsp_push_video_timed(struct ca_rtsp *server, unsigned stream_id,
 int ca_rtsp_set_frame_rate(struct ca_rtsp *server, unsigned stream_id,
                            unsigned frame_rate);
 int ca_rtsp_support_proxy(struct ca_rtsp *server, const struct ca_support_config *config);
+/* Called on the RTSP event thread when a client starts playing a stream or
+ * sends an RTCP PLI or FIR for it, at most every 500 ms per stream. */
+typedef void (*ca_rtsp_keyframe_fn)(void *context, unsigned stream_id);
+void ca_rtsp_set_keyframe_callback(struct ca_rtsp *server, ca_rtsp_keyframe_fn request,
+                                   void *context);
 void ca_rtsp_close(struct ca_rtsp *server);
 
 #ifdef __cplusplus

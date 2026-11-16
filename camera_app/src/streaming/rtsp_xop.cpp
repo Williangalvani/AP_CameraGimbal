@@ -12,6 +12,8 @@
 #include "MediaSession.h"
 #include "RtspServer.h"
 
+#include <chrono>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -219,7 +221,72 @@ struct ca_rtsp {
     std::shared_ptr<xop::RtspServer> server;
     std::vector<stream> streams;
     std::mutex mutex;
+    ca_rtsp_keyframe_fn keyframe_request = nullptr;
+    void *keyframe_context = nullptr;
+    std::map<unsigned, std::chrono::steady_clock::time_point> keyframe_requested;
 };
+
+// Sessions, aliases included, by xop session id. Keyframe requests arrive on
+// the RTSP event thread; holding this lock while calling the encoder keeps
+// ca_rtsp_close from racing a request.
+struct keyframe_target {
+    ca_rtsp *rtsp;
+    unsigned stream_id;
+};
+static std::mutex keyframe_mutex;
+static std::map<xop::MediaSessionId, keyframe_target> keyframe_targets;
+
+static void add_keyframe_target(ca_rtsp *rtsp, xop::MediaSessionId session_id, unsigned stream_id)
+{
+    std::lock_guard<std::mutex> lock(keyframe_mutex);
+    keyframe_targets[session_id] = keyframe_target{rtsp, stream_id};
+}
+
+static void request_keyframe(xop::MediaSessionId session_id)
+{
+    std::lock_guard<std::mutex> lock(keyframe_mutex);
+    auto target = keyframe_targets.find(session_id);
+    if (target == keyframe_targets.end()) return;
+    ca_rtsp *rtsp = target->second.rtsp;
+    if (rtsp->keyframe_request == nullptr) return;
+    const auto now = std::chrono::steady_clock::now();
+    auto last = rtsp->keyframe_requested.find(target->second.stream_id);
+    if (last != rtsp->keyframe_requested.end() &&
+        now - last->second < std::chrono::milliseconds(500)) return;
+    rtsp->keyframe_requested[target->second.stream_id] = now;
+    rtsp->keyframe_request(rtsp->keyframe_context, target->second.stream_id);
+}
+
+void ca_rtsp_client_playing(xop::MediaSessionId session_id)
+{
+    request_keyframe(session_id);
+}
+
+// RFC 4585 PLI and RFC 5104 FIR: payload-specific feedback, PT 206, FMT 1 or 4.
+void ca_rtsp_rtcp_received(xop::MediaSessionId session_id, const uint8_t *data, size_t size)
+{
+    size_t offset = 0;
+    while (offset + 4 <= size) {
+        const uint8_t *packet = data + offset;
+        const size_t length = (size_t(packet[2] << 8 | packet[3]) + 1) * 4;
+        if ((packet[0] >> 6) != 2 || offset + length > size) return;
+        const unsigned format = packet[0] & 31;
+        if (packet[1] == 206 && (format == 1 || format == 4)) {
+            request_keyframe(session_id);
+            return;
+        }
+        offset += length;
+    }
+}
+
+extern "C" void ca_rtsp_set_keyframe_callback(struct ca_rtsp *rtsp, ca_rtsp_keyframe_fn request,
+                                              void *context)
+{
+    if (rtsp == nullptr) return;
+    std::lock_guard<std::mutex> lock(keyframe_mutex);
+    rtsp->keyframe_request = request;
+    rtsp->keyframe_context = context;
+}
 
 static void add_stream(ca_rtsp *rtsp, xop::MediaSessionId session_id,
                        enum ca_video_codec codec, unsigned frame_rate,
@@ -255,6 +322,7 @@ extern "C" int ca_rtsp_open(struct ca_rtsp **result, unsigned port,
     xop::MediaSessionId session_id = rtsp->server->AddSession(session);
     if (session_id == 0) return -1;
     add_stream(rtsp.get(), session_id, codec, frame_rate, parameters);
+    add_keyframe_target(rtsp.get(), session_id, 0);
     *result = rtsp.release();
     return 0;
 }
@@ -274,6 +342,7 @@ extern "C" int ca_rtsp_add_video(struct ca_rtsp *rtsp, const char *path,
     if (session_id == 0) return -1;
     *stream_id = static_cast<unsigned>(rtsp->streams.size());
     add_stream(rtsp, session_id, codec, frame_rate, parameters);
+    add_keyframe_target(rtsp, session_id, *stream_id);
     return 0;
 }
 
@@ -291,6 +360,7 @@ extern "C" int ca_rtsp_add_alias(struct ca_rtsp *rtsp, unsigned stream_id,
     xop::MediaSessionId session_id = rtsp->server->AddSession(session);
     if (session_id == 0) return -1;
     stream.aliases.push_back(session_id);
+    add_keyframe_target(rtsp, session_id, stream_id);
     return 0;
 }
 
@@ -400,6 +470,13 @@ extern "C" int ca_rtsp_support_proxy(struct ca_rtsp *rtsp,
 extern "C" void ca_rtsp_close(struct ca_rtsp *rtsp)
 {
     if (rtsp == nullptr) return;
+    {
+        std::lock_guard<std::mutex> lock(keyframe_mutex);
+        for (auto target = keyframe_targets.begin(); target != keyframe_targets.end();) {
+            if (target->second.rtsp == rtsp) target = keyframe_targets.erase(target);
+            else ++target;
+        }
+    }
     for (const auto &stream : rtsp->streams) ca_support_video_close(stream.publisher);
     {
         std::lock_guard<std::mutex> lock(rtsp->mutex);

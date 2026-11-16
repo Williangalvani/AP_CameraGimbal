@@ -219,6 +219,13 @@ static void write_recording(struct APC_Media_HiSi_State *media, const uint8_t *d
     pthread_mutex_unlock(&media->lock);
 }
 
+static void request_rtsp_keyframe(void *context, unsigned stream)
+{
+    const struct APC_Media_HiSi_State *media = (const struct APC_Media_HiSi_State *)context;
+    (void)ss_mpi_venc_request_idr(stream == media->sub_rtsp_stream ? CA_HISI_SUB_VENC
+                                                                   : CA_HISI_MAIN_VENC, TD_TRUE);
+}
+
 static void consume_frame(struct APC_Media_HiSi_State *media, unsigned channel,
                           uint8_t *data, size_t length, uint64_t pts)
 {
@@ -497,6 +504,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     (void)ca_rtsp_add_alias(media->rtsp, 0, "stream_0");
     (void)ca_rtsp_add_alias(media->rtsp, 1, "stream_1");
 #endif
+    ca_rtsp_set_keyframe_callback(media->rtsp, request_rtsp_keyframe, media);
     if (ca_rtsp_support_proxy(media->rtsp, &settings->support) < 0)
         ca_log("SupportProxy video startup failed: %s", strerror(errno));
     stage = "native live-video startup";
