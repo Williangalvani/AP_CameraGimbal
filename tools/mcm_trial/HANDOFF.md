@@ -5,8 +5,8 @@ which holds the method, every task and the raw results.
 
 ## What this branch is
 
-`mcm-trial` (pushed to `fork`, Williangalvani/AP_CameraGimbal, at `da7872d`;
-never push it to `origin`, and don't rebase it on ArduPilot) is
+`mcm-trial` (pushed to `fork`, Williangalvani/AP_CameraGimbal; never push it
+to `origin`, and don't rebase it on ArduPilot) is
 `4kcam-sdcard` (`9cbaade`) plus:
 
 - this folder, `tools/mcm_trial/` (`c468dee`, `38fe3ae`, `da7872d`);
