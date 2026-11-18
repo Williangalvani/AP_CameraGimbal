@@ -46,6 +46,20 @@ class Definitions(unittest.TestCase):
                     self.assertEqual((fps.get('type'), fps.get('min'), fps.get('max'), fps.get('default')),
                                      ('int32', '5', '30', '30'))
 
+    def test_iris_mode_only_on_hisi(self):
+        """Iris priority needs the hisi backend's DC iris; no other target lists it."""
+        for target in ('mt11', 'a8', 'zr10', 'zt30', 'z1mini', 'rpi_libcam_caddx', 'hisi'):
+            with self.subTest(target=target):
+                root = ET.parse(ROOT / 'build/camera-definitions' / (target + '.xml')).getroot()
+                params = {p.get('name'): p for p in root.findall('parameters/parameter')}
+                self.assertEqual('IMG_IRIS_MODE' in params, target == 'hisi')
+                if target == 'hisi':
+                    iris = params['IMG_IRIS_MODE']
+                    self.assertEqual((iris.get('type'), iris.get('default')), ('int32', '0'))
+                    self.assertEqual([(o.get('name'), o.get('value')) for o in iris.findall('options/option')],
+                                     [('auto', '0'), ('priority', '1')])
+                    self.assertIn('iris priority', iris.findtext('description'))
+
     def test_target_capabilities(self):
         for target in ('mt11', 'a8', 'zr10', 'zt30', 'z1mini'):
             with self.subTest(target=target):

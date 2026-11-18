@@ -72,6 +72,54 @@ int main()
     }
     assert(offered == sizeof(vendor) / sizeof(vendor[0]));
 
+    // iris priority: a fixed shutter and ISO are pinned as the other modes fix them, whatever the gain mode
+    struct ca_config config {};
+    config.shutter = CA_SHUTTER_1_250;
+    config.iso = CA_ISO_800;
+    config.gain_mode = CA_GAIN_MANUAL;
+    config.manual_again = config.manual_dgain = true;
+    config.again = 40;
+    config.dgain = 12;
+    PinnedExposure pinned = iris_priority_exposure(config);
+    assert(pinned.exp_time_us == 4000 && pinned.again == 8192 && pinned.dgain == 1024 && pinned.ispdgain == 1024);
+    assert(pinned.sys_gain == 8192);
+    config.iso = CA_ISO_3200;
+    assert(iris_priority_exposure(config).again == 32768 && iris_priority_exposure(config).sys_gain == 32768);
+    // an automatic shutter is pinned at 1/60 s
+    config.shutter = CA_SHUTTER_AUTO;
+    assert(iris_priority_exposure(config).exp_time_us == 16666);
+    config.shutter = CA_SHUTTER_1_100000;
+    assert(iris_priority_exposure(config).exp_time_us == 10);
+    // ISO auto: the enabled manual gains, analog and ISP digital, 1x for the others
+    config.iso = CA_ISO_AUTO;
+    pinned = iris_priority_exposure(config);
+    assert(pinned.again == 10240 && pinned.dgain == 1024 && pinned.ispdgain == 3072 && pinned.sys_gain == 30720);
+    config.manual_dgain = false;
+    pinned = iris_priority_exposure(config);
+    assert(pinned.again == 10240 && pinned.ispdgain == 1024 && pinned.sys_gain == 10240);
+    config.manual_again = false;
+    config.manual_dgain = true;
+    pinned = iris_priority_exposure(config);
+    assert(pinned.again == 1024 && pinned.ispdgain == 3072 && pinned.sys_gain == 3072);
+    // ISO auto and gain mode auto: 1x, whatever the manual gain settings say
+    config.gain_mode = CA_GAIN_AUTO;
+    config.manual_again = true;
+    pinned = iris_priority_exposure(config);
+    assert(pinned.again == 1024 && pinned.dgain == 1024 && pinned.ispdgain == 1024 && pinned.sys_gain == 1024);
+    // the system gain is always the product of the pinned gains
+    for (int iso = CA_ISO_AUTO; iso <= CA_ISO_3200; iso++) {
+        for (unsigned gains = 0; gains < 4; gains++) {
+            config.iso = (enum ca_iso_mode)iso;
+            config.gain_mode = CA_GAIN_MANUAL;
+            config.manual_again = gains & 1U;
+            config.manual_dgain = gains & 2U;
+            config.again = config.dgain = 255;
+            pinned = iris_priority_exposure(config);
+            assert(pinned.dgain == 1024 && pinned.again >= 1024 && pinned.ispdgain >= 1024);
+            assert(pinned.sys_gain == sys_gain(pinned.again, pinned.dgain, pinned.ispdgain));
+        }
+    }
+
     assert(waters[1].static_wb[0] == 500 && waters[1].static_wb[3] == 504 && waters[0].static_wb[0] == 469);
     for (const Water &water : waters) {
         for (unsigned t = 0; t < 4; t++) {

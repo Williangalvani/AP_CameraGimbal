@@ -456,6 +456,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     // once per process, without waiting for the pulse
     ircut_start_day();
     const bool dc_iris = iris_start();
+    ca_hisi_set_dc_iris(dc_iris);
     ca_hisi_configure_vi(&media->vi_cfg);
     stage = "SYS/VB initialization";
     if (ca_hisi_system_init(sizes) != TD_SUCCESS) goto fail;
@@ -470,10 +471,14 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     if (sample_comm_vi_bind_vpss(CA_HISI_PIPE, 0, CA_HISI_GROUP, 0) != TD_SUCCESS) goto fail;
     media->vi_vpss_bound = TD_TRUE;
     stage = "ISP configuration";
-    if (ca_hisi_apply_isp_config(settings) != TD_SUCCESS) goto fail;
+    if (ca_hisi_apply_isp_config(settings, true) != TD_SUCCESS) goto fail;
     if (dc_iris) {
         const td_s32 iris = ca_hisi_enable_dc_iris();
-        if (iris != TD_SUCCESS) ca_log("DC iris ISP setup failed: 0x%x", (unsigned)iris);
+        if (iris != TD_SUCCESS) {
+            ca_log("DC iris ISP setup failed: 0x%x", (unsigned)iris);
+            ca_hisi_set_dc_iris(false);
+            if (ca_hisi_apply_isp_config(settings, true) != TD_SUCCESS) goto fail;
+        }
     }
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_MAIN_VENC], settings->main_codec,
                              sizes->width[CA_HISI_MAIN_CHN], sizes->height[CA_HISI_MAIN_CHN],
@@ -801,7 +806,7 @@ int APC_Media_HiSi::apply_image(const struct ca_config *settings)
     auto *media = _state;
     pthread_mutex_lock(&media->lock);
     pthread_mutex_lock(&media->isp_lock);
-    int result = ca_hisi_apply_isp_config(settings);
+    int result = ca_hisi_apply_isp_config(settings, false);
     pthread_mutex_unlock(&media->isp_lock);
     const unsigned bit_rate = main_bitrate(media, settings);
     if (result == 0 && bit_rate != main_bitrate(media, &media->config.settings)) {

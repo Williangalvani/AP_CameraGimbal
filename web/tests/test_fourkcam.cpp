@@ -307,6 +307,8 @@ static void test_reset()
         for (const char *key : image_adjustment_keys) covered = covered || !strcmp(changes.updates[i].key, key);
         assert(covered && !strcmp(changes.updates[i].section, "image"));
     }
+    // settings the extension has no field for are neither written nor reset
+    for (const char *key : image_adjustment_keys) assert(strcmp(key, "iso") != 0 && strcmp(key, "iris_mode") != 0);
 }
 
 static const char *const main_names[] = {"3840x2160", "1920x1080", "1280x720", "960x540", "854x480"};

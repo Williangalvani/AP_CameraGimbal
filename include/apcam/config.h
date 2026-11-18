@@ -134,6 +134,13 @@ enum ca_water {
     CA_WATER_BLUE = 1,
 };
 
+/* Priority: shutter and gains stay fixed and the lens's DC iris alone holds
+ * the auto-exposure target. */
+enum ca_iris_mode {
+    CA_IRIS_AUTO = 0,
+    CA_IRIS_PRIORITY = 1,
+};
+
 enum ca_autorecord_mode {
     CA_AUTORECORD_DISABLED = 0,
     CA_AUTORECORD_ENABLED = 1,
@@ -272,6 +279,8 @@ struct ca_config {
     enum ca_ae_priority ae_strategy;
     unsigned max_exposure;
     bool slow_shutter;
+    /* not a 4K Cam Manager control: IMG_IRIS_MODE */
+    enum ca_iris_mode iris_mode;
 #endif
     bool position_targeting;
     enum ca_tracking_method tracking_method;

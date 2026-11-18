@@ -44,19 +44,88 @@ static td_u32 range_max(td_u32 wanted, td_u32 minimum)
     return wanted < minimum ? minimum : wanted;
 }
 
-static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
+/* Set by media start-up before its first apply. */
+static bool dc_iris_available;
+/* camera.ini asks for iris priority but start-up could not apply it: later
+ * applies keep the normal exposure rather than refusing every change. */
+static bool iris_priority_ignored;
+
+void ca_hisi_set_dc_iris(bool available)
+{
+    dc_iris_available = available;
+}
+
+struct ae_ranges {
+    ot_isp_ae_range time, again, dgain, ispd_gain, sys_gain;
+};
+/* The ranges as they were before iris priority pinned them, put back when it
+ * ends: the other modes only set the maxima. */
+static bool ranges_pinned;
+static struct ae_ranges unpinned_ranges;
+
+static struct ae_ranges get_ae_ranges(const ot_isp_ae_attr &ae)
+{
+    return {ae.exp_time_range, ae.a_gain_range, ae.d_gain_range, ae.ispd_gain_range, ae.sys_gain_range};
+}
+
+static void set_ae_ranges(ot_isp_ae_attr &ae, const struct ae_ranges &ranges)
+{
+    ae.exp_time_range = ranges.time;
+    ae.a_gain_range = ranges.again;
+    ae.d_gain_range = ranges.dgain;
+    ae.ispd_gain_range = ranges.ispd_gain;
+    ae.sys_gain_range = ranges.sys_gain;
+}
+
+static ot_isp_ae_range pinned_range(td_u32 value)
+{
+    ot_isp_ae_range range;
+    range.min = range.max = value;
+    return range;
+}
+
+/* The AE keeps running, and with it the ISP's DC iris loop, which starts
+ * closing at the route's lowest exposure: with every range pinned to one
+ * value, that is the only thing left for it to move. */
+static td_s32 set_iris_priority(ot_vi_pipe pipe, ot_isp_exposure_attr &attr, const struct ca_config *config)
+{
+    const ca_hisi_tuning::PinnedExposure fixed = ca_hisi_tuning::iris_priority_exposure(*config);
+    const struct ae_ranges before = ranges_pinned ? unpinned_ranges : get_ae_ranges(attr.auto_attr);
+    attr.op_type = OT_OP_MODE_AUTO;
+    set_ae_ranges(attr.auto_attr, {pinned_range(fixed.exp_time_us), pinned_range(fixed.again),
+                                   pinned_range(fixed.dgain), pinned_range(fixed.ispdgain),
+                                   pinned_range(fixed.sys_gain)});
+    attr.auto_attr.ae_mode = OT_ISP_AE_MODE_FIX_FRAME_RATE;
+    attr.manual_attr.exp_time_op_type = OT_OP_MODE_AUTO;
+    attr.manual_attr.a_gain_op_type = OT_OP_MODE_AUTO;
+    attr.manual_attr.d_gain_op_type = OT_OP_MODE_AUTO;
+    attr.manual_attr.ispd_gain_op_type = OT_OP_MODE_AUTO;
+    const td_s32 result = ss_mpi_isp_set_exposure_attr(pipe, &attr);
+    if (result == TD_SUCCESS) {
+        unpinned_ranges = before;
+        ranges_pinned = true;
+        ca_log("ISP iris priority: exposure %u us, gains (1/1024) analog %u digital %u ISP %u system %u",
+               fixed.exp_time_us, fixed.again, fixed.dgain, fixed.ispdgain, fixed.sys_gain);
+    }
+    return result;
+}
+
+static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config, bool iris_priority)
 {
     using namespace ca_hisi_tuning;
     ot_isp_exposure_attr attr;
     td_s32 result = ss_mpi_isp_get_exposure_attr(pipe, &attr);
     if (result != TD_SUCCESS) return result;
 
+    attr.auto_attr.ev_bias = ev_bias(config->exposure_compensation);
+    attr.auto_attr.compensation = (td_u8)config->backlight;
+    if (iris_priority) return set_iris_priority(pipe, attr, config);
+    if (ranges_pinned) set_ae_ranges(attr.auto_attr, unpinned_ranges);
+
     // a fixed ISO fixes every gain, whatever the gain mode
     const bool manual_gains = config->iso == CA_ISO_AUTO && config->gain_mode == CA_GAIN_MANUAL;
     attr.op_type = config->iso != CA_ISO_AUTO || config->shutter != CA_SHUTTER_AUTO || manual_gains
         ? OT_OP_MODE_MANUAL : OT_OP_MODE_AUTO;
-    attr.auto_attr.ev_bias = ev_bias(config->exposure_compensation);
-    attr.auto_attr.compensation = (td_u8)config->backlight;
     attr.auto_attr.sys_gain_range.max =
         range_max(sys_gain_max(config->max_gain), attr.auto_attr.sys_gain_range.min);
     attr.auto_attr.a_gain_range.max =
@@ -104,7 +173,9 @@ static td_s32 set_exposure(ot_vi_pipe pipe, const struct ca_config *config)
         attr.manual_attr.exp_time_op_type = OT_OP_MODE_MANUAL;
         attr.manual_attr.exp_time = shutter_us(config->shutter);
     }
-    return ss_mpi_isp_set_exposure_attr(pipe, &attr);
+    result = ss_mpi_isp_set_exposure_attr(pipe, &attr);
+    if (result == TD_SUCCESS) ranges_pinned = false;
+    return result;
 }
 
 static td_s32 set_metering(ot_vi_pipe pipe, enum ca_metering_mode mode)
@@ -206,17 +277,24 @@ td_s32 ca_hisi_set_white_balance_gains(bool manual, td_u16 red, td_u16 green, td
     return ss_mpi_isp_set_wb_attr(CA_HISI_PIPE, &attr);
 }
 
-// the settings the vendor firmware uses on the U35.5 board
-td_s32 ca_hisi_enable_dc_iris(void)
+/* Auto in every exposure mode, as with the vendor firmware; the loop's gains
+ * are left alone. */
+static td_s32 set_auto_dc_iris(ot_vi_pipe pipe)
 {
     ot_isp_iris_attr iris;
-    td_s32 result = ss_mpi_isp_get_iris_attr(CA_HISI_PIPE, &iris);
+    td_s32 result = ss_mpi_isp_get_iris_attr(pipe, &iris);
     if (result != TD_SUCCESS) return result;
     iris.enable = TD_TRUE;
     iris.op_type = OT_OP_MODE_AUTO;
     iris.iris_type = OT_ISP_IRIS_TYPE_DC;
     iris.iris_status = OT_ISP_IRIS_KEEP;
-    result = ss_mpi_isp_set_iris_attr(CA_HISI_PIPE, &iris);
+    return ss_mpi_isp_set_iris_attr(pipe, &iris);
+}
+
+// the settings the vendor firmware uses on the U35.5 board
+td_s32 ca_hisi_enable_dc_iris(void)
+{
+    td_s32 result = set_auto_dc_iris(CA_HISI_PIPE);
     if (result != TD_SUCCESS) return result;
     ot_isp_dciris_attr dciris;
     result = ss_mpi_isp_get_dciris_attr(CA_HISI_PIPE, &dciris);
@@ -302,19 +380,47 @@ static void set_tuning(ot_vi_pipe pipe, const struct ca_config *config)
         if (step.result != TD_SUCCESS) ca_log("ISP %s failed: 0x%x", step.name, (unsigned)step.result);
 }
 
-td_s32 ca_hisi_apply_isp_config(const struct ca_config *config)
+td_s32 ca_hisi_apply_isp_config(const struct ca_config *config, bool startup)
 {
     const ot_vi_pipe pipe = CA_HISI_PIPE;
     td_s32 result;
 
     if (config == NULL) return TD_FAILURE;
-    if ((result = set_csc(pipe, config)) != TD_SUCCESS ||
-        (result = set_exposure(pipe, config)) != TD_SUCCESS ||
+    // back to auto on every apply, whatever else last set the iris
+    bool iris = dc_iris_available;
+    if (iris && (result = set_auto_dc_iris(pipe)) != TD_SUCCESS) {
+        ca_log("ISP DC iris failed: 0x%x", (unsigned)result);
+        iris = false;
+    }
+    const bool wanted = config->iris_mode == CA_IRIS_PRIORITY;
+    const bool fall_back = startup || iris_priority_ignored;
+    bool iris_priority = wanted;
+    if (wanted && !iris) {
+        if (!fall_back) {
+            ca_log("iris priority needs the DC iris, which this camera does not have or could not start; "
+                   "not applied");
+            return TD_FAILURE;
+        }
+        ca_log("iris priority needs the DC iris, which this camera does not have or could not start; "
+               "using the normal exposure");
+        iris_priority = false;
+    }
+    if ((result = set_csc(pipe, config)) == TD_SUCCESS) {
+        result = set_exposure(pipe, config, iris_priority);
+        if (result != TD_SUCCESS && iris_priority && fall_back) {
+            ca_log("ISP refused the iris priority exposure (0x%x); using the normal exposure",
+                   (unsigned)result);
+            iris_priority = false;
+            result = set_exposure(pipe, config, false);
+        }
+    }
+    if (result != TD_SUCCESS ||
         (result = set_metering(pipe, config->metering)) != TD_SUCCESS ||
         (result = set_white_balance(pipe, config)) != TD_SUCCESS) {
         ca_log("ISP configuration failed for pipe %d: 0x%x", pipe, (unsigned)result);
         return result;
     }
+    iris_priority_ignored = wanted && !iris_priority;
     set_tuning(pipe, config);
     ca_log("ISP configured brightness=%d saturation=%d contrast=%d ev=%d "
            "iso=%d shutter=%d metering=%d white_balance=%d (R %u G %u B %u, %u K)",
@@ -324,14 +430,15 @@ td_s32 ca_hisi_apply_isp_config(const struct ca_config *config)
            config->wb_blue, config->wb_temp);
     ca_log("ISP tuning hue=%u sharpness=%u gamma=%u backlight=%u style=%u/%u/%u water=%s "
            "max_gain=%u gain_mode=%s max_again=%u max_dgain=%u again=%s:%u dgain=%s:%u "
-           "ae=%s max_exposure=1/%u slow_shutter=%s",
+           "ae=%s max_exposure=1/%u slow_shutter=%s iris=%s",
            config->hue, config->sharpness, config->gamma, config->backlight, config->wb_style_red,
            config->wb_style_green, config->wb_style_blue, config->wb_water == CA_WATER_BLUE ? "blue" : "green",
            config->max_gain, config->gain_mode == CA_GAIN_MANUAL ? "manual" : "auto", config->max_again,
            config->max_dgain, config->manual_again ? "on" : "off", config->again,
            config->manual_dgain ? "on" : "off", config->dgain,
            config->ae_strategy == CA_AE_PRIOR_LOWLIGHT ? "lowlight" : "highlight", config->max_exposure,
-           config->slow_shutter ? "on" : "off");
+           config->slow_shutter ? "on" : "off",
+           iris_priority ? "priority" : wanted ? "priority (not applied)" : "auto");
     return TD_SUCCESS;
 }
 

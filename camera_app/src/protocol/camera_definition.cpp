@@ -106,6 +106,9 @@ static const struct ca_camera_parameter parameters[] = {
     CONFIG("IMG_EXPOSURE", "Exposure compensation"),
     CONFIG("IMG_ISO", "ISO"),
     CONFIG("IMG_SHUTTER", "Shutter speed"),
+#if APCAM_HAVE_4KCAM_COMPAT
+    CONFIG("IMG_IRIS_MODE", "Iris mode (0 auto, 1 iris priority: fixed shutter and ISO, the iris holds the brightness)"),
+#endif
     CONFIG("IMG_METERING", "Exposure metering"),
     CONFIG("IMG_WHITE_BAL", "White balance"),
 #if APCAM_HAVE_WB_TUNING

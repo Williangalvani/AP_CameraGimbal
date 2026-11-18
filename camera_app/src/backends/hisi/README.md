@@ -96,6 +96,31 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   leaves the pins and the ISP alone, as on the MAIN V9 (19/2/35) bench camera.
   The start-up log says whether the DC iris was enabled or skipped, and why. A
   register or ISP failure is logged and the video starts anyway.
+  Every image apply sets the auto DC iris again (enabled, auto, DC type, not
+  forced open or shut); manual shutter, ISO and gains leave it in auto,
+  as the vendor firmware does, so it still moves towards the AE target.
+- **Iris priority** (`[image] iris_mode = priority`, `IMG_IRIS_MODE` 1, DC iris
+  board only): the shutter and gains stay fixed and the DC iris alone holds the
+  brightness at the AE target, which `exposure_compensation` and `backlight`
+  still move. The AE stays automatic, with each range pinned to one value:
+  exposure time the `shutter` (1/60 s when it is auto); analog gain the ISO's
+  (ISO 100 1×, doubling per step), or with ISO auto and `gain_mode` manual the
+  enabled manual gains (`dgain` is the ISP digital gain), else 1×; sensor
+  digital gain 1×; the system gain their product. `max_exposure`,
+  `ae_strategy` and `slow_shutter` don't apply, and the frame rate stays fixed.
+  The pinned values come from `iris_priority_exposure()` in `image_tuning.h`
+  and are logged as `ISP iris priority: ...`; the `ISP tuning` line shows
+  `iris=`. Leaving the mode puts back the AE ranges it replaced.
+  On a camera without a working DC iris a live change to priority is refused
+  (`iris priority needs the DC iris ...`) and the old settings stay. At
+  start-up, or while a saved `priority` already had no effect, it is logged
+  and the normal exposure applies instead; camera.ini keeps `priority`. At
+  start-up an ISP that refuses the pinned ranges also falls back.
+  To be verified on hardware: that the ISP accepts ranges with equal minimum
+  and maximum and that the iris then holds the target. If it doesn't, two
+  fallbacks are candidates, neither implemented: widen each maximum by one
+  step, or set a fully manual exposure and drive the iris from a software
+  loop on its `hold_value`.
 - Overlay reuses `mt11/overlay.cpp` (generic `ss_mpi_rgn`); exposure and image
   controls are mt11's ISP calls on pipe 0, except metering. Of the 15x17 AE
   zones, `center` weights the middle 5x5 by 8 against 1 elsewhere, and

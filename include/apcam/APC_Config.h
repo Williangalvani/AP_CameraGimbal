@@ -196,6 +196,9 @@ private:
     inline static constexpr ca_config_option ae_strategy_options[] = {
         {"highlight", CA_AE_PRIOR_HIGHLIGHT}, {"lowlight", CA_AE_PRIOR_LOWLIGHT},
     };
+    inline static constexpr ca_config_option iris_mode_options[] = {
+        {"auto", CA_IRIS_AUTO}, {"priority", CA_IRIS_PRIORITY},
+    };
 #endif
 
     inline static constexpr ca_config_option tracking_options[] = {
@@ -383,6 +386,9 @@ private:
          sizeof(((struct ca_config *)0)->max_exposure), NULL, 0U, 12, 8000, NULL},
         {"image", "slow_shutter", Kind::Bool, offsetof(struct ca_config, slow_shutter),
          sizeof(((struct ca_config *)0)->slow_shutter), NULL, 0U, 0, 0, NULL},
+        {"image", "iris_mode", Kind::Enum, offsetof(struct ca_config, iris_mode),
+         sizeof(((struct ca_config *)0)->iris_mode), iris_mode_options,
+         sizeof(iris_mode_options) / sizeof(iris_mode_options[0]), 0, 0, "IMG_IRIS_MODE"},
 #endif
         {"mavlink", "position_targeting", Kind::Bool,
          offsetof(struct ca_config, position_targeting),

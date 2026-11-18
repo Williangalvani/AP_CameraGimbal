@@ -101,6 +101,32 @@ inline uint32_t shutter_us(enum ca_shutter_mode shutter)
     return (unsigned)shutter <= CA_SHUTTER_1_100000 ? exposure_us[shutter] : 0U;
 }
 
+/* Iris priority: the exposure time and gains the AE ranges are pinned to, so
+ * that only the iris moves. Unfixed elements take defaults: shutter auto is
+ * 1/60 s; ISO auto with no manual gain is 1x. The gains are those a fixed
+ * ISO or manual gain uses in the other modes. */
+struct PinnedExposure {
+    uint32_t exp_time_us;
+    uint32_t again;
+    uint32_t dgain;
+    uint32_t ispdgain;
+    uint32_t sys_gain;
+};
+
+inline PinnedExposure iris_priority_exposure(const struct ca_config &config)
+{
+    PinnedExposure pinned = {shutter_us(config.shutter != CA_SHUTTER_AUTO ? config.shutter : CA_SHUTTER_1_60),
+                             1024U, 1024U, 1024U, 0U};
+    if (config.iso != CA_ISO_AUTO) {
+        pinned.again = iso_gain((unsigned)config.iso);
+    } else if (config.gain_mode == CA_GAIN_MANUAL) {
+        if (config.manual_again) pinned.again = manual_gain(config.again);
+        if (config.manual_dgain) pinned.ispdgain = manual_gain(config.dgain);
+    }
+    pinned.sys_gain = sys_gain(pinned.again, pinned.dgain, pinned.ispdgain);
+    return pinned;
+}
+
 /* Auto white balance calibration and colour matrices (sign-magnitude 8.8,
  * warmest last) for green and blue water. */
 struct Water {

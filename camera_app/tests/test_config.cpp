@@ -295,6 +295,8 @@ int main(int argc, char **argv)
         assert(strstr(error, "alias") != NULL);
     }
 #if !APCAM_HAVE_4KCAM_COMPAT
+    // iris priority needs the hisi backend's DC iris
+    assert(ca_config_param_find("IMG_IRIS_MODE") == -1);
     // the 4K Cam Manager's extra speeds are past the other backends' tables
     const char *vendor_shutters[] = {"1/12", "1/60", "1/4000", "1/100000"};
     for (const char *shutter : vendor_shutters) {

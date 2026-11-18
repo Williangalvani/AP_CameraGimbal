@@ -105,6 +105,7 @@ enum string_id {
     S_OPT_MANUAL,
     S_OPT_AE_HIGHLIGHT,
     S_OPT_AE_LOWLIGHT,
+    S_OPT_IRIS_PRIORITY,
     S_OPT_SCOPE_THERMAL,
     S_OPT_SCOPE_ALL,
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -170,6 +171,7 @@ enum string_id {
     S_P_AE_STRATEGY,
     S_P_MAX_EXPOSURE,
     S_P_SLOW_SHUTTER,
+    S_P_IRIS_MODE,
     S_P_FOURKCAM,
     S_P_ONVIF_PASSWORD,
     S_H_CARDV_BRIGHTNESS,
@@ -308,6 +310,7 @@ enum string_id {
     S_H_AE_STRATEGY,
     S_H_MAX_EXPOSURE,
     S_H_SLOW_SHUTTER,
+    S_H_IRIS_MODE,
     S_H_FOURKCAM,
     S_H_ONVIF_PASSWORD,
     S_E_CONFIG_SIZE,
@@ -832,6 +835,7 @@ static constexpr Translations translations = [] {
     result[S_OPT_MANUAL] = {"Manual", "手动", "手動"};
     result[S_OPT_AE_HIGHLIGHT] = {"Highlights", "高光优先", "ハイライト優先"};
     result[S_OPT_AE_LOWLIGHT] = {"Low light", "低照度优先", "低照度優先"};
+    result[S_OPT_IRIS_PRIORITY] = {"Iris priority", "光圈优先", "絞り優先"};
     result[S_OPT_SCOPE_THERMAL] = {"Thermal only", "仅热成像", "サーマルのみ"};
     result[S_OPT_SCOPE_ALL] = {"All lenses", "全部镜头", "すべてのレンズ"};
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -897,6 +901,7 @@ static constexpr Translations translations = [] {
     result[S_P_AE_STRATEGY] = {"Exposure priority", "曝光优先", "露出優先"};
     result[S_P_MAX_EXPOSURE] = {"Maximum exposure", "最长曝光", "最大露出時間"};
     result[S_P_SLOW_SHUTTER] = {"Slow shutter", "慢快门", "スローシャッター"};
+    result[S_P_IRIS_MODE] = {"Iris mode", "光圈模式", "絞りモード"};
     result[S_P_FOURKCAM] = {"Allow 4K Cam Manager", "允许 4K Cam Manager", "4K Cam Manager を許可"};
     result[S_P_ONVIF_PASSWORD] = {"ONVIF password", "ONVIF 密码", "ONVIF パスワード"};
     result[S_H_CARDV_BRIGHTNESS] = {"ISP brightness.", "ISP 亮度。", "ISP の明るさ。"};
@@ -1099,6 +1104,18 @@ static constexpr Translations translations = [] {
     result[S_H_SLOW_SHUTTER] = {"Let automatic exposure lower the frame rate in the dark, up to the maximum exposure.",
                                 "允许自动曝光在暗处降低帧率，最长到最长曝光。",
                                 "暗い場所で自動露出がフレームレートを下げられるようにします（最大露出時間まで）。"};
+    result[S_H_IRIS_MODE] = {"Auto: automatic exposure sets the shutter and gain, and the lens iris also works "
+                             "automatically. Iris priority: the shutter speed and ISO (or the manual gains) stay "
+                             "fixed and the iris alone holds the brightness at the exposure target (exposure and "
+                             "backlight compensation); shutter auto means 1/60 s, and ISO auto without manual gains "
+                             "means 1×. Needs a lens with a DC iris; other cameras do not apply it.",
+                             "自动：自动曝光调节快门和增益，镜头光圈也自动工作。光圈优先：快门速度和 ISO（或手动增益）"
+                             "保持固定，仅由光圈将亮度保持在曝光目标（曝光补偿和背光补偿）；快门为自动时使用 1/60 秒，"
+                             "ISO 为自动且未启用手动增益时为 1 倍。需要带 DC 光圈的镜头，其他相机不应用此设置。",
+                             "オート：自動露出がシャッターとゲインを調整し、レンズの絞りも自動で動作します。絞り優先："
+                             "シャッター速度と ISO（または手動ゲイン）を固定し、絞りだけで明るさを露出目標（露出補正と"
+                             "逆光補正）に保ちます。シャッターがオートのときは 1/60 秒、ISO がオートで手動ゲインが"
+                             "ないときは 1 倍です。DC アイリスのレンズが必要で、それ以外のカメラでは適用されません。"};
     result[S_H_FOURKCAM] = {"Lets Blue Robotics' 4K Cam Manager and MAVLink Camera Manager find and control this camera without the web login, as with the original firmware.", "允许 Blue Robotics 的 4K Cam Manager 和 MAVLink Camera Manager 无需网页登录即可发现并控制本相机，与原厂固件相同。", "Blue Robotics の 4K Cam Manager と MAVLink Camera Manager が、元のファームウェアと同様に Web ログインなしでこのカメラを検出・制御できるようにします。"};
     result[S_H_ONVIF_PASSWORD] = {"Password of the ONVIF user admin. 4K Cam Manager logs in with blue.", "ONVIF 用户 admin 的密码。4K Cam Manager 使用 blue 登录。", "ONVIF ユーザー admin のパスワード。4K Cam Manager は blue でログインします。"};
     result[S_E_CONFIG_SIZE] = {"Config size must be between 1 and %u bytes", "配置大小必须在 1 至 %u 字节之间", "設定のサイズは 1〜%u バイトである必要があります"};

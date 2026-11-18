@@ -494,7 +494,8 @@ inline void image_adjustment_changes(const Field *fields, size_t count, const Im
     }
 }
 
-/* The [image] keys image_adjustment_changes writes; set_default 1 resets them. */
+/* The [image] keys image_adjustment_changes writes; set_default 1 resets them.
+ * Keys the extension has no field for (iso, iris_mode) keep their values. */
 constexpr const char *image_adjustment_keys[] = {
     "brightness", "contrast", "saturation", "white_balance", "wb_red", "wb_green", "wb_blue", "wb_water",
     "shutter", "hue", "sharpness", "gamma", "backlight", "wb_style_red", "wb_style_green", "wb_style_blue",

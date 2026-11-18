@@ -683,6 +683,9 @@ static const struct option gain_mode_options[] = {
 static const struct option ae_strategy_options[] = {
     {"highlight", S_OPT_AE_HIGHLIGHT}, {"lowlight", S_OPT_AE_LOWLIGHT},
 };
+static const struct option iris_mode_options[] = {
+    {"auto", S_OPT_AUTO}, {"priority", S_OPT_IRIS_PRIORITY},
+};
 #endif
 
 
@@ -832,6 +835,7 @@ static const struct parameter replacement_parameters[] = {
     {"max_exposure", "image", "max_exposure", S_P_MAX_EXPOSURE, S_H_MAX_EXPOSURE, PARAM_INTEGER, 12, 8000, 1, NULL, 0},
     {"slow_shutter", "image", "slow_shutter", S_P_SLOW_SHUTTER, S_H_SLOW_SHUTTER,
      PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
+    {"iris_mode", "image", "iris_mode", S_P_IRIS_MODE, S_H_IRIS_MODE, PARAM_ENUM, 0, 0, 0, iris_mode_options, 2},
     {"fourkcam_manager", "compat", "fourkcam_manager", S_P_FOURKCAM, S_H_FOURKCAM,
      PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
     {"onvif_password", "compat", "onvif_password", S_P_ONVIF_PASSWORD, S_H_ONVIF_PASSWORD,
@@ -964,7 +968,7 @@ static const char *replacement_defaults[] = {
 #endif
 #if APCAM_HAVE_4KCAM_COMPAT
     "green", "128", "128", "20", "50", "0", "0", "0", "12", "auto", "32", "0", "false", "128", "false", "128",
-    "highlight", "25", "false", "true", "blue",
+    "highlight", "25", "false", "auto", "true", "blue",
 #endif
     "false", "", "10001", "false", "", "1", "0", "video1", "0", "video2",
 #if APCAM_HAVE_RAW_THERMAL
