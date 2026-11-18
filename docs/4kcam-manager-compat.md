@@ -241,6 +241,18 @@ its lock or read `camera.ini` gets `code` −1.
 The ONVIF password is 1–63 bytes (not characters) with no whitespace or control
 characters, as the parameters page checks.
 
+## Known extension behaviour
+
+- The extension's camera list shows `streams: {}` for every camera, ours too,
+  even after it has created its MCM stream. The camera isn't involved: in 0.3.2
+  and master the discovery code builds each camera with
+  `streams: IndexMap::new()` (`backend/libs/mcm_client/src/mcm_client.rs`) and
+  nothing ever fills it. The stream exists in MCM (`GET /streams`, named
+  `4K Cam <address>/0`).
+- It logs in to the camera's web page every couple of minutes with the wrong
+  credentials from BlueOS (`authentication failed from 192.168.2.2` in the
+  camera's web log). That is a client polling the web UI, not ONVIF or `/action`.
+
 ## Cockpit
 
 Through the extension, Cockpit gets the 4K Cam widget, the **4K Cam One-Push
