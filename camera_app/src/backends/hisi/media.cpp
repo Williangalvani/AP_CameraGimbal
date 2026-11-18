@@ -11,6 +11,7 @@
 #define _GNU_SOURCE
 #endif
 #include "ircut.h"
+#include "iris.h"
 #include "isp.h"
 #include "one_push_wb.h"
 #include "pipeline.h"
@@ -454,6 +455,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     pthread_mutex_init(&media->isp_lock, NULL);
     // once per process, without waiting for the pulse
     ircut_start_day();
+    const bool dc_iris = iris_start();
     ca_hisi_configure_vi(&media->vi_cfg);
     stage = "SYS/VB initialization";
     if (ca_hisi_system_init(sizes) != TD_SUCCESS) goto fail;
@@ -469,6 +471,10 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     media->vi_vpss_bound = TD_TRUE;
     stage = "ISP configuration";
     if (ca_hisi_apply_isp_config(settings) != TD_SUCCESS) goto fail;
+    if (dc_iris) {
+        const td_s32 iris = ca_hisi_enable_dc_iris();
+        if (iris != TD_SUCCESS) ca_log("DC iris ISP setup failed: 0x%x", (unsigned)iris);
+    }
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_MAIN_VENC], settings->main_codec,
                              sizes->width[CA_HISI_MAIN_CHN], sizes->height[CA_HISI_MAIN_CHN],
                              config->frame_rate, main_bitrate(media, settings));

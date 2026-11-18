@@ -333,7 +333,7 @@ A8_XOP_OBJECTS := $(patsubst $(RTSP_ROOT)/%.cpp,build/$(CAMERA_BACKEND)/xop/%.o,
 ARM_APP_OBJECTS := $(patsubst %.cpp,build/$(CAMERA_BACKEND)/c/%.o,$(COMMON_SOURCES) \
 	src/streaming/live_video_server.cpp src/recording/mp4_minimp4.cpp \
 	$(if $(filter hisi,$(CAMERA_BACKEND)),src/streaming/frame_socket.cpp) \
-	$(BACKEND_DIR)/media.cpp $(BACKEND_DIR)/pipeline.cpp $(if $(filter rpi_libcam_caddx,$(CAMERA_BACKEND)),$(BACKEND_DIR)/jpeg.cpp) $(if $(filter a8 zr10,$(CAMERA_BACKEND)),src/backends/siyi/overlay.cpp) $(if $(filter a8 hisi,$(CAMERA_BACKEND)),$(BACKEND_DIR)/isp.cpp) $(if $(filter hisi,$(CAMERA_BACKEND)),src/backends/mt11/overlay.cpp $(BACKEND_DIR)/ircut.cpp) $(if $(filter zr10,$(CAMERA_BACKEND)),src/compat/zr10_uclibc.cpp) $(if $(filter z1mini,$(CAMERA_BACKEND)),$(BACKEND_DIR)/glibc_compat.cpp $(BACKEND_DIR)/native.cpp))
+	$(BACKEND_DIR)/media.cpp $(BACKEND_DIR)/pipeline.cpp $(if $(filter rpi_libcam_caddx,$(CAMERA_BACKEND)),$(BACKEND_DIR)/jpeg.cpp) $(if $(filter a8 zr10,$(CAMERA_BACKEND)),src/backends/siyi/overlay.cpp) $(if $(filter a8 hisi,$(CAMERA_BACKEND)),$(BACKEND_DIR)/isp.cpp) $(if $(filter hisi,$(CAMERA_BACKEND)),src/backends/mt11/overlay.cpp $(BACKEND_DIR)/ircut.cpp $(BACKEND_DIR)/iris.cpp) $(if $(filter zr10,$(CAMERA_BACKEND)),src/compat/zr10_uclibc.cpp) $(if $(filter z1mini,$(CAMERA_BACKEND)),$(BACKEND_DIR)/glibc_compat.cpp $(BACKEND_DIR)/native.cpp))
 HISI_SDK_OBJECTS := $(if $(filter hisi,$(CAMERA_BACKEND)),$(patsubst %,build/hisi/sdk/sample_comm_%.o,sys isp vi vpss) \
 	build/hisi/sdk/imx678_cmos.o build/hisi/sdk/imx678_sensor_ctl.o build/hisi/sdk/sensor_stubs.o \
 	build/hisi/sdk/b040_compat.o)
@@ -490,11 +490,13 @@ tests/test_timezone: tests/test_timezone.cpp $(APCAM_HEADERS)
 	$(HOST_CXX) $(CPPFLAGS) $(APP_CXXFLAGS) -o $@ $<
 
 .PHONY: hisi-image-test
-hisi-image-test: tests/test_hisi_tuning tests/test_hisi_one_push tests/test_hisi_config tests/test_hisi_ircut
+hisi-image-test: tests/test_hisi_tuning tests/test_hisi_one_push tests/test_hisi_config tests/test_hisi_ircut \
+	tests/test_hisi_iris
 	./tests/test_hisi_tuning
 	./tests/test_hisi_one_push
 	./tests/test_hisi_config
 	./tests/test_hisi_ircut
+	./tests/test_hisi_iris
 
 tests/test_hisi_tuning: tests/test_hisi_tuning.cpp src/backends/hisi/image_tuning.h $(APCAM_HEADERS)
 	$(call progress,Linking $@)
@@ -507,6 +509,10 @@ tests/test_hisi_one_push: tests/test_hisi_one_push.cpp src/backends/hisi/one_pus
 tests/test_hisi_ircut: tests/test_hisi_ircut.cpp src/backends/hisi/ircut.cpp src/backends/hisi/ircut.h src/log.cpp include/camera_app/log.h
 	$(call progress,Linking $@)
 	$(HOST_CXX) -Iinclude $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $(filter %.cpp,$^) -lpthread
+
+tests/test_hisi_iris: tests/test_hisi_iris.cpp src/backends/hisi/iris.cpp src/backends/hisi/iris.h src/log.cpp include/camera_app/log.h ../include/apcam/hisi_firmware.h
+	$(call progress,Linking $@)
+	$(HOST_CXX) -I../include -Iinclude $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $(filter %.cpp,$^)
 
 tests/test_hisi_config: tests/test_hisi_config.cpp src/config.cpp include/camera_app/config.h $(APCAM_HEADERS)
 	$(call progress,Linking $@)

@@ -14,5 +14,7 @@ td_s32 ca_hisi_apply_white_balance(const struct ca_config *config);
 td_s32 ca_hisi_white_balance_gains(td_u16 *red, td_u16 *green, td_u16 *blue);
 /* manual gains, green on Gr and Gb, or auto keeping its calibration */
 td_s32 ca_hisi_set_white_balance_gains(bool manual, td_u16 red, td_u16 green, td_u16 blue);
+/* auto DC iris on PWM0 (iris.h sets up the PWM); only once the ISP runs */
+td_s32 ca_hisi_enable_dc_iris(void);
 
 #endif

@@ -206,6 +206,26 @@ td_s32 ca_hisi_set_white_balance_gains(bool manual, td_u16 red, td_u16 green, td
     return ss_mpi_isp_set_wb_attr(CA_HISI_PIPE, &attr);
 }
 
+// the settings the vendor firmware uses on the U35.5 board
+td_s32 ca_hisi_enable_dc_iris(void)
+{
+    ot_isp_iris_attr iris;
+    td_s32 result = ss_mpi_isp_get_iris_attr(CA_HISI_PIPE, &iris);
+    if (result != TD_SUCCESS) return result;
+    iris.enable = TD_TRUE;
+    iris.op_type = OT_OP_MODE_AUTO;
+    iris.iris_type = OT_ISP_IRIS_TYPE_DC;
+    iris.iris_status = OT_ISP_IRIS_KEEP;
+    result = ss_mpi_isp_set_iris_attr(CA_HISI_PIPE, &iris);
+    if (result != TD_SUCCESS) return result;
+    ot_isp_dciris_attr dciris;
+    result = ss_mpi_isp_get_dciris_attr(CA_HISI_PIPE, &dciris);
+    if (result != TD_SUCCESS) return result;
+    dciris.min_pwm_duty = 10U;
+    dciris.kp = 7000;
+    return ss_mpi_isp_set_dciris_attr(CA_HISI_PIPE, &dciris);
+}
+
 static td_s32 set_colour_matrices(ot_vi_pipe pipe, enum ca_water colour)
 {
     const ca_hisi_tuning::Water &water = ca_hisi_tuning::waters[colour == CA_WATER_BLUE ? 1 : 0];

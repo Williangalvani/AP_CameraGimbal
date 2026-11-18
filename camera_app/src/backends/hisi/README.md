@@ -83,6 +83,19 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
 - **IR-cut**: a two-wire motor on sysfs GPIO 72 (day, filter in) and 73
   (night). `ircut.cpp` pulses day once per process from a detached thread at
   media start-up; a missing sysfs GPIO is logged and ignored.
+- **DC iris** (U35.5 board, device code 19/2/51, only): the lens has a DC iris
+  on PWM0 that stays shut, so the picture is black, until something drives it.
+  The behaviour is matched to the vendor firmware by experiment. Before VI/ISP
+  start-up `iris.cpp` sets the PWM clock enable (low byte of `0x11014598` to
+  `0x10`, upper bits kept) and muxes pad `0x10260058` to PWM0 (`0x1105`, against
+  `0x1200` otherwise) through `/dev/mem`. Once the ISP runs, `isp.cpp` turns on
+  the ISP's auto DC iris (`min_pwm_duty` 10, `kp` 7000, the rest left at the
+  SDK defaults), and the ISP then drives PWM0 through `/dev/pwm` (period 1000;
+  the vendor firmware was measured holding duty 950). The board is told from
+  `/appfs/fconfigs/param/updatetype.ini`: any other device code, or no file,
+  leaves the pins and the ISP alone, as on the MAIN V9 (19/2/35) bench camera.
+  The start-up log says whether the DC iris was enabled or skipped, and why. A
+  register or ISP failure is logged and the video starts anyway.
 - Overlay reuses `mt11/overlay.cpp` (generic `ss_mpi_rgn`); exposure and image
   controls are mt11's ISP calls on pipe 0, except metering. Of the 15x17 AE
   zones, `center` weights the middle 5x5 by 8 against 1 elsewhere, and
@@ -105,6 +118,8 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   reference board value; the vendor loads `sys_config.ko ... board=dmeb`. The
   `/dev/i2c-2` and `/dev/i2c-7` strings in `xipc` belong to its GM7122 CVBS
   encoder, not the sensor.
+- `CAMERA_APP_DC_IRIS=1` or `0`: forces the DC iris on or off whatever the
+  device code says. Unset, empty or any other value leaves it to the board.
 
 ## Status
 Runs on the camera in place of `xipc`: 4K30 H.264 on RTSP `/video1` and the
