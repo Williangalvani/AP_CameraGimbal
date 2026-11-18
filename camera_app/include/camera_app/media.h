@@ -89,13 +89,22 @@ enum ca_wb_water {
     CA_WB_WATER_BLUE = 2,
 };
 struct ca_wb_gains { unsigned red, green, blue; };   /* 1/256 */
+/* why a one-push that did not converge stopped */
+enum ca_wb_stop {
+    CA_WB_STOP_LIMIT = 0,
+    /* a gain at the end of its range, with the channel still off target */
+    CA_WB_STOP_GAIN_RANGE,
+    /* the centre of the picture too dark to balance */
+    CA_WB_STOP_TOO_DARK,
+};
 struct ca_wb_one_push {
     struct ca_wb_gains gains;
     /* frames measured, and the most allowed */
     unsigned iterations, limit;
-    /* false when it stopped at the limit; the gains are still applied */
+    /* false when it stopped short (see stop); the gains are still applied */
     bool converged;
     unsigned elapsed_ms;
+    enum ca_wb_stop stop;
 };
 /* Starts a one-push in the background, which leaves its gains applied as
  * manual white balance but not saved. EBUSY while one runs. */

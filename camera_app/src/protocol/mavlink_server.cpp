@@ -2621,7 +2621,8 @@ static void white_balance_command(struct ca_mavlink_server *server, uint64_t now
 }
 
 /* At the iteration limit the gains reached are kept, as the factory firmware
- * does, and reported as set. */
+ * does, and reported as set; likewise when a gain reaches the end of its range
+ * or the picture is too dark. */
 static void finish_white_balance(struct ca_mavlink_server *server)
 {
     struct ca_wb_one_push result;
@@ -2639,6 +2640,14 @@ static void finish_white_balance(struct ca_mavlink_server *server)
         if (result.converged) {
             snprintf(message, sizeof(message), "White balance set: R %.2f G %.2f B %.2f after %u iterations",
                      red, green, blue, result.iterations);
+        } else if (result.stop == CA_WB_STOP_GAIN_RANGE) {
+            snprintf(message, sizeof(message),
+                     "White balance set: R %.2f G %.2f B %.2f; stopped after %u iterations with a gain "
+                     "at the end of its range", red, green, blue, result.iterations);
+        } else if (result.stop == CA_WB_STOP_TOO_DARK) {
+            snprintf(message, sizeof(message),
+                     "White balance set: R %.2f G %.2f B %.2f; the picture was too dark to balance",
+                     red, green, blue);
         } else {
             snprintf(message, sizeof(message),
                      "White balance set: R %.2f G %.2f B %.2f; stopped at the %u-iteration limit",

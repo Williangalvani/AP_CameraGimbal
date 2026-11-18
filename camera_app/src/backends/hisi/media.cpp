@@ -872,9 +872,22 @@ static int centre_means(ca_hisi_wb::Means *means)
 // like the factory firmware's, once per process
 static bool first_one_push = true;
 
+static const char *one_push_stop(ca_hisi_wb::Stop stop)
+{
+    switch (stop) {
+    case ca_hisi_wb::Stop::converged: return "converged";
+    case ca_hisi_wb::Stop::limit: return "stopped at the iteration limit";
+    case ca_hisi_wb::Stop::pinned: return "stopped: gain at the end of its range";
+    case ca_hisi_wb::Stop::too_dark: return "stopped: too dark";
+    case ca_hisi_wb::Stop::running: break;
+    }
+    return "stopped";
+}
+
 /* The factory firmware's one-push: see one_push_wb.h. The ISP lock is held
  * only for each ISP call, so other image controls keep working; one applied
- * meanwhile can change white balance for a frame before the next step. */
+ * meanwhile can change white balance for a frame before the next step. A gain
+ * the ISP refuses ends it, restoring the previous white balance. */
 int APC_Media_HiSi::one_push_white_balance(enum ca_wb_water water, struct ca_wb_one_push *result,
                                            const std::atomic<bool> &stop)
 {
@@ -911,37 +924,50 @@ int APC_Media_HiSi::one_push_white_balance(enum ca_wb_water water, struct ca_wb_
     Stepper stepper(water == CA_WB_WATER_BLUE ? Water::blue : Water::green, {red, green, blue}, first);
     ca_log("white balance: one-push %s water from R %u G %u B %u, at most %u iterations%s", name,
            red, green, blue, stepper.limit(), first ? " (first since start-up, from auto)" : "");
-    bool refused = false;
+    Gains accepted{red, green, blue};
+    Means first_means{}, last_means{};
     int error = 0;
-    while (!stepper.done() && error == 0) {
+    while (!stepper.done()) {
         if (stop) {
             error = ECANCELED;
             break;
         }
-        const Gains &step = stepper.gains();
+        const Gains step = stepper.gains();
         pthread_mutex_lock(&media->isp_lock);
         code = ca_hisi_set_white_balance_gains(true, (td_u16)step.red, (td_u16)step.green, (td_u16)step.blue);
         pthread_mutex_unlock(&media->isp_lock);
-        // the factory firmware keeps stepping past gains the ISP refuses
-        if (code != TD_SUCCESS && !refused) {
-            ca_log("white balance: ISP refused R %u G %u B %u (0x%x); continuing",
-                   step.red, step.green, step.blue, (unsigned)code);
-            refused = true;
+        if (code != TD_SUCCESS) {
+            ca_log("white balance: ISP refused R %u G %u B %u (0x%x); last accepted R %u G %u B %u",
+                   step.red, step.green, step.blue, (unsigned)code, accepted.red, accepted.green,
+                   accepted.blue);
+            error = EIO;
+            break;
         }
+        accepted = step;
         sleep_ms(settle_ms);
         Means means;
-        if (centre_means(&means) < 0) error = errno;
-        else stepper.measured(means);
+        if (centre_means(&means) < 0) {
+            error = errno;
+            break;
+        }
+        if (stepper.frames() == 0U) first_means = means;
+        last_means = means;
+        stepper.measured(means);
     }
     const unsigned elapsed = (unsigned)(monotonic_ms() - started);
+    char centre[64] = "no frame measured";
+    if (stepper.frames() > 0U) {
+        snprintf(centre, sizeof(centre), "centre R/G/B %u/%u/%u first, %u/%u/%u last", first_means.red,
+                 first_means.green, first_means.blue, last_means.red, last_means.green, last_means.blue);
+    }
     if (error != 0) {
         pthread_mutex_lock(&media->lock);
         pthread_mutex_lock(&media->isp_lock);
         code = ca_hisi_apply_white_balance(&media->config.settings);
         pthread_mutex_unlock(&media->isp_lock);
         pthread_mutex_unlock(&media->lock);
-        ca_log("white balance: one-push %s water stopped after %u iterations in %u ms: %s%s", name,
-               stepper.frames(), elapsed, strerror(error),
+        ca_log("white balance: one-push %s water stopped after %u iterations in %u ms: %s; %s%s", name,
+               stepper.frames(), elapsed, error == ECANCELED ? "cancelled" : strerror(error), centre,
                code == TD_SUCCESS ? "" : "; the previous white balance was not restored");
         errno = error;
         return -1;
@@ -953,12 +979,13 @@ int APC_Media_HiSi::one_push_white_balance(enum ca_wb_water water, struct ca_wb_
     code = ca_hisi_set_white_balance_gains(true, (td_u16)gains.red, (td_u16)gains.green, (td_u16)gains.blue);
     pthread_mutex_unlock(&media->isp_lock);
     if (code != TD_SUCCESS) ca_log("white balance: one-push gains not applied: 0x%x", (unsigned)code);
+    const enum ca_wb_stop reason = stepper.pinned() ? CA_WB_STOP_GAIN_RANGE
+        : stepper.too_dark() ? CA_WB_STOP_TOO_DARK : CA_WB_STOP_LIMIT;
     *result = {{gains.red, gains.green, gains.blue}, stepper.frames(), stepper.limit(),
-               stepper.converged(), elapsed};
+               stepper.converged(), elapsed, reason};
     ca_log("white balance: one-push %s water %s after %u iterations in %u ms: R %u G %u B %u "
-           "(4K Cam Manager %u/%u/%u)", name,
-           stepper.converged() ? "converged" : "stopped at the iteration limit", stepper.frames(),
-           elapsed, gains.red, gains.green, gains.blue, levels.red, levels.green, levels.blue);
+           "(4K Cam Manager %u/%u/%u); %s", name, one_push_stop(stepper.stop()), stepper.frames(),
+           elapsed, gains.red, gains.green, gains.blue, levels.red, levels.green, levels.blue, centre);
     return 0;
 }
 

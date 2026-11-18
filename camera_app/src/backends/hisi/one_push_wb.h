@@ -44,22 +44,41 @@ inline Levels levels(const Gains &gains)
             slider(gains.blue > 256U ? (gains.blue - 256U) >> 3 : 0U)};
 }
 
-/* Unsigned, as the factory firmware compares: a level below the tolerance
- * never counts as near and is stepped down unless clearly below. */
+/* The gains a step can reach: 1x up to the sliders' maximum, which the ISP
+ * also accepts (it takes 0 to 0xFFF). */
+constexpr uint32_t min_gain = 256U;
+constexpr uint32_t max_red = 255U * 15U + 256U;
+constexpr uint32_t max_green_blue = (255U + 32U) * 8U;
+/* below this on every channel's centre mean there is nothing to balance */
+constexpr uint32_t dark_level = 4U;
+
+/* Signed, unlike the factory firmware, which compares unsigned: there a level
+ * below the tolerance never counts as near, even when equal to the target. */
 inline bool near(uint32_t level, uint32_t target, uint32_t tolerance)
 {
-    return level + tolerance >= target && level - tolerance <= target;
+    const int64_t difference = (int64_t)level - (int64_t)target;
+    return (difference < 0 ? -difference : difference) <= (int64_t)tolerance;
 }
 
-inline uint32_t step(uint32_t level, uint32_t target, uint32_t tolerance, uint32_t fine, uint32_t coarse)
+/* for a level not near the target */
+inline int32_t step(uint32_t level, uint32_t target, uint32_t fine, uint32_t coarse)
 {
-    if (level + tolerance >= target) return 0U - fine;
-    return target - level > 30U ? coarse : fine;
+    if (level > target) return -(int32_t)fine;
+    return target - level > 30U ? (int32_t)coarse : (int32_t)fine;
 }
+
+enum class Stop { running, converged, limit, pinned, too_dark };
 
 /* Green water makes the centre grey: green stays at the auto gain, red is
  * stepped to the green level, then blue. Blue water keeps green and blue at
- * 1x, steps red to the blue level and then raises it by a fifth. */
+ * 1x, steps red to the blue level and then raises it by a fifth.
+ *
+ * Unlike the factory firmware, which wraps a gain stepped below 0 (and then
+ * sets gains the ISP refuses until the step limit), each step stops at
+ * min_gain and the channel's maximum. When a step would move a gain already
+ * there further out, no later step can help, so it stops pinned(). It also
+ * stops too_dark() on a frame whose centre is below dark_level on every
+ * channel, keeping the gains it has. */
 class Stepper {
 public:
     Stepper(Water water, const Gains &current, bool first)
@@ -71,37 +90,50 @@ public:
     unsigned frames() const { return _frames; }
     unsigned steps() const { return _steps; }
     unsigned limit() const { return _limit; }
-    bool converged() const { return _converged; }
-    bool done() const { return _converged || _steps >= _limit; }
+    Stop stop() const { return _stop; }
+    bool converged() const { return _stop == Stop::converged; }
+    bool pinned() const { return _stop == Stop::pinned; }
+    bool too_dark() const { return _stop == Stop::too_dark; }
+    bool done() const { return _stop != Stop::running; }
 
     /* a frame taken with gains() applied */
     void measured(const Means &means)
     {
         _frames++;
+        if (means.red < dark_level && means.green < dark_level && means.blue < dark_level) {
+            _stop = Stop::too_dark;
+            return;
+        }
+        bool moved;
         if (_water == Water::green) {
             if (!near(means.red, means.green, 8U)) {
-                _gains.red += step(means.red, means.green, 8U, 8U, 60U);
+                moved = move(_gains.red, max_red, step(means.red, means.green, 8U, 60U));
             } else if (!near(means.blue, means.green, 8U)) {
-                _gains.blue += step(means.blue, means.green, 8U, 8U, 60U);
+                moved = move(_gains.blue, max_green_blue, step(means.blue, means.green, 8U, 60U));
             } else {
-                _converged = true;
+                _stop = Stop::converged;
                 return;
             }
         } else if (!near(means.red, means.blue, 3U)) {
-            _gains.red += step(means.red, means.blue, 3U, 4U, 16U);
+            moved = move(_gains.red, max_red, step(means.red, means.blue, 4U, 16U));
         } else {
-            _converged = true;
+            _stop = Stop::converged;
             return;
         }
-        _steps++;
+        if (!moved) {
+            _stop = Stop::pinned;
+            return;
+        }
+        if (++_steps >= _limit) _stop = Stop::limit;
     }
 
     /* What one-push applies and saves. At the step limit that is the last
-     * step, which no frame has checked. */
+     * step, which no frame has checked. Too dark, red was never matched, so
+     * blue water's fifth is not added. */
     Levels result_levels() const
     {
         Gains result = _gains;
-        if (_water == Water::blue) {
+        if (_water == Water::blue && _stop != Stop::too_dark) {
             const double red = result.red * 1.2;
             result.red = red >= 4294967295.0 ? UINT32_MAX : (uint32_t)red;
         }
@@ -110,11 +142,21 @@ public:
     Gains result() const { return ca_hisi_wb::gains(result_levels()); }
 
 private:
+    /* false, leaving the gain, when it is already at the end of its range
+     * in the step's direction */
+    static bool move(uint32_t &gain, uint32_t max, int32_t delta)
+    {
+        if (delta < 0 ? gain <= min_gain : gain >= max) return false;
+        const int64_t moved = (int64_t)gain + delta;
+        gain = moved < (int64_t)min_gain ? min_gain : moved > (int64_t)max ? max : (uint32_t)moved;
+        return true;
+    }
+
     Water _water;
     unsigned _limit;
     Gains _gains;
     unsigned _frames = 0, _steps = 0;
-    bool _converged = false;
+    Stop _stop = Stop::running;
 };
 
 inline uint32_t rgb8(int value)

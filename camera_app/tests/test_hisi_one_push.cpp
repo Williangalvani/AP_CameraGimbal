@@ -84,10 +84,16 @@ static void test_green_steps()
     const Gains result = stepper.result();
     assert(result.red == 406U && result.green == 264U && result.blue == 456U);
 
-    // a level under the tolerance never counts as near
-    Stepper dark(Water::green, {300U, 256U, 300U}, false);
-    dark.measured({3U, 5U, 5U});
-    assert(dark.gains().red == 292U && !dark.done());
+    // a level under the tolerance is near an equal or close one (the factory
+    // firmware's unsigned compare would step red down here)
+    Stepper dim(Water::green, {300U, 256U, 300U}, false);
+    dim.measured({3U, 5U, 5U});
+    assert(dim.converged() && dim.steps() == 0U && dim.gains().red == 300U);
+    Stepper low(Water::green, {300U, 256U, 300U}, false);
+    low.measured({2U, 20U, 20U});
+    assert(low.gains().red == 308U && !low.done());
+    low.measured({30U, 20U, 20U});
+    assert(low.gains().red == 300U);
 }
 
 static void test_blue_steps()
@@ -112,15 +118,122 @@ static void test_blue_steps()
 
 static void test_limits()
 {
-    // no red at all: red climbs by 60 every step and never meets green
-    Stepper first = run(Water::green, {0U, 120U, 120U}, {256U, 256U, 256U}, true);
-    assert(!first.converged() && first.steps() == 300U && first.frames() == 300U && first.limit() == 300U);
-    assert(first.gains().red == 256U + 300U * 60U && first.gains().blue == 256U);
+    // red at 1/256 of green's level climbs by 8 a step, too slowly to get
+    // near green in 300 steps
+    Stepper first = run(Water::green, {1U, 25U, 25U}, {256U, 256U, 256U}, true);
+    assert(first.stop() == Stop::limit && first.done() && !first.converged());
+    assert(first.steps() == 300U && first.frames() == 300U && first.limit() == 300U);
+    assert(first.gains().red == 256U + 300U * 8U && first.gains().blue == 256U);
     const Gains capped = first.result();
-    assert(capped.red == 4081U && capped.green == 256U && capped.blue == 256U);
+    assert(capped.red == 2536U && capped.green == 256U && capped.blue == 256U);
 
-    Stepper later = run(Water::blue, {0U, 120U, 120U}, {256U, 256U, 256U}, false);
-    assert(!later.converged() && later.steps() == 100U && later.gains().red == 256U + 100U * 16U);
+    Stepper later = run(Water::blue, {1U, 120U, 25U}, {256U, 256U, 256U}, false);
+    assert(later.stop() == Stop::limit && later.steps() == 100U && later.gains().red == 256U + 100U * 4U);
+}
+
+static void test_dark()
+{
+    for (const Means dark : {Means{0U, 0U, 0U}, Means{3U, 3U, 3U}, Means{3U, 0U, 1U}}) {
+        for (Water water : {Water::green, Water::blue}) {
+            for (bool first : {true, false}) {
+                const Gains start{700U, 300U, 500U};
+                Stepper stepper(water, start, first);
+                const Gains before = stepper.gains();
+                stepper.measured(dark);
+                assert(stepper.too_dark() && stepper.done() && !stepper.converged() && !stepper.pinned());
+                assert(stepper.steps() == 0U && stepper.frames() == 1U);
+                assert(stepper.gains().red == before.red && stepper.gains().green == before.green &&
+                       stepper.gains().blue == before.blue);
+                // saved as they were, without blue water's fifth
+                const Levels saved = stepper.result_levels();
+                assert(saved.red == (unsigned)((700U - 256U) / 15U * 0.95));
+            }
+        }
+    }
+    // a black scene stops on the first frame and never wraps a gain
+    Stepper black = run(Water::green, {0U, 0U, 0U}, {256U, 256U, 256U}, true);
+    assert(black.too_dark() && black.frames() == 1U && black.gains().red == 256U);
+    // one channel at the floor is not too dark
+    Stepper one(Water::green, {256U, 256U, 256U}, false);
+    one.measured({0U, 4U, 0U});
+    assert(one.converged());
+}
+
+static void test_pinned()
+{
+    // red at 1/20 of green reaches 159 at most, so red climbs by 60 to its
+    // maximum and then has nowhere to go
+    Stepper red = run(Water::green, {10U, 200U, 200U}, {256U, 256U, 256U}, true);
+    assert(red.pinned() && red.done() && !red.converged());
+    assert(red.gains().red == max_red && red.gains().blue == 256U);
+    assert(red.steps() == 64U && red.frames() == 65U);
+    // saved 5% short
+    assert(red.result().red == 3886U);
+
+    // red above green even at 1x
+    Stepper high = run(Water::green, {200U, 100U, 100U}, {264U, 256U, 256U}, false);
+    assert(high.pinned() && high.gains().red == min_gain && high.steps() == 1U);
+
+    // blue clipped high: red stepped to its maximum in blue water
+    Stepper blue = run(Water::blue, {5U, 0U, 250U}, {256U, 256U, 256U}, true);
+    assert(blue.pinned() && blue.gains().red == max_red && blue.steps() < 300U);
+    assert(blue.result().red == 4081U);
+
+    // blue in green water, after red has matched
+    Stepper gb = run(Water::green, {100U, 100U, 2U}, {256U, 256U, 256U}, true);
+    assert(gb.pinned() && gb.gains().blue == max_green_blue && gb.gains().red == 256U);
+    assert(gb.steps() < 300U);
+
+    // a start already past the maximum, stepping further out
+    Stepper past(Water::green, {4090U, 256U, 256U}, false);
+    past.measured({10U, 100U, 100U});
+    assert(past.pinned() && past.gains().red == 4090U && past.steps() == 0U);
+}
+
+/* xorshift, so the scenes are the same on every run */
+static uint32_t next(uint32_t &state)
+{
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+static void test_any_scene()
+{
+    uint32_t state = 0x1234567U;
+    const auto in = [&](uint32_t low, uint32_t high) { return low + next(state) % (high - low + 1U); };
+    unsigned stops[5] = {};
+    for (unsigned scene = 0; scene < 20000U; scene++) {
+        // every eighth scene dark
+        const uint32_t top = scene % 8U == 0U ? 3U : 255U;
+        Sensor sensor{in(0U, top), in(0U, top), in(0U, top)};
+        sensor.lag = (scene & 1U) != 0U;
+        const Water water = (scene & 2U) != 0U ? Water::blue : Water::green;
+        const bool first = (scene & 4U) != 0U;
+        const Gains start{in(min_gain, max_red), in(min_gain, max_green_blue), in(min_gain, max_green_blue)};
+        Stepper stepper(water, start, first);
+        sensor.shown = start;
+        unsigned frames = 0;
+        while (!stepper.done()) {
+            const Gains &applied = stepper.gains();
+            assert(applied.red >= min_gain && applied.red <= max_red);
+            assert(applied.green >= min_gain && applied.green <= max_green_blue);
+            assert(applied.blue >= min_gain && applied.blue <= max_green_blue);
+            stepper.measured(sensor.frame(applied));
+            assert(++frames <= stepper.limit());
+        }
+        assert(stepper.steps() <= stepper.limit() && stepper.frames() == frames);
+        assert(stepper.stop() != Stop::running);
+        stops[(int)stepper.stop()]++;
+        const Gains result = stepper.result();
+        assert(result.red >= min_gain && result.red <= max_red);
+        assert(result.green >= min_gain && result.green <= max_green_blue);
+        assert(result.blue >= min_gain && result.blue <= max_green_blue);
+    }
+    // every way of stopping is reached
+    assert(stops[(int)Stop::converged] && stops[(int)Stop::limit] && stops[(int)Stop::pinned] &&
+           stops[(int)Stop::too_dark]);
 }
 
 static void test_convergence()
@@ -130,11 +243,18 @@ static void test_convergence()
         for (Sensor scene : scenes) {
             scene.lag = lag;
             Stepper green = run(Water::green, scene, {256U, 256U, 256U}, false);
-            assert(green.converged() && green.steps() < 100U);
             Sensor check = scene;
             check.lag = false;
             const Means grey = check.frame(green.gains());
-            assert(near(grey.red, grey.green, 8U) && near(grey.blue, grey.green, 8U));
+            // blue brighter than green at 1x stops at 1x, the least the
+            // sliders save, with red matched
+            if (scene.blue > scene.green + 8U) {
+                assert(green.pinned() && green.gains().blue == 256U && green.steps() < 100U);
+                assert(near(grey.red, grey.green, 8U));
+            } else {
+                assert(green.converged() && green.steps() < 100U);
+                assert(near(grey.red, grey.green, 8U) && near(grey.blue, grey.green, 8U));
+            }
 
             Stepper blue = run(Water::blue, scene, {256U, 256U, 256U}, false);
             assert(blue.converged() && blue.steps() < 100U);
@@ -194,6 +314,9 @@ int main()
     test_green_steps();
     test_blue_steps();
     test_limits();
+    test_dark();
+    test_pinned();
+    test_any_scene();
     test_convergence();
     test_centre_means();
     puts("test_hisi_one_push: ok");

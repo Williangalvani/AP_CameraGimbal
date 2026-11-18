@@ -614,7 +614,12 @@ each is within 8 of green; 2 "blue water" keeps green and blue at 1×, moves red
 until it is within 3 of blue, and saves 1.2× that red. The first one-push since
 camera-app started begins from auto white balance and allows 300 steps (about
 20 s); later ones start from the current gains and allow 100. At the limit it
-keeps the gains it reached. It runs in the background and always reads 0.
+keeps the gains it reached. Each step stays between 1× and the sliders' maximum
+(red 4081, green and blue 2296); when a gain at either end would have to go
+further, it stops there, and when the centre is below 4 on every channel it
+stops at once, keeping the gains it has. If the ISP refuses a gain, it stops
+and restores the previous white balance. It runs in the background and always
+reads 0.
 
 For the resolution parameters, MT11 and A8 support values 0, 1 and 2;
 ZR10 supports 0, 1 and 3. Z1-Mini supports only 1 for streaming and 1 or 2
