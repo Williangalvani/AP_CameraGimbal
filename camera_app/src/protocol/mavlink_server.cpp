@@ -2622,7 +2622,7 @@ static void white_balance_command(struct ca_mavlink_server *server, uint64_t now
 
 /* At the iteration limit the gains reached are kept, as the factory firmware
  * does, and reported as set; likewise when a gain reaches the end of its range
- * or the picture is too dark. */
+ * (too dark a picture, with nothing to balance, leaves it unchanged). */
 static void finish_white_balance(struct ca_mavlink_server *server)
 {
     struct ca_wb_one_push result;
@@ -2631,7 +2631,9 @@ static void finish_white_balance(struct ca_mavlink_server *server)
     if (!server->wb_running || !ca_media_poll_white_balance(server->media, &result, &error)) return;
     server->wb_running = false;
     bool ok = false;
-    if (error != 0) {
+    if (error == ENODATA) {
+        snprintf(message, sizeof(message), "White balance unchanged: the picture was too dark to balance");
+    } else if (error != 0) {
         snprintf(message, sizeof(message), "White balance not measured: %s", strerror(error));
     } else if (save_white_balance(server, result.gains, message, sizeof(message)) == 0) {
         ok = true;
@@ -2644,10 +2646,6 @@ static void finish_white_balance(struct ca_mavlink_server *server)
             snprintf(message, sizeof(message),
                      "White balance set: R %.2f G %.2f B %.2f; stopped after %u iterations with a gain "
                      "at the end of its range", red, green, blue, result.iterations);
-        } else if (result.stop == CA_WB_STOP_TOO_DARK) {
-            snprintf(message, sizeof(message),
-                     "White balance set: R %.2f G %.2f B %.2f; the picture was too dark to balance",
-                     red, green, blue);
         } else {
             snprintf(message, sizeof(message),
                      "White balance set: R %.2f G %.2f B %.2f; stopped at the %u-iteration limit",

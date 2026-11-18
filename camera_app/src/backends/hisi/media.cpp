@@ -960,6 +960,8 @@ int APC_Media_HiSi::one_push_white_balance(enum ca_wb_water water, struct ca_wb_
         snprintf(centre, sizeof(centre), "centre R/G/B %u/%u/%u first, %u/%u/%u last", first_means.red,
                  first_means.green, first_means.blue, last_means.red, last_means.green, last_means.blue);
     }
+    // nothing to balance: leave white balance as it was and save nothing
+    if (error == 0 && stepper.too_dark()) error = ENODATA;
     if (error != 0) {
         pthread_mutex_lock(&media->lock);
         pthread_mutex_lock(&media->isp_lock);
@@ -967,7 +969,7 @@ int APC_Media_HiSi::one_push_white_balance(enum ca_wb_water water, struct ca_wb_
         pthread_mutex_unlock(&media->isp_lock);
         pthread_mutex_unlock(&media->lock);
         ca_log("white balance: one-push %s water stopped after %u iterations in %u ms: %s; %s%s", name,
-               stepper.frames(), elapsed, error == ECANCELED ? "cancelled" : strerror(error), centre,
+               stepper.frames(), elapsed, error == ECANCELED ? "cancelled" : error == ENODATA ? "too dark to balance" : strerror(error), centre,
                code == TD_SUCCESS ? "" : "; the previous white balance was not restored");
         errno = error;
         return -1;
@@ -979,8 +981,7 @@ int APC_Media_HiSi::one_push_white_balance(enum ca_wb_water water, struct ca_wb_
     code = ca_hisi_set_white_balance_gains(true, (td_u16)gains.red, (td_u16)gains.green, (td_u16)gains.blue);
     pthread_mutex_unlock(&media->isp_lock);
     if (code != TD_SUCCESS) ca_log("white balance: one-push gains not applied: 0x%x", (unsigned)code);
-    const enum ca_wb_stop reason = stepper.pinned() ? CA_WB_STOP_GAIN_RANGE
-        : stepper.too_dark() ? CA_WB_STOP_TOO_DARK : CA_WB_STOP_LIMIT;
+    const enum ca_wb_stop reason = stepper.pinned() ? CA_WB_STOP_GAIN_RANGE : CA_WB_STOP_LIMIT;
     *result = {{gains.red, gains.green, gains.blue}, stepper.frames(), stepper.limit(),
                stepper.converged(), elapsed, reason};
     ca_log("white balance: one-push %s water %s after %u iterations in %u ms: R %u G %u B %u "

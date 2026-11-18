@@ -94,8 +94,6 @@ enum ca_wb_stop {
     CA_WB_STOP_LIMIT = 0,
     /* a gain at the end of its range, with the channel still off target */
     CA_WB_STOP_GAIN_RANGE,
-    /* the centre of the picture too dark to balance */
-    CA_WB_STOP_TOO_DARK,
 };
 struct ca_wb_one_push {
     struct ca_wb_gains gains;
