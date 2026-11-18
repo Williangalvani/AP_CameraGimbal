@@ -322,6 +322,7 @@ struct Changes {
     Update updates[32];
     size_t count = 0;
     bool one_push = false;
+    bool restart = false;  // camera-app applies a codec only when it starts
 
     void set(const char *section, const char *key, const char *value)
     {
@@ -536,8 +537,10 @@ inline void venc_changes(const Field *fields, size_t count, const Stream &stream
                          const char *section, Changes &changes)
 {
     const Field *encode = find(fields, count, "encode_type");
-    if (encode != NULL && (encode->value == 1 || encode->value == 5) && (encode->value == 5) != stream.h265)
+    if (encode != NULL && (encode->value == 1 || encode->value == 5) && (encode->value == 5) != stream.h265) {
         changes.set(section, "codec", encode->value == 5 ? "h265" : "h264");
+        changes.restart = true;
+    }
 
     const Field *width = find(fields, count, "pic_width");
     const Field *height = find(fields, count, "pic_height");

@@ -156,9 +156,12 @@ static void test_replies()
     assert(contains(out, "<s:Value>s:Sender</s:Value><s:Subcode><s:Value>ter:NotAuthorized</s:Value>"));
 
     out.reset();
-    apc_onvif::device_information(out, {"RadCam", "HDIPC", "abc123<", "001122AABBCC", "IPCamera"});
-    assert(contains(out, "<tds:Manufacturer>RadCam</tds:Manufacturer><tds:Model>HDIPC</tds:Model>"));
-    assert(contains(out, "<tds:FirmwareVersion>abc123&lt;</tds:FirmwareVersion>"));
+    apc_onvif::device_information(out, {apc_onvif::manufacturer, apc_onvif::model,
+                                        APC_ONVIF_FIRMWARE_VERSION("abc123<"), "001122AABBCC",
+                                        apc_onvif::hardware_id});
+    // 4K Cam Manager's source name, and a firmware major of 99 (H.265 from 16)
+    assert(contains(out, "<tds:Manufacturer>IPCamera</tds:Manufacturer><tds:Model>HDIPC</tds:Model>"));
+    assert(contains(out, "<tds:FirmwareVersion>abc123&lt;_V99</tds:FirmwareVersion>"));
     assert(contains(out, "<tds:HardwareId>IPCamera</tds:HardwareId>"));
 
     out.reset();
@@ -215,7 +218,9 @@ static void write_replies(const char *dir)
                            "http://192.168.2.10/onvif/device_service");
     write_reply(dir, "probe", out);
     out.reset();
-    apc_onvif::device_information(out, {"RadCam", "HDIPC", "abc123", "001122AABBCC", "IPCamera"});
+    apc_onvif::device_information(out, {apc_onvif::manufacturer, apc_onvif::model,
+                                        APC_ONVIF_FIRMWARE_VERSION("abc123"), "001122AABBCC",
+                                        apc_onvif::hardware_id});
     write_reply(dir, "device-information", out);
     out.reset();
     apc_onvif::services(out, "http://192.168.2.10/onvif/device_service");

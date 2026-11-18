@@ -302,6 +302,15 @@ struct DeviceInformation {
     const char *hardware_id;
 };
 
+/* MCM names the source "{model} - {manufacturer} ({hardware_id})", and 4K Cam
+ * Manager only adopts names it knows: "HDIPC - IPCamera (IPCamera)" is known
+ * from 0.3.2 on. It offers H.265 from firmware V16, the digits after the last "_V"
+ * of the firmware version (the vendor's "..._V16(260305)"). */
+constexpr char manufacturer[] = "IPCamera";
+constexpr char model[] = "HDIPC";
+constexpr char hardware_id[] = "IPCamera";
+#define APC_ONVIF_FIRMWARE_VERSION(git_hash) git_hash "_V99"
+
 inline void device_information(APC_StringBuffer &out, const DeviceInformation &info)
 {
     envelope_begin(out);

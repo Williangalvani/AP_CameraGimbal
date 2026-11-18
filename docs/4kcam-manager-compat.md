@@ -7,8 +7,8 @@ through MAVLink Camera Manager (MCM), creates its streams, and gives Cockpit a
 widget, a one-push white-balance action and joystick suggestions.
 
 This firmware answers the same discovery, ONVIF and control requests as the
-vendor's `xipc`, so the stock extension (0.4.x) and MCM work unchanged. Nothing
-needs configuring in Cockpit.
+vendor's `xipc`, so the stock extension (0.3.2, 0.4.1 and master) and MCM work
+unchanged. Nothing needs configuring in Cockpit.
 
 The extension also drives focus, zoom and tilt, but through autopilot servo
 outputs (`SERVOn_FUNCTION` and a generated Lua script), not the camera. Those
@@ -22,7 +22,10 @@ From MCM, by ONVIF:
    scopes give the name `hd` and the hardware `HW0100302` or `HW20200610`.
 2. **`GetDeviceInformation`**: MCM names the video source
    `{model} - {manufacturer} ({hardware_id})`, and the extension wants
-   `HDIPC - RadCam (IPCamera)`.
+   `HDIPC - IPCamera (IPCamera)` or `UnderwaterCam - IPCamera (UnderwaterCam)`;
+   0.4.1 and later also take `HDIPC - RadCam (IPCamera)`. From master, it
+   offers H.265 only when the `FirmwareVersion` has `_V<n>` with n at least 16
+   (the vendor's `..._V16(260305)`), reading the digits after the last `_V`.
 3. **`GetServices`**, then **`GetProfiles`** and **`GetStreamUri`** on the media
    service. Each profile needs a video encoder configuration. MCM probes the
    RTSP URL itself for the codec.
@@ -79,7 +82,7 @@ match carries:
 | Operation | Reply |
 |---|---|
 | `GetSystemDateAndTime` | the camera's UTC time |
-| `GetDeviceInformation` | manufacturer `RadCam`, model `HDIPC`, firmware version the build hash, serial number the MAC, hardware ID `IPCamera` |
+| `GetDeviceInformation` | manufacturer `IPCamera`, model `HDIPC`, firmware version the build hash followed by `_V99`, serial number the MAC, hardware ID `IPCamera`: the source name `HDIPC - IPCamera (IPCamera)`, which every extension version takes, and firmware V99, so the extension offers H.265 |
 | `GetServices` | device management (ver10) and media (ver10), both at `http://<address>/onvif/device_service` |
 | `GetProfiles` | `main` and `sub`: video encoder configuration from `[stream.main]` / `[stream.sub]` (codec, resolution, frame rate, bitrate) |
 | `GetStreamUri` | `rtsp://<address>:<CAMERA_APP_RTSP_PORT or 8554>/stream_0` or `/stream_1`, the vendor's paths; the extension only streams a source ending in `stream_0`. The hisi camera-app serves them alongside `/video1` and `/video2`. |
@@ -156,7 +159,7 @@ Field mapping:
 | `low_farme_rate` 0 / 1 (`setImageAdjustmentEx`) | `image.slow_shutter`: auto exposure may lower the frame rate in the dark |
 | `mirror`, `flip` | `mount.orientation`, which only has a 180° rotation: reads report both as 1 for `inverted` and both as 0 otherwise. The extension sends one of them alone; any one sent that differs from the current state sets `inverted` (1) or `upright` (0), and otherwise nothing changes |
 | `set_default` 1 (`setImageAdjustment`) | resets every `[image]` key above that `setImageAdjustment` maps (not `slow_shutter` or orientation) to the web's defaults; the request's other fields are ignored. The extension sends it for the image parameters' **Restore defaults** and with its recommended settings |
-| `encode_type` 1 / 5 | `codec` `h264` / `h265` |
+| `encode_type` 1 / 5 | `codec` `h264` / `h265`; a change restarts camera-app (below) |
 | `pic_width` × `pic_height`, `pixel_list` | `resolution`, from the target's resolution list: the requested size, else one of the same height (the extension's recommended sub stream is 640×480) |
 | `bitrate` (kbps) | `[stream.main] bitrate_kbps`, 1–50000. Reads of 0 (automatic), and of the sub stream, report the automatic rate for the resolution |
 | `frame_rate` | `[stream.main] frame_rate`, 5–30; the sub stream reports 30 |
@@ -169,6 +172,15 @@ they apply on the extension's **Save and restart camera**, which sends
 for the camera to stop answering, up to its 60 s offline timeout, and since the
 web stays up during a camera-app restart it always waits the full 60 s
 before it carries on.
+
+A `setVencConf` that changes the codec of channel 0 or 1 also restarts
+camera-app itself once the change is saved, as `restart` does, and replies
+once it is back (`code` −1 and the error if the restart fails, including
+`restart in progress`). The vendor switches the encoder live, and the
+extension's H.265 toggle (master) sends only `setVencConf` and then has MCM
+recreate the stream. Where the extension's stream settings send `restart`
+after `setVencConf`, as in every version, a codec change restarts camera-app
+twice. Other `setVencConf` changes don't restart.
 
 ### Settings
 

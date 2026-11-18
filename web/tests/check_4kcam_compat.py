@@ -151,7 +151,8 @@ def check_onvif(args, check):
     status, text = soap(args, '<tds:GetDeviceInformation/>', 'wrong')
     check(status == 400 and 'ter:NotAuthorized' in text, 'GetDeviceInformation with a wrong password is NotAuthorized')
     status, text = soap(args, '<tds:GetDeviceInformation/>', args.password)
-    check(status == 200 and '<tds:Manufacturer>RadCam</tds:Manufacturer><tds:Model>HDIPC</tds:Model>' in text
+    check(status == 200 and '<tds:Manufacturer>IPCamera</tds:Manufacturer><tds:Model>HDIPC</tds:Model>' in text
+          and '_V99</tds:FirmwareVersion>' in text
           and '<tds:HardwareId>IPCamera</tds:HardwareId>' in text, 'GetDeviceInformation')
     save(args, 'device-information', text)
     status, text = soap(args, '<tds:GetServices><tds:IncludeCapability>false</tds:IncludeCapability></tds:GetServices>',

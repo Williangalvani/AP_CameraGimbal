@@ -5203,6 +5203,7 @@ static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const
     if (code == 0 && changes.one_push &&
         !start_white_balance(image.blue_water ? '2' : '1', message, sizeof(message))) code = -1;
     if (lock >= 0) close(lock);
+    if (code == 0 && changes.restart && !restart_camera(message, sizeof(message), true)) code = -1;
     if (code != 0) log_message("4K Cam Manager %s from %s failed: %s", logged_name, peer, message);
     else if (changes.count > 0 || changes.one_push) log_message("4K Cam Manager %s by %s", logged_name, peer);
 
@@ -5250,7 +5251,9 @@ static void handle_onvif(int fd, const APC_HTTPRequest *request)
         char serial[13];
         (void)eth0_mac(mac);
         snprintf(serial, sizeof(serial), "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        apc_onvif::device_information(reply, {"RadCam", "HDIPC", CA_FIRMWARE_GIT_HASH, serial, "IPCamera"});
+        apc_onvif::device_information(reply, {apc_onvif::manufacturer, apc_onvif::model,
+                                              APC_ONVIF_FIRMWARE_VERSION(CA_FIRMWARE_GIT_HASH), serial,
+                                              apc_onvif::hardware_id});
     } else if (!strcmp(operation, "GetServices")) {
         snprintf(text, sizeof(text), "http://%s/onvif/device_service", address);
         apc_onvif::services(reply, text);

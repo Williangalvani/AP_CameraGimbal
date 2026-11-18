@@ -335,11 +335,28 @@ static void test_venc()
     assert(changes.count == 3 && !strcmp(change(changes, "codec")->value, "h265"));
     assert(!strcmp(change(changes, "resolution")->value, "1920x1080"));
     assert(!strcmp(change(changes, "frame_rate")->value, "25"));
+    assert(changes.restart);
+
+    // a codec change restarts camera-app, either way; the current codec or another type doesn't
+    Stream h265 = main_stream();
+    h265.h265 = true;
+    changes = Changes();
+    assert(parse("{\"channel\":0,\"encode_type\":1}", fields, &count));
+    venc_changes(fields, count, h265, main_names, 5, "stream.main", changes);
+    assert(changes.count == 1 && !strcmp(change(changes, "codec")->value, "h264") && changes.restart);
+    changes = Changes();
+    venc_changes(fields, count, main_stream(), main_names, 5, "stream.main", changes);
+    assert(changes.count == 0 && !changes.restart);
+    changes = Changes();
+    assert(parse("{\"channel\":0,\"encode_type\":2}", fields, &count));
+    venc_changes(fields, count, main_stream(), main_names, 5, "stream.main", changes);
+    assert(changes.count == 0 && !changes.restart);
 
     changes = Changes();
     assert(parse("{\"bitrate\":30000,\"frame_rate\":60}", fields, &count));
     venc_changes(fields, count, main_stream(), main_names, 5, "stream.main", changes);
     assert(changes.count == 1 && !strcmp(change(changes, "bitrate_kbps")->value, "20000"));
+    assert(!changes.restart);
 
     Stream at_max = main_stream();
     at_max.bitrate_kbps = 20000;
@@ -369,6 +386,12 @@ static void test_venc()
     assert(parse("{\"channel\":1,\"pic_width\":640,\"pic_height\":480,\"bitrate\":32,\"frame_rate\":5}", fields, &count));
     venc_changes(fields, count, sub, sub_names, 3, "stream.sub", changes);
     assert(changes.count == 1 && !strcmp(change(changes, "resolution")->value, "854x480"));
+    assert(!strcmp(changes.updates[0].section, "stream.sub") && !changes.restart);
+
+    changes = Changes();
+    assert(parse("{\"channel\":1,\"encode_type\":5}", fields, &count));
+    venc_changes(fields, count, sub, sub_names, 3, "stream.sub", changes);
+    assert(changes.count == 1 && !strcmp(change(changes, "codec")->value, "h265") && changes.restart);
     assert(!strcmp(changes.updates[0].section, "stream.sub"));
 }
 
