@@ -322,7 +322,7 @@ struct Changes {
     Update updates[32];
     size_t count = 0;
     bool one_push = false;
-    bool restart = false;  // camera-app applies a codec only when it starts
+    bool restart = false;  // a codec change: restart camera-app if it doesn't acknowledge switching live
 
     void set(const char *section, const char *key, const char *value)
     {
@@ -379,13 +379,20 @@ inline void image_adjustment_ex(APC_StringBuffer &out, const Image &image)
     append_switches(out, image, ex_switches);
 }
 
+/* The encoder's fixed profile (camera_app/src/backends/hisi/pipeline.cpp) in
+ * the extension's enum, Baseline 0, Main 1, High 2: H.264 High, H.265 Main. */
+inline int encode_profile(const Stream &stream)
+{
+    return stream.h265 ? 1 : 2;
+}
+
 /* channel is the extension's 0–2 enum and the sizes and rates its u16s, so
  * the reply always deserializes. */
 inline void venc(APC_StringBuffer &out, long channel, const Stream &stream,
                  const char *const *resolutions, size_t count)
 {
-    out.appendf("\"channel\":%ld,\"encode_type\":%d,\"encode_profile\":2,\"pixel_list\":[",
-                clamp(channel, 0, 2), stream.h265 ? 5 : 1);
+    out.appendf("\"channel\":%ld,\"encode_type\":%d,\"encode_profile\":%d,\"pixel_list\":[",
+                clamp(channel, 0, 2), stream.h265 ? 5 : 1, encode_profile(stream));
     bool first = true;
     for (size_t i = 0; i < count; i++) {
         unsigned width, height;
@@ -536,6 +543,7 @@ inline void venc_changes(const Field *fields, size_t count, const Stream &stream
                          const char *const *resolutions, size_t resolution_count,
                          const char *section, Changes &changes)
 {
+    // encode_profile is ignored: the encoder's profile is fixed (encode_profile())
     const Field *encode = find(fields, count, "encode_type");
     if (encode != NULL && (encode->value == 1 || encode->value == 5) && (encode->value == 5) != stream.h265) {
         changes.set(section, "codec", encode->value == 5 ? "h265" : "h264");

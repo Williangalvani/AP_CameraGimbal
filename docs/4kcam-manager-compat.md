@@ -160,14 +160,18 @@ Field mapping:
 | `mirror`, `flip` | `mount.orientation`, which only has a 180° rotation: reads report both as 1 for `inverted` and both as 0 otherwise. The extension sends one of them alone; any one sent that differs from the current state sets `inverted` (1) or `upright` (0), and otherwise nothing changes |
 | `set_default` 1 (`setImageAdjustment`) | resets every `[image]` key above that `setImageAdjustment` maps (not `slow_shutter` or orientation) to the web's defaults; the request's other fields are ignored. The extension sends it for the image parameters' **Restore defaults** and with its recommended settings |
 | `encode_type` 1 / 5 | `codec` `h264` / `h265`; camera-app switches a change live, and restarts only if it can't (below) |
+| `encode_profile` | the encoder's profile, which is fixed: H.264 High (2) and H.265 Main (1, the extension's Main). Sets are accepted and ignored |
 | `pic_width` × `pic_height`, `pixel_list` | `resolution`, from the target's resolution list: the requested size, else one of the same height (the extension's recommended sub stream is 640×480) |
 | `bitrate` (kbps) | `[stream.main] bitrate_kbps`, 1–50000. Reads of 0 (automatic), and of the sub stream, report the automatic rate for the resolution |
 | `frame_rate` | `[stream.main] frame_rate`, 5–30; the sub stream reports 30 |
 | `max_framerate` | 30 |
 | anything else, including `setImageAdjustmentEx`'s `set_default` | accepted and ignored; reads report the vendor's defaults |
 
-Resolution changes need camera-app to restart. As with the vendor, they
-apply on the extension's **Save and restart camera**, which sends `restart`. The reply comes once camera-app is back. The extension then waits
+camera-app applies a resolution change live too, reconfiguring its media
+pipeline as for a codec change (while it records, the change waits until
+recording stops); the web never restarts camera-app for one. As with the
+vendor, the extension follows its stream settings with **Save and restart
+camera**, which sends `restart`. The reply comes once camera-app is back. The extension then waits
 for the camera to stop answering, up to its 60 s offline timeout, and since the
 web stays up during a camera-app restart it always waits the full 60 s
 before it carries on.

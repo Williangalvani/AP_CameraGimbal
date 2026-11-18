@@ -14,6 +14,11 @@
 #define VI_VB_COUNT 6U
 #define VPSS_VB_COUNT 8U
 
+/* venc_attr.profile: H.264 0 Baseline, 1 Main, 2 High; H.265 0 Main.
+ * High matches the vendor firmware; web/APC_FourKCam.h reports these in getVencConf. */
+static const td_u32 ca_hisi_h264_profile_high = 2U;
+static const td_u32 ca_hisi_h265_profile_main = 0U;
+
 // the B040 IMX678 driver is 4-lane only
 sample_sns_type ca_hisi_sensor_type(void)
 {
@@ -136,7 +141,8 @@ void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
     attr->venc_attr.pic_width = width;
     attr->venc_attr.pic_height = height;
     attr->venc_attr.buf_size = OT_ALIGN_UP(width * height * 3U / 4U, 64U);
-    attr->venc_attr.profile = 0;
+    attr->venc_attr.profile =
+        codec == CA_VIDEO_H265 ? ca_hisi_h265_profile_main : ca_hisi_h264_profile_high;
     attr->venc_attr.is_by_frame = TD_TRUE;
     if (codec == CA_VIDEO_H265) {
         attr->venc_attr.h265_attr.rcn_ref_share_buf_en = TD_FALSE;

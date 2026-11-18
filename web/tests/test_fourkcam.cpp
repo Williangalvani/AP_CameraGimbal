@@ -337,7 +337,8 @@ static void test_venc()
     assert(!strcmp(change(changes, "frame_rate")->value, "25"));
     assert(changes.restart);
 
-    // a codec change restarts camera-app, either way; the current codec or another type doesn't
+    /* a codec change, either way, restarts camera-app unless it switches live;
+     * the current codec or another type doesn't */
     Stream h265 = main_stream();
     h265.h265 = true;
     changes = Changes();
@@ -351,6 +352,20 @@ static void test_venc()
     assert(parse("{\"channel\":0,\"encode_type\":2}", fields, &count));
     venc_changes(fields, count, main_stream(), main_names, 5, "stream.main", changes);
     assert(changes.count == 0 && !changes.restart);
+
+    // the encoder profile is fixed: any encode_profile is accepted and changes nothing
+    const char *const profile_requests[] = {"{\"channel\":0,\"encode_profile\":0}",
+                                            "{\"channel\":0,\"encode_profile\":1}",
+                                            "{\"channel\":0,\"encode_profile\":7}"};
+    const Stream profile_streams[] = {main_stream(), h265};
+    for (const char *request : profile_requests) {
+        for (const Stream &stream : profile_streams) {
+            changes = Changes();
+            assert(parse(request, fields, &count));
+            venc_changes(fields, count, stream, main_names, 5, "stream.main", changes);
+            assert(changes.count == 0 && !changes.restart);
+        }
+    }
 
     changes = Changes();
     assert(parse("{\"bitrate\":30000,\"frame_rate\":60}", fields, &count));
@@ -427,10 +442,18 @@ static void test_replies()
     venc(out, 0, main_stream(), main_names, 2);
     finish(out, -1, "say \"hi\"\\\n", {"m", "i", "p"});
     assert(strstr(out.data(), "{\"mirror\":1,\"flip\":1,\"onceAWB\":0,"));
+    // the encoder's profile in the extension's enum: H.264 High (2), H.265 Main (1)
+    assert(strstr(out.data(), "\"channel\":0,\"encode_type\":1,\"encode_profile\":2,"));
     assert(strstr(out.data(), "\"pixel_list\":[{\"width\":3840,\"height\":2160},{\"width\":1920,\"height\":1080}],"));
     assert(strstr(out.data(), "\"pic_width\":3840,\"pic_height\":2160,\"rc_mode\":1,\"bitrate\":12000,"
                               "\"max_framerate\":30,\"frame_rate\":30,\"gop\":60,"));
     assert(strstr(out.data(), "\"code\":-1,") && strstr(out.data(), "\"log\":\"say \\\"hi\\\"\\\\\\u000a\""));
+
+    out.reset();
+    Stream h265 = main_stream();
+    h265.h265 = true;
+    venc(out, 1, h265, main_names, 2);
+    assert(strstr(out.data(), "\"channel\":1,\"encode_type\":5,\"encode_profile\":1,"));
 
     // venc fields stay in the extension's types: channel 0–2, the rest u16
     out.reset();
