@@ -3,6 +3,7 @@
 from pathlib import Path
 import base64
 import fcntl
+import html
 import http.client
 import json
 import os
@@ -13,6 +14,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import urllib.parse
 
 repo = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='hisi-service-') as directory:
@@ -168,6 +170,7 @@ while :; do sleep 1; done
         'UPGRADE_LOCK_PATH': runtime / 'upgrade.lock',
         'USER_LOCK_PATH': runtime / 'users.lock',
         'SESSION_PATH': runtime / 'sessions', 'RUNTIME_DIR': runtime,
+        'HISI_UPDATE_TYPE_PATH': root / 'updatetype.ini',
     }
     subprocess.run(['c++', '-std=gnu++17', '-O2', '-Wno-missing-field-initializers',
                     '-Wno-address-of-packed-member', '-DAPCAM_TARGET=APCAM_TARGET_HISI',
@@ -553,6 +556,112 @@ while :; do sleep 1; done
         assert len(loads('sys_config')) == 1, 'drivers reloaded on restart'
         assert not (root / 'overlap').exists(), 'concurrent camera-app instances'
 
+        # Iris mode: without a working DC iris the row stays, disabled with a
+        # note. camera-app's <ready>.iris decides once the running instance
+        # wrote it; until then the device code does, as camera-app will.
+        wait_for(ready.exists, 'camera-app not ready for the iris checks')
+        app_pid = int(re.search(r'^pid=(\d+)$', ready.read_text(), re.M).group(1))
+        iris_file = runtime / 'camera-app.ready.iris'
+        update_type = root / 'updatetype.ini'
+
+        def iris_field():
+            page = web_request('/parameters')[1].decode()
+            start = page.index('<label for="iris_mode">')
+            return page[start:page.index('<div class=field>', start)]
+
+        def iris_status(pid=app_pid, dc_iris=1, active=0, requested=0, applied=0):
+            iris_file.write_text(f'pid={pid}\ndc_iris={dc_iris}\npriority_active={active}\n'
+                                 f'shutter_requested_us={requested}\nshutter_applied_us={applied}\n')
+
+        def device_code(platform):
+            update_type.write_text(f'[UPDATE_SET]\nDEV_TYPE = 19\nSDK_TYPE = 2\nPLATFORM_TYPE = {platform}\n')
+
+        note = 'Not available: this camera has no working DC iris.'
+
+        def disabled(field):
+            return '<select disabled required name="iris_mode"' in field and note in field
+
+        def enabled(field):
+            return '<select required name="iris_mode"' in field and note not in field
+
+        assert not iris_file.exists()
+        field = iris_field()
+        assert disabled(field) and f'title="{note}"' in field, field
+        device_code(51)
+        assert enabled(iris_field()), iris_field()
+        device_code(35)
+        assert disabled(iris_field()), iris_field()
+        # camera-app's word wins over the device code, but only from the running instance
+        iris_status(dc_iris=1)
+        assert enabled(iris_field()) and 'Applied shutter' not in iris_field(), iris_field()
+        iris_status(pid=app_pid + 100000, dc_iris=1)
+        assert disabled(iris_field()), iris_field()
+        device_code(51)
+        iris_status(dc_iris=0)
+        assert disabled(iris_field()), iris_field()
+        # the shutter iris priority applied, and why it is shorter than requested
+        iris_status(active=1, requested=83333, applied=33333)
+        field = iris_field()
+        assert enabled(field) and \
+            'Applied shutter: 1/30 s (requested 1/12 s, limited by the frame rate)' in field, field
+        iris_status(active=1, requested=16666, applied=16666)
+        field = iris_field()
+        assert 'Applied shutter: 1/60 s' in field and 'requested' not in field, field
+
+        def browser_form(page):
+            # what a browser submits: disabled controls are left out
+            page = page[page.index('<form method=post action=/parameters>'):]
+            page = page[:page.index('</form>')]
+            fields = {'csrf': re.search(r'name=csrf value="([a-f0-9]{64})"', page).group(1), 'action': 'save'}
+            for attributes, options in re.findall(r'<select ([^>]*)>(.*?)</select>', page, re.S):
+                if re.match(r'disabled\b', attributes):
+                    continue
+                selected = re.search(r'<option (?:value="([^"]*)" selected|selected value="([^"]*)")>', options)
+                name = re.search(r'name="([^"]+)"', attributes).group(1)
+                assert selected, f'{name} has no selected value'
+                fields[name] = html.unescape(selected.group(1) if selected.group(1) is not None
+                                             else selected.group(2))
+            for name, value in re.findall(r'<input (?:required )?name="([^"]+)"[^>]*? value="([^"]*)"', page):
+                fields[name] = html.unescape(value)
+            return fields
+
+        def save(changes=None, drop=()):
+            fields = browser_form(web_request('/parameters')[1].decode())
+            fields.update(changes or {})
+            for name in drop:
+                fields.pop(name, None)
+            return web_request('/parameters', urllib.parse.urlencode(fields))
+
+        def saved_iris_mode():
+            match = re.search(r'^\[image\][^\[]*?^iris_mode = (\w+)$', ini.read_text(), re.M)
+            return match.group(1) if match else None
+
+        # Unavailable: the disabled control keeps the saved value; priority can't be newly chosen.
+        (root / 'live-apply').touch()
+        iris_status(dc_iris=0)
+        ini.write_text(ini.read_text() + '\n[image]\niris_mode = priority\n')
+        status, page = save()
+        assert status == 200 and b'Parameters saved' in page, page
+        assert saved_iris_mode() == 'priority', ini.read_text()
+        ini.write_text(ini.read_text().replace('iris_mode = priority', 'iris_mode = auto'))
+        before = ini.read_text()
+        status, page = save({'iris_mode': 'priority'})
+        page = page.decode()
+        assert status == 400 and 'Iris priority needs a working DC iris' in page, (status, page)
+        assert ini.read_text() == before, 'a refused iris priority was saved'
+        rejected = page[page.index('<label for="iris_mode">'):]
+        assert '<option value="auto" selected>' in rejected[:rejected.index('</select>')], rejected
+        # Available: an ordinary setting.
+        iris_status(dc_iris=1)
+        status, page = save({'iris_mode': 'priority'})
+        assert status == 200 and b'Parameters saved' in page, page
+        assert saved_iris_mode() == 'priority', ini.read_text()
+        status, page = save({'iris_mode': 'auto'})
+        assert status == 200 and saved_iris_mode() == 'auto', ini.read_text()
+        (root / 'live-apply').unlink()
+        iris_file.unlink()
+        update_type.unlink()
+
         # Stopping the service stops MCM too.
         pid = mcm_pid()
         assert alive(pid), 'MCM not running before the stop'
@@ -562,8 +671,8 @@ while :; do sleep 1; done
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
               'restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
               'repeated SIGTERM, live and restarting codec change, '
-              'web respawn, MCM start after ready, restart backoff, mcm.disable, missing bundle, '
-              'log pruning and stop')
+              'web respawn, iris mode row and save, MCM start after ready, restart backoff, mcm.disable, '
+              'missing bundle, log pruning and stop')
     finally:
         try:
             os.killpg(process.pid, signal.SIGKILL)

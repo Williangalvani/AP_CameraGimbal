@@ -311,8 +311,12 @@ enum string_id {
     S_H_MAX_EXPOSURE,
     S_H_SLOW_SHUTTER,
     S_H_IRIS_MODE,
+    S_IRIS_UNAVAILABLE,
+    S_IRIS_APPLIED_SHUTTER,
+    S_IRIS_APPLIED_SHUTTER_LIMITED,
     S_H_FOURKCAM,
     S_H_ONVIF_PASSWORD,
+    S_E_IRIS_UNAVAILABLE,
     S_E_CONFIG_SIZE,
     S_E_INI_UNTERMINATED_SECTION,
     S_E_INI_TEXT_AFTER_SECTION,
@@ -1108,16 +1112,31 @@ static constexpr Translations translations = [] {
                              "automatically. Iris priority: the shutter speed and ISO (or the manual gains) stay "
                              "fixed and the iris alone holds the brightness at the exposure target (exposure and "
                              "backlight compensation); shutter auto means 1/60 s, and ISO auto without manual gains "
-                             "means 1×. Needs a lens with a DC iris; other cameras do not apply it.",
+                             "means 1×. A shutter longer than one frame (1/30 s at 30 fps) is shortened to one "
+                             "frame; the saved shutter stays as set. Needs a lens with a DC iris; other cameras do "
+                             "not apply it.",
                              "自动：自动曝光调节快门和增益，镜头光圈也自动工作。光圈优先：快门速度和 ISO（或手动增益）"
                              "保持固定，仅由光圈将亮度保持在曝光目标（曝光补偿和背光补偿）；快门为自动时使用 1/60 秒，"
-                             "ISO 为自动且未启用手动增益时为 1 倍。需要带 DC 光圈的镜头，其他相机不应用此设置。",
+                             "ISO 为自动且未启用手动增益时为 1 倍。长于一帧的快门（30 fps 时为 1/30 秒）会缩短为一帧，"
+                             "保存的快门设置不变。需要带 DC 光圈的镜头，其他相机不应用此设置。",
                              "オート：自動露出がシャッターとゲインを調整し、レンズの絞りも自動で動作します。絞り優先："
                              "シャッター速度と ISO（または手動ゲイン）を固定し、絞りだけで明るさを露出目標（露出補正と"
                              "逆光補正）に保ちます。シャッターがオートのときは 1/60 秒、ISO がオートで手動ゲインが"
-                             "ないときは 1 倍です。DC アイリスのレンズが必要で、それ以外のカメラでは適用されません。"};
+                             "ないときは 1 倍です。1 フレームより長いシャッター（30 fps では 1/30 秒）は 1 フレームに"
+                             "短縮され、保存されたシャッター設定はそのままです。DC アイリスのレンズが必要で、それ以外の"
+                             "カメラでは適用されません。"};
+    result[S_IRIS_UNAVAILABLE] = {"Not available: this camera has no working DC iris.",
+                                  "不可用：本相机没有可用的 DC 光圈。",
+                                  "利用できません：このカメラには動作する DC アイリスがありません。"};
+    result[S_IRIS_APPLIED_SHUTTER] = {"Applied shutter: 1/%u s", "实际快门：1/%u 秒", "適用中のシャッター：1/%u 秒"};
+    result[S_IRIS_APPLIED_SHUTTER_LIMITED] = {"Applied shutter: 1/%u s (requested 1/%u s, limited by the frame rate)",
+                                              "实际快门：1/%u 秒（设定为 1/%u 秒，受帧率限制）",
+                                              "適用中のシャッター：1/%u 秒（設定は 1/%u 秒、フレームレートによる制限）"};
     result[S_H_FOURKCAM] = {"Lets Blue Robotics' 4K Cam Manager and MAVLink Camera Manager find and control this camera without the web login, as with the original firmware.", "允许 Blue Robotics 的 4K Cam Manager 和 MAVLink Camera Manager 无需网页登录即可发现并控制本相机，与原厂固件相同。", "Blue Robotics の 4K Cam Manager と MAVLink Camera Manager が、元のファームウェアと同様に Web ログインなしでこのカメラを検出・制御できるようにします。"};
     result[S_H_ONVIF_PASSWORD] = {"Password of the ONVIF user admin. 4K Cam Manager logs in with blue.", "ONVIF 用户 admin 的密码。4K Cam Manager 使用 blue 登录。", "ONVIF ユーザー admin のパスワード。4K Cam Manager は blue でログインします。"};
+    result[S_E_IRIS_UNAVAILABLE] = {"Iris priority needs a working DC iris, which this camera does not have. Nothing was saved.",
+                                    "光圈优先需要可用的 DC 光圈，而本相机没有。未保存任何设置。",
+                                    "絞り優先には動作する DC アイリスが必要ですが、このカメラにはありません。何も保存されていません。"};
     result[S_E_CONFIG_SIZE] = {"Config size must be between 1 and %u bytes", "配置大小必须在 1 至 %u 字节之间", "設定のサイズは 1〜%u バイトである必要があります"};
     result[S_E_INI_UNTERMINATED_SECTION] = {"Line %u has an unterminated section", "第 %u 行的节名未闭合", "%u 行目のセクションが閉じられていません"};
     result[S_E_INI_TEXT_AFTER_SECTION] = {"Line %u has text after its section", "第 %u 行的节名之后有多余文本", "%u 行目のセクションの後に余分な文字があります"};

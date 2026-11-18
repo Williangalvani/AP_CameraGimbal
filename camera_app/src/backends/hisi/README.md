@@ -108,9 +108,30 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   enabled manual gains (`dgain` is the ISP digital gain), else 1×; sensor
   digital gain 1×; the system gain their product. `max_exposure`,
   `ae_strategy` and `slow_shutter` don't apply, and the frame rate stays fixed.
+  So the exposure time is at most one frame, `1000000 / fps` µs at the
+  sensor's frame rate (the ISP's `frame_rate`, 30 fps; `APCAM_FRAME_RATE` if
+  the ISP doesn't report it). The configured stream rate doesn't matter: the
+  encoders drop sensor frames to reach it. A longer shutter (1/12 or 1/25 s at
+  30 fps) is pinned at one frame (1/30 s) and logged as `iris priority:
+  shutter 1/12 s needs more than one frame at 30 fps, using 1/30 s`. Only this
+  mode clamps; camera.ini, `IMG_SHUTTER` and the 4K Cam Manager keep the
+  requested shutter, so a MAVLink client reads back its own request.
   The pinned values come from `iris_priority_exposure()` in `image_tuning.h`
   and are logged as `ISP iris priority: ...`; the `ISP tuning` line shows
-  `iris=`. Leaving the mode puts back the AE ranges it replaced.
+  `iris=`. Leaving the mode puts back the AE ranges it replaced. The binlog's
+  AE record reads the ISP's exposure, so it shows the pinned (clamped) time.
+  For the web, camera-app writes `<CAMERA_APP_READY_PATH>.iris` (temporary
+  file, then rename) once the media has started and the DC iris outcome is
+  known, and after every image apply: `pid`, `dc_iris`, `priority_active`,
+  `shutter_requested_us` and `shutter_applied_us` (both 0 outside the mode),
+  one `key=value` per line (`include/apcam/hisi_iris.h`). The web's **Iris
+  mode** row uses it when the `pid` is the running camera-app's, and otherwise
+  makes camera-app's start-up decision itself (device code and
+  `CAMERA_APP_DC_IRIS`). Without a working DC iris the row is shown disabled,
+  with the saved value and "Not available: this camera has no working DC
+  iris."; a save leaves the value as it is, and one asking to switch to
+  priority is refused. While the mode is applied the row shows the applied
+  shutter, and the requested one when the frame rate cut it.
   On a camera without a working DC iris a live change to priority is refused
   (`iris priority needs the DC iris ...`) and the old settings stay. At
   start-up, or while a saved `priority` already had no effect, it is logged

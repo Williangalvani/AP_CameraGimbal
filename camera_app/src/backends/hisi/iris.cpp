@@ -22,23 +22,17 @@ uint32_t iris_register_value(const struct iris_register *reg, uint32_t current)
     return (current & reg->keep) | reg->value;
 }
 
-static bool same_code(const device_code *a, const device_code *b)
-{
-    return a->dev == b->dev && a->sdk == b->sdk && a->platform == b->platform;
-}
-
 struct iris_decision iris_decide(const char *override, const device_code *code)
 {
-    struct iris_decision decision = {false, ""};
+    struct iris_decision decision = {apcam_hisi_iris::dc_iris_expected(override, code), ""};
     char *reason = decision.reason;
     size_t size = sizeof(decision.reason);
 
+    if (apcam_hisi_iris::override_valid(override)) {
+        (void)snprintf(reason, size, "CAMERA_APP_DC_IRIS=%s", override);
+        return decision;
+    }
     if (override != NULL) {
-        if (strcmp(override, "1") == 0 || strcmp(override, "0") == 0) {
-            decision.enable = override[0] == '1';
-            (void)snprintf(reason, size, "CAMERA_APP_DC_IRIS=%s", override);
-            return decision;
-        }
         const int length = snprintf(reason, size, "CAMERA_APP_DC_IRIS=%.16s ignored; ", override);
         reason += length;
         size -= (size_t)length;
@@ -47,7 +41,6 @@ struct iris_decision iris_decide(const char *override, const device_code *code)
         (void)snprintf(reason, size, "no device code in updatetype.ini");
         return decision;
     }
-    decision.enable = same_code(code, &iris_device_code);
     (void)snprintf(reason, size, decision.enable ? "device code %u/%u/%u (U35.5)" : "device code %u/%u/%u",
                    (unsigned)code->dev, (unsigned)code->sdk, (unsigned)code->platform);
     return decision;
@@ -107,4 +100,28 @@ bool iris_start(const char *updatetype, const char *mem)
     ca_log("DC iris %s: %s", decision.enable ? "enabled" : "skipped", decision.reason);
     if (decision.enable) (void)iris_write_registers(mem);
     return decision.enable;
+}
+
+int iris_write_status(const struct apcam_hisi_iris::status &status, const char *ready)
+{
+    if (ready == NULL) ready = environment_string("CAMERA_APP_READY_PATH");
+    if (ready == NULL) ready = "/run/camera-app.ready";
+    char path[4096], temporary[sizeof(path) + 4], contents[192];
+    if (snprintf(path, sizeof(path), "%s%s", ready, apcam_hisi_iris::STATUS_SUFFIX) >= (int)sizeof(path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    (void)snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+    (void)apcam_hisi_iris::format_status(contents, sizeof(contents), status);
+    FILE *file = fopen(temporary, "w");
+    if (file == NULL) return -1;
+    bool ok = fputs(contents, file) >= 0;
+    if (fclose(file) != 0) ok = false;
+    if (!ok || rename(temporary, path) < 0) {
+        const int saved = errno != 0 ? errno : EIO;
+        (void)unlink(temporary);
+        errno = saved;
+        return -1;
+    }
+    return 0;
 }

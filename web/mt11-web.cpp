@@ -81,6 +81,10 @@
 #endif
 #if APCAM_TARGET == APCAM_TARGET_HISI
 #include "../include/apcam/hisi_firmware.h"
+#include "../include/apcam/hisi_iris.h"
+#ifndef HISI_UPDATE_TYPE_PATH
+#define HISI_UPDATE_TYPE_PATH "/appfs/fconfigs/param/updatetype.ini"
+#endif
 #endif
 #ifndef FIRMWARE_SUFFIX
 #define FIRMWARE_SUFFIX ".bin"
@@ -2379,6 +2383,49 @@ static bool append_update(struct ini_update *updates, size_t capacity, size_t *c
     return true;
 }
 
+#if APCAM_TARGET == APCAM_TARGET_HISI
+static bool iris_mode_parameter(const struct parameter *parameter)
+{
+    return !strcmp(parameter->section, "image") && !strcmp(parameter->key, "iris_mode");
+}
+
+struct iris_state {
+    bool available;
+    bool reported;  // status from the running camera-app, else the device-code guess
+    apcam_hisi_iris::status status;
+};
+
+/* camera-app's "<ready>.iris" once the running instance wrote it; until then
+ * the decision camera-app will make at start-up. */
+static struct iris_state current_iris_state(void)
+{
+    struct iris_state state = {false, false, {0, false, false, 0U, 0U}};
+    char path[PATH_MAX + 8];
+    snprintf(path, sizeof(path), "%s%s", CAMERA_READY_PATH, apcam_hisi_iris::STATUS_SUFFIX);
+    size_t length;
+    char *text = read_file(path, 512, &length);
+    char *ready = read_file(CAMERA_READY_PATH, 4096, &length);
+    const char *pid_line = ready ? strstr(ready, "\npid=") : NULL;
+    long running;
+    state.reported = text && pid_line && apcam_hisi_iris::parse_status(text, &state.status) &&
+        sscanf(pid_line, "\npid=%ld", &running) == 1 && state.status.pid == running &&
+        kill((pid_t)running, 0) == 0;
+    free(text);
+    free(ready);
+    if (state.reported) {
+        state.available = state.status.dc_iris;
+        return state;
+    }
+    state.status = {0, false, false, 0U, 0U};
+    const char *override = getenv("CAMERA_APP_DC_IRIS");
+    if (override != NULL && override[0] == '\0') override = NULL;
+    apcam_hisi_firmware::device_code code;
+    const bool found = apcam_hisi_firmware::read_device_code(HISI_UPDATE_TYPE_PATH, &code);
+    state.available = apcam_hisi_iris::dc_iris_expected(override, found ? &code : NULL);
+    return state;
+}
+#endif
+
 /* parameters that do not exist on this camera stay out of the form */
 static bool parameter_shown(const struct parameter *parameter)
 {
@@ -2436,8 +2483,14 @@ static bool collect_described_parameters(const APC_HTTPRequest *request,
                                          size_t parameter_count,
                                          struct ini_update *updates,
                                          size_t capacity, size_t *count,
-                                         char *error, size_t error_size)
+                                         char *error, size_t error_size,
+                                         const char *saved_config = NULL)
 {
+#if APCAM_TARGET == APCAM_TARGET_HISI
+    const bool iris_available = current_iris_state().available;
+#else
+    (void)saved_config;
+#endif
     for (size_t i = 0; i < parameter_count; i++) {
         const struct parameter *parameter = &parameters[i];
         double minimum, maximum;
@@ -2457,6 +2510,25 @@ static bool collect_described_parameters(const APC_HTTPRequest *request,
             continue;
         }
         value = form_value(request, parameter->form_name, &value_length);
+#if APCAM_TARGET == APCAM_TARGET_HISI
+        /* Without the DC iris the control is disabled, so the browser leaves
+         * it out: the saved value stays, and priority can't be newly chosen. */
+        if (!iris_available && iris_mode_parameter(parameter)) {
+            char saved[16] = "";
+            if (saved_config != NULL)
+                (void)ini_get_value(saved_config, parameter->section, parameter->key, saved, sizeof(saved));
+            if (value == NULL || (!strcmp(value, "priority") && !strcmp(saved, "priority"))) {
+                free(value);
+                continue;
+            }
+            if (!strcmp(value, "priority")) {
+                snprintf(error, error_size, "%s", T(S_E_IRIS_UNAVAILABLE));
+                log_message("parameter validation failed: %s", error);
+                free(value);
+                return false;
+            }
+        }
+#endif
         bool valid = value != NULL && value_length < sizeof(updates[0].value);
         char normalized[160] = "";
         long integer_value;
@@ -2520,14 +2592,14 @@ static bool collect_described_parameters(const APC_HTTPRequest *request,
 
 static bool collect_replacement_parameter_updates(
     const APC_HTTPRequest *request, struct ini_update *updates, size_t capacity,
-    size_t *update_count, char *error, size_t error_size)
+    size_t *update_count, char *error, size_t error_size, const char *saved_config = NULL)
 {
     size_t count = 0;
 
     if (!collect_described_parameters(
             request, replacement_parameters,
             sizeof(replacement_parameters) / sizeof(replacement_parameters[0]),
-            updates, capacity, &count, error, error_size)) return false;
+            updates, capacity, &count, error, error_size, saved_config)) return false;
     const char *primary = "", *secondary = "", *gateway = "";
     for (size_t i = 0; i < count; i++) {
         if (strcmp(updates[i].section, "network")) continue;
@@ -5524,10 +5596,18 @@ static void append_parameter_field(APC_StringBuffer *page, const char *config,
         }
     }
 
+#if APCAM_TARGET == APCAM_TARGET_HISI
+    const bool iris_row = iris_mode_parameter(parameter);
+    const struct iris_state iris = iris_row ? current_iris_state() : iris_state{};
+    // a disabled control shows the saved value, never a rejected submission
+    const bool locked = iris_row && !iris.available;
+#else
+    const bool locked = false;
+#endif
     // Keep rejected submissions editable instead of replacing them with the
     // saved defaults. Render directly with HTML escaping, never via INI text.
     size_t submitted_length = 0;
-    char *submitted_value = submitted != NULL
+    char *submitted_value = submitted != NULL && !locked
         ? form_value(submitted, parameter->form_name, &submitted_length) : NULL;
     const char *display_value = submitted_value != NULL ? submitted_value : value;
     if (submitted_value != NULL) present = true;
@@ -5556,10 +5636,16 @@ static void append_parameter_field(APC_StringBuffer *page, const char *config,
         }
         page->append("</select>");
     } else if (parameter->kind == PARAM_ENUM || parameter->kind == PARAM_BOOLEAN) {
-        page->append("<select required name=\"");
+        page->append(locked ? "<select disabled required name=\"" : "<select required name=\"");
         page->append_html(parameter->form_name);
         page->append("\" id=\"");
         page->append_html(parameter->form_name);
+#if APCAM_TARGET == APCAM_TARGET_HISI
+        if (locked) {
+            page->append("\" title=\"");
+            page->append_html(T(S_IRIS_UNAVAILABLE));
+        }
+#endif
         page->append("\">");
         if (!present || !option_contains(parameter, display_value)) {
             page->append("<option selected disabled value=\"\">");
@@ -5619,7 +5705,28 @@ static void append_parameter_field(APC_StringBuffer *page, const char *config,
         page->append(" ");
         page->append_html(T(S_RESTART_REQUIRED));
     }
-    page->appendf(" <code>[%s] %s</code></div></div>", parameter->section, parameter->key);
+    page->appendf(" <code>[%s] %s</code></div>", parameter->section, parameter->key);
+#if APCAM_TARGET == APCAM_TARGET_HISI
+    if (locked) {
+        page->append("<div class=help id=iris-unavailable>");
+        page->append_html(T(S_IRIS_UNAVAILABLE));
+        page->append("</div>");
+    } else if (iris_row && iris.reported && iris.status.priority_active) {
+        const apcam_hisi_iris::status &s = iris.status;
+        char applied[192];
+        if (s.shutter_applied_us < s.shutter_requested_us)
+            snprintf(applied, sizeof(applied), T(S_IRIS_APPLIED_SHUTTER_LIMITED),
+                     apcam_hisi_iris::shutter_denominator(s.shutter_applied_us),
+                     apcam_hisi_iris::shutter_denominator(s.shutter_requested_us));
+        else
+            snprintf(applied, sizeof(applied), T(S_IRIS_APPLIED_SHUTTER),
+                     apcam_hisi_iris::shutter_denominator(s.shutter_applied_us));
+        page->append("<div class=help id=iris-applied-shutter>");
+        page->append_html(applied);
+        page->append("</div>");
+    }
+#endif
+    page->append("</div>");
 }
 
 
@@ -8793,7 +8900,7 @@ static void handle_request(int fd, const char *peer)
             } else if (!collect_replacement_parameter_updates(
                                    &request, updates,
                                    sizeof(updates) / sizeof(updates[0]),
-                                   &update_count, error, sizeof(error))) {
+                                   &update_count, error, sizeof(error), old_config)) {
                 send_parameter_page(fd, error, true, &request);
             } else if ((new_config = ini_apply_updates(old_config, updates, update_count,
                                                        kind == CAMERA_REPLACEMENT,

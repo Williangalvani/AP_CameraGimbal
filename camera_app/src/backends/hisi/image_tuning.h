@@ -101,22 +101,36 @@ inline uint32_t shutter_us(enum ca_shutter_mode shutter)
     return (unsigned)shutter <= CA_SHUTTER_1_100000 ? exposure_us[shutter] : 0U;
 }
 
+/* The longest exposure a fixed frame rate allows: one frame. fps 0 is unknown,
+ * taken as APCAM_FRAME_RATE. */
+inline uint32_t frame_exposure_max_us(unsigned fps)
+{
+    return 1000000U / (fps != 0U ? fps : (unsigned)APCAM_FRAME_RATE);
+}
+
 /* Iris priority: the exposure time and gains the AE ranges are pinned to, so
  * that only the iris moves. Unfixed elements take defaults: shutter auto is
  * 1/60 s; ISO auto with no manual gain is 1x. The gains are those a fixed
- * ISO or manual gain uses in the other modes. */
+ * ISO or manual gain uses in the other modes. The frame rate stays fixed, so
+ * a shutter longer than one frame at fps (the sensor's) is cut to one frame:
+ * requested_us is the shutter asked for, exp_time_us the one applied. */
 struct PinnedExposure {
     uint32_t exp_time_us;
     uint32_t again;
     uint32_t dgain;
     uint32_t ispdgain;
     uint32_t sys_gain;
+    bool clamped;
+    uint32_t requested_us;
 };
 
-inline PinnedExposure iris_priority_exposure(const struct ca_config &config)
+inline PinnedExposure iris_priority_exposure(const struct ca_config &config, unsigned fps)
 {
-    PinnedExposure pinned = {shutter_us(config.shutter != CA_SHUTTER_AUTO ? config.shutter : CA_SHUTTER_1_60),
-                             1024U, 1024U, 1024U, 0U};
+    const uint32_t requested =
+        shutter_us(config.shutter != CA_SHUTTER_AUTO ? config.shutter : CA_SHUTTER_1_60);
+    const uint32_t longest = frame_exposure_max_us(fps);
+    PinnedExposure pinned = {requested < longest ? requested : longest, 1024U, 1024U, 1024U, 0U,
+                             requested > longest, requested};
     if (config.iso != CA_ISO_AUTO) {
         pinned.again = iso_gain((unsigned)config.iso);
     } else if (config.gain_mode == CA_GAIN_MANUAL) {

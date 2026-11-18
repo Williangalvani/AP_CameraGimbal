@@ -9,8 +9,11 @@
 /* startup: the first apply after the ISP starts, with camera.ini's settings.
  * Iris priority that can't be applied (no DC iris, or the ISP refuses it)
  * then falls back to the normal exposure, as do later applies while
- * camera.ini still asks for it; setting it live fails instead. */
+ * camera.ini still asks for it; setting it live fails instead. Other applies
+ * publish the iris status; start-up publishes it once the DC iris is known. */
 td_s32 ca_hisi_apply_isp_config(const struct ca_config *config, bool startup);
+/* "<ready>.iris" for the web: the DC iris and the iris priority applied */
+void ca_hisi_publish_iris_status(void);
 int ca_hisi_exposure(unsigned lens, struct ca_exposure *sample);
 /* White balance for one-push; the caller holds the ISP lock. */
 td_s32 ca_hisi_apply_white_balance(const struct ca_config *config);

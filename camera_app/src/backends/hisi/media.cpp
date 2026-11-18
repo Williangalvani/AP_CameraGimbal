@@ -480,6 +480,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
             if (ca_hisi_apply_isp_config(settings, true) != TD_SUCCESS) goto fail;
         }
     }
+    ca_hisi_publish_iris_status();
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_MAIN_VENC], settings->main_codec,
                              sizes->width[CA_HISI_MAIN_CHN], sizes->height[CA_HISI_MAIN_CHN],
                              config->frame_rate, main_bitrate(media, settings));

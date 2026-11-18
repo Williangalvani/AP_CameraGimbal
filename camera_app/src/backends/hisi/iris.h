@@ -2,14 +2,16 @@
 #define CAMERA_APP_HISI_IRIS_H
 
 #include "apcam/hisi_firmware.h"
+#include "apcam/hisi_iris.h"
 
 #include <stdint.h>
 
 /* DC iris: the U35.5 board's lens (device code 19/2/51) has an iris that stays
  * shut, and the picture black, until PWM0 holds it open. The PWM needs its
  * clock and its pad set through /dev/mem before the ISP drives it through
- * /dev/pwm. Other boards are left alone. */
-constexpr apcam_hisi_firmware::device_code iris_device_code = {19, 2, 51};
+ * /dev/pwm. Other boards are left alone. The web makes the same decision
+ * (apcam/hisi_iris.h) until camera-app publishes its own. */
+constexpr apcam_hisi_firmware::device_code iris_device_code = apcam_hisi_iris::DEVICE_CODE;
 
 struct iris_register {
     const char *name;
@@ -39,5 +41,9 @@ int iris_write_registers(const char *mem = "/dev/mem");
  * register failure is only logged. True when the ISP should drive the iris. */
 bool iris_start(const char *updatetype = "/appfs/fconfigs/param/updatetype.ini",
                 const char *mem = "/dev/mem");
+
+/* Writes "<ready>.iris" through a temporary file and a rename; ready NULL is
+ * CAMERA_APP_READY_PATH or /run/camera-app.ready. 0, or -1 with errno. */
+int iris_write_status(const struct apcam_hisi_iris::status &status, const char *ready = NULL);
 
 #endif

@@ -1,6 +1,7 @@
 #include "isp.h"
 #include "pipeline.h"
 #include "image_tuning.h"
+#include "iris.h"
 
 #include "camera_app/log.h"
 
@@ -10,6 +11,7 @@
 
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
 
 static_assert(APCAM_HAVE_4KCAM_COMPAT, "the ISP applies the 4K Cam Manager's image settings");
 static_assert(OT_ISP_AUTO_ISO_NUM == ca_hisi_tuning::iso_bins &&
@@ -84,12 +86,27 @@ static ot_isp_ae_range pinned_range(td_u32 value)
     return range;
 }
 
+/* The sensor's frame rate, which bounds the exposure; the encoders drop
+ * frames from it to reach the configured stream rates. 0 when unknown. */
+static unsigned sensor_frame_rate(ot_vi_pipe pipe)
+{
+    ot_isp_pub_attr pub;
+    if (ss_mpi_isp_get_pub_attr(pipe, &pub) != TD_SUCCESS || !(pub.frame_rate >= 1.0f)) return 0U;
+    unsigned fps = (unsigned)pub.frame_rate;
+    return (float)fps < pub.frame_rate ? fps + 1U : fps;
+}
+
+/* What the last apply left, for the web's status file. */
+static apcam_hisi_iris::status iris_status;
+
 /* The AE keeps running, and with it the ISP's DC iris loop, which starts
  * closing at the route's lowest exposure: with every range pinned to one
  * value, that is the only thing left for it to move. */
 static td_s32 set_iris_priority(ot_vi_pipe pipe, ot_isp_exposure_attr &attr, const struct ca_config *config)
 {
-    const ca_hisi_tuning::PinnedExposure fixed = ca_hisi_tuning::iris_priority_exposure(*config);
+    unsigned fps = sensor_frame_rate(pipe);
+    if (fps == 0U) fps = APCAM_FRAME_RATE;
+    const ca_hisi_tuning::PinnedExposure fixed = ca_hisi_tuning::iris_priority_exposure(*config, fps);
     const struct ae_ranges before = ranges_pinned ? unpinned_ranges : get_ae_ranges(attr.auto_attr);
     attr.op_type = OT_OP_MODE_AUTO;
     set_ae_ranges(attr.auto_attr, {pinned_range(fixed.exp_time_us), pinned_range(fixed.again),
@@ -104,8 +121,15 @@ static td_s32 set_iris_priority(ot_vi_pipe pipe, ot_isp_exposure_attr &attr, con
     if (result == TD_SUCCESS) {
         unpinned_ranges = before;
         ranges_pinned = true;
+        if (fixed.clamped) {
+            ca_log("iris priority: shutter 1/%u s needs more than one frame at %u fps, using 1/%u s",
+                   apcam_hisi_iris::shutter_denominator(fixed.requested_us), fps,
+                   apcam_hisi_iris::shutter_denominator(fixed.exp_time_us));
+        }
         ca_log("ISP iris priority: exposure %u us, gains (1/1024) analog %u digital %u ISP %u system %u",
                fixed.exp_time_us, fixed.again, fixed.dgain, fixed.ispdgain, fixed.sys_gain);
+        iris_status.shutter_requested_us = fixed.requested_us;
+        iris_status.shutter_applied_us = fixed.exp_time_us;
     }
     return result;
 }
@@ -380,7 +404,7 @@ static void set_tuning(ot_vi_pipe pipe, const struct ca_config *config)
         if (step.result != TD_SUCCESS) ca_log("ISP %s failed: 0x%x", step.name, (unsigned)step.result);
 }
 
-td_s32 ca_hisi_apply_isp_config(const struct ca_config *config, bool startup)
+static td_s32 apply_isp_config(const struct ca_config *config, bool startup)
 {
     const ot_vi_pipe pipe = CA_HISI_PIPE;
     td_s32 result;
@@ -392,6 +416,7 @@ td_s32 ca_hisi_apply_isp_config(const struct ca_config *config, bool startup)
         ca_log("ISP DC iris failed: 0x%x", (unsigned)result);
         iris = false;
     }
+    iris_status.dc_iris = iris;
     const bool wanted = config->iris_mode == CA_IRIS_PRIORITY;
     const bool fall_back = startup || iris_priority_ignored;
     bool iris_priority = wanted;
@@ -412,6 +437,10 @@ td_s32 ca_hisi_apply_isp_config(const struct ca_config *config, bool startup)
                    (unsigned)result);
             iris_priority = false;
             result = set_exposure(pipe, config, false);
+        }
+        if (result == TD_SUCCESS) {
+            iris_status.priority_active = iris_priority;
+            if (!iris_priority) iris_status.shutter_requested_us = iris_status.shutter_applied_us = 0U;
         }
     }
     if (result != TD_SUCCESS ||
@@ -440,6 +469,19 @@ td_s32 ca_hisi_apply_isp_config(const struct ca_config *config, bool startup)
            config->slow_shutter ? "on" : "off",
            iris_priority ? "priority" : wanted ? "priority (not applied)" : "auto");
     return TD_SUCCESS;
+}
+
+td_s32 ca_hisi_apply_isp_config(const struct ca_config *config, bool startup)
+{
+    const td_s32 result = apply_isp_config(config, startup);
+    if (!startup) ca_hisi_publish_iris_status();
+    return result;
+}
+
+void ca_hisi_publish_iris_status(void)
+{
+    iris_status.pid = (long)getpid();
+    if (iris_write_status(iris_status) < 0) ca_log("iris status not written: %s", strerror(errno));
 }
 
 int ca_hisi_exposure(unsigned lens, struct ca_exposure *s)

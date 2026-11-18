@@ -510,7 +510,7 @@ tests/test_hisi_ircut: tests/test_hisi_ircut.cpp src/backends/hisi/ircut.cpp src
 	$(call progress,Linking $@)
 	$(HOST_CXX) -Iinclude $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $(filter %.cpp,$^) -lpthread
 
-tests/test_hisi_iris: tests/test_hisi_iris.cpp src/backends/hisi/iris.cpp src/backends/hisi/iris.h src/log.cpp include/camera_app/log.h ../include/apcam/hisi_firmware.h
+tests/test_hisi_iris: tests/test_hisi_iris.cpp src/backends/hisi/iris.cpp src/backends/hisi/iris.h src/log.cpp include/camera_app/log.h ../include/apcam/hisi_firmware.h ../include/apcam/hisi_iris.h
 	$(call progress,Linking $@)
 	$(HOST_CXX) -I../include -Iinclude $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $(filter %.cpp,$^)
 

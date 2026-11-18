@@ -64,6 +64,44 @@ static void decisions(void)
     assert(d.enable && contains(d.reason, "ignored") && contains(d.reason, "19/2/51"));
     d = iris_decide("10", &main_v9);
     assert(!d.enable && contains(d.reason, "ignored") && contains(d.reason, "19/2/35"));
+
+    // the web's guess before camera-app reports is camera-app's own decision
+    const char *overrides[] = {nullptr, "1", "0", "yes", "10", ""};
+    const device_code *codes[] = {&u35_5, &main_v9, &other_dev, nullptr};
+    for (const char *override : overrides) {
+        for (const device_code *code : codes)
+            assert(iris_decide(override, code).enable == apcam_hisi_iris::dc_iris_expected(override, code));
+    }
+}
+
+static void status_text(void)
+{
+    using apcam_hisi_iris::status;
+    char text[192];
+    const status clamped = {1234, true, true, 83333U, 33333U};
+    status parsed = {};
+    assert(apcam_hisi_iris::format_status(text, sizeof(text), clamped) < (int)sizeof(text));
+    assert(!strcmp(text, "pid=1234\ndc_iris=1\npriority_active=1\nshutter_requested_us=83333\n"
+                         "shutter_applied_us=33333\n"));
+    assert(apcam_hisi_iris::parse_status(text, &parsed));
+    assert(parsed.pid == 1234 && parsed.dc_iris && parsed.priority_active);
+    assert(parsed.shutter_requested_us == 83333U && parsed.shutter_applied_us == 33333U);
+
+    // CRLF, unknown keys and a missing last newline are fine; absent shutters are 0
+    assert(apcam_hisi_iris::parse_status("pid=7\r\nfuture=x\r\ndc_iris=0", &parsed));
+    assert(parsed.pid == 7 && !parsed.dc_iris && !parsed.priority_active && parsed.shutter_applied_us == 0U);
+    // pid and dc_iris are required; a malformed value rejects the file and leaves *s alone
+    parsed.pid = 99;
+    const char *bad[] = {"", "dc_iris=1\n", "pid=7\n", "pid=0\ndc_iris=1\n", "pid=-7\ndc_iris=1\n",
+                         "pid=7\ndc_iris=2\n", "pid=7\ndc_iris=\n", "pid=7x\ndc_iris=1\n",
+                         "pid=7\ndc_iris=1\nshutter_applied_us=+5\n", "pid=7\ndc_iris=1\npriority_active=yes\n",
+                         "pid=7\ndc_iris=1\nshutter_requested_us=99999999999999999999999\n"};
+    for (const char *text_case : bad) assert(!apcam_hisi_iris::parse_status(text_case, &parsed) && parsed.pid == 99);
+
+    assert(apcam_hisi_iris::shutter_denominator(0U) == 0U);
+    assert(apcam_hisi_iris::shutter_denominator(83333U) == 12U && apcam_hisi_iris::shutter_denominator(33333U) == 30U);
+    assert(apcam_hisi_iris::shutter_denominator(66666U) == 15U && apcam_hisi_iris::shutter_denominator(16666U) == 60U);
+    assert(apcam_hisi_iris::shutter_denominator(40000U) == 25U && apcam_hisi_iris::shutter_denominator(10U) == 100000U);
 }
 
 static std::string temp_path(const char *name)
@@ -211,6 +249,42 @@ static void board(void)
     assert(iris_write_registers(mem.c_str()) == 0 && written(mem));
 
     for (const std::string &path : {u35_5, main_v9, mem}) assert(unlink(path.c_str()) == 0);
+}
+
+static std::string read_text(const std::string &path)
+{
+    std::string text;
+    char buffer[512];
+    FILE *file = fopen(path.c_str(), "r");
+    assert(file != nullptr);
+    size_t length;
+    while ((length = fread(buffer, 1, sizeof(buffer), file)) > 0) text.append(buffer, length);
+    fclose(file);
+    return text;
+}
+
+static void status_file(void)
+{
+    const std::string ready = temp_path("camera-app.ready"), path = ready + ".iris";
+    apcam_hisi_iris::status written = {(long)getpid(), true, false, 0U, 0U}, parsed = {};
+    assert(iris_write_status(written, ready.c_str()) == 0);
+    assert(apcam_hisi_iris::parse_status(read_text(path).c_str(), &parsed));
+    assert(parsed.pid == getpid() && parsed.dc_iris && !parsed.priority_active);
+    // replaced whole, through a temporary file that doesn't stay
+    written = {(long)getpid(), true, true, 40000U, 33333U};
+    assert(iris_write_status(written, ready.c_str()) == 0);
+    assert(apcam_hisi_iris::parse_status(read_text(path).c_str(), &parsed));
+    assert(parsed.priority_active && parsed.shutter_requested_us == 40000U && parsed.shutter_applied_us == 33333U);
+    assert(access((path + ".tmp").c_str(), F_OK) != 0);
+    assert(unlink(path.c_str()) == 0);
+
+    // by default beside CAMERA_APP_READY_PATH
+    assert(setenv("CAMERA_APP_READY_PATH", ready.c_str(), 1) == 0);
+    assert(iris_write_status(written) == 0 && access(path.c_str(), F_OK) == 0);
+    assert(unlink(path.c_str()) == 0 && unsetenv("CAMERA_APP_READY_PATH") == 0);
+    // a directory that doesn't exist: an error, and nothing left behind
+    errno = 0;
+    assert(iris_write_status(written, temp_path("missing/ready").c_str()) == -1 && errno == ENOENT);
     assert(rmdir(temp_path("").c_str()) == 0);
 }
 
@@ -218,7 +292,9 @@ int main()
 {
     registers();
     decisions();
+    status_text();
     board();
+    status_file();
     puts("test_hisi_iris: ok");
     return 0;
 }

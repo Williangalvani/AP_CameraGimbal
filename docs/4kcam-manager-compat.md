@@ -221,7 +221,7 @@ the extension's stream settings, gets `restart in progress`. Other
 | `[compat] onvif_password` | **ONVIF password** | `blue` |
 | `[image] wb_water` | **One-push water** (green / blue), which also sets the auto white balance calibration | `green` |
 | `[image] hue`, `sharpness`, `gamma`, `backlight`, `wb_style_*`, `max_gain`, `gain_mode`, `max_again`, `max_dgain`, `manual_again`, `again`, `manual_dgain`, `dgain`, `ae_strategy`, `max_exposure`, `slow_shutter` | Video tab, in the units above | vendor defaults: 128, 128, 20, 50, 0, 12, auto, 32, 0, false, 128, false, 128, highlight, 25, false |
-| `[image] iris_mode` | **Iris mode** (auto / iris priority), also `IMG_IRIS_MODE`; not part of the vendor API, which neither sets it nor resets it with `set_default` (like `iso`) | `auto` |
+| `[image] iris_mode` | **Iris mode** (auto / iris priority), also `IMG_IRIS_MODE`; not part of the vendor API, which neither sets it nor resets it with `set_default` (like `iso`). The API doesn't see it either: in iris priority the shutter it reads is still the requested one, even when a frame-long limit applies a shorter one; the web row shows the applied shutter, and is disabled on cameras without a working DC iris | `auto` |
 
 With **Allow 4K Cam Manager** off, discovery doesn't answer and
 `POST /onvif/device_service` and `POST /action/*` return 404. These are the
