@@ -249,9 +249,11 @@ characters, as the parameters page checks.
   `streams: IndexMap::new()` (`backend/libs/mcm_client/src/mcm_client.rs`) and
   nothing ever fills it. The stream exists in MCM (`GET /streams`, named
   `4K Cam <address>/0`).
-- It logs in to the camera's web page every couple of minutes with the wrong
-  credentials from BlueOS (`authentication failed from 192.168.2.2` in the
-  camera's web log). That is a client polling the web UI, not ONVIF or `/action`.
+- Something on the ROV (192.168.2.2) keeps requesting the camera's web
+  interface with credentials it rejects, a few times every ten minutes
+  (`authentication failed from 192.168.2.2` in `/run/hisi-web.log`). Which
+  client that is hasn't been pinned down; it doesn't affect the control
+  protocol.
 
 ## Cockpit
 
