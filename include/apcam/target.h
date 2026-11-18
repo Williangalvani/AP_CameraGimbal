@@ -137,6 +137,17 @@ static inline unsigned apcam_main_bitrate_kbps(unsigned setting_kbps, unsigned w
 #ifndef APCAM_MAIN_FPS_MIN
 #define APCAM_MAIN_FPS_MIN 5
 #endif
+/* Keyframe interval of each stream, in ms (keyframe_interval.h):
+ *   APCAM_HAVE_VIDEO_GOP  VIDEO_MAIN_KEYMS, VIDEO_SUB_KEYMS
+ *                         ([stream.main] / [stream.sub] keyframe_interval_ms)
+ * in struct ca_config as main_keyint_ms and sub_keyint_ms. A target that
+ * defines it has a second stream; its backend turns the interval into the
+ * encoder's GOP with apcam_gop_frames() at the stream's frame rate, and acts
+ * on a change in apply_image(), as it does for the bitrate. */
+#ifndef APCAM_HAVE_VIDEO_GOP
+#define APCAM_HAVE_VIDEO_GOP 0
+#endif
+#include "keyframe_interval.h"
 /* Targets on a host OS which owns networking set this to 0. */
 #ifndef APCAM_HAVE_NETWORK_CONFIG
 #define APCAM_HAVE_NETWORK_CONFIG 1

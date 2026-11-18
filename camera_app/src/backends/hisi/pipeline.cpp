@@ -132,7 +132,7 @@ void ca_hisi_vpss_stop(const struct ca_hisi_output_sizes *sizes)
 void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
                               enum ca_video_codec codec, td_u32 width,
                               td_u32 height, td_u32 frame_rate,
-                              td_u32 bit_rate_kbps)
+                              td_u32 bit_rate_kbps, td_u32 gop_frames)
 {
     memset(attr, 0, sizeof(*attr));
     attr->venc_attr.type = codec == CA_VIDEO_H265 ? OT_PT_H265 : OT_PT_H264;
@@ -148,7 +148,7 @@ void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
         attr->venc_attr.h265_attr.rcn_ref_share_buf_en = TD_FALSE;
         attr->venc_attr.h265_attr.frame_buf_ratio = 70;
         attr->rc_attr.rc_mode = OT_VENC_RC_MODE_H265_CBR;
-        attr->rc_attr.h265_cbr.gop = frame_rate;
+        attr->rc_attr.h265_cbr.gop = gop_frames;
         attr->rc_attr.h265_cbr.stats_time = 1;
         attr->rc_attr.h265_cbr.src_frame_rate = APCAM_FRAME_RATE;
         attr->rc_attr.h265_cbr.dst_frame_rate = frame_rate;
@@ -157,7 +157,7 @@ void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
         attr->venc_attr.h264_attr.rcn_ref_share_buf_en = TD_FALSE;
         attr->venc_attr.h264_attr.frame_buf_ratio = 70;
         attr->rc_attr.rc_mode = OT_VENC_RC_MODE_H264_CBR;
-        attr->rc_attr.h264_cbr.gop = frame_rate;
+        attr->rc_attr.h264_cbr.gop = gop_frames;
         attr->rc_attr.h264_cbr.stats_time = 1;
         attr->rc_attr.h264_cbr.src_frame_rate = APCAM_FRAME_RATE;
         attr->rc_attr.h264_cbr.dst_frame_rate = frame_rate;
@@ -195,6 +195,21 @@ td_s32 ca_hisi_set_bitrate(ot_venc_chn channel, td_u32 bit_rate_kbps)
         attr.rc_attr.h265_cbr.bit_rate = bit_rate_kbps;
     } else if (attr.rc_attr.rc_mode == OT_VENC_RC_MODE_H264_CBR) {
         attr.rc_attr.h264_cbr.bit_rate = bit_rate_kbps;
+    } else {
+        return TD_FAILURE;
+    }
+    return ss_mpi_venc_set_chn_attr(channel, &attr);
+}
+
+td_s32 ca_hisi_set_gop(ot_venc_chn channel, td_u32 gop_frames)
+{
+    ot_venc_chn_attr attr;
+    td_s32 result = ss_mpi_venc_get_chn_attr(channel, &attr);
+    if (result != TD_SUCCESS) return result;
+    if (attr.rc_attr.rc_mode == OT_VENC_RC_MODE_H265_CBR) {
+        attr.rc_attr.h265_cbr.gop = gop_frames;
+    } else if (attr.rc_attr.rc_mode == OT_VENC_RC_MODE_H264_CBR) {
+        attr.rc_attr.h264_cbr.gop = gop_frames;
     } else {
         return TD_FAILURE;
     }

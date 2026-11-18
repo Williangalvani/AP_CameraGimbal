@@ -189,6 +189,11 @@ enum string_id {
     S_P_MAIN_FPS,
     S_H_MAIN_FPS,
 #endif
+#if APCAM_HAVE_VIDEO_GOP
+    S_P_MAIN_KEYINT,
+    S_P_SUB_KEYINT,
+    S_H_KEYINT,
+#endif
 #if APCAM_HAVE_PHOTO_RESOLUTION
     S_P_PHOTO_RESOLUTION,
     S_H_PHOTO_RESOLUTION,
@@ -944,6 +949,28 @@ static constexpr Translations translations = [] {
             "，为本相机支持的最高帧率。重启相机程序后生效。",
         APCAM_STRING_VALUE(APCAM_MAIN_FPS_MIN) "～" APCAM_STRING_VALUE(APCAM_FRAME_RATE) " fps、初期値 " APCAM_STRING_VALUE(APCAM_FRAME_RATE)
             "（このカメラが対応する最高値）。カメラアプリの再起動後に反映されます。"};
+#endif
+#if APCAM_HAVE_VIDEO_GOP
+    result[S_P_MAIN_KEYINT] = {"Main RTSP keyframe interval (ms)", "主 RTSP 流关键帧间隔 (ms)", "メイン RTSP キーフレーム間隔 (ms)"};
+    result[S_P_SUB_KEYINT] = {"Sub RTSP keyframe interval (ms)", "子 RTSP 流关键帧间隔 (ms)", "サブ RTSP キーフレーム間隔 (ms)"};
+    result[S_H_KEYINT] = {
+        "Time between keyframes in milliseconds, " APCAM_STRING_VALUE(APCAM_KEYINT_MIN_MS) "–" APCAM_STRING_VALUE(APCAM_KEYINT_MAX_MS)
+            "; default " APCAM_STRING_VALUE(APCAM_DEFAULT_KEYINT_MS) " (one a second). It is rounded to whole frames at the stream's "
+            "frame rate; shorter than one frame makes every frame a keyframe. A shorter interval lets the stream recover sooner "
+            "from lost packets and a player join sooner, but a keyframe costs several times the bits of another frame, so at the "
+            "constant bitrate frequent keyframes lower the quality of the whole picture (or need a higher bitrate). A longer "
+            "interval does the opposite. A player can always ask for a keyframe when it needs one. Applies immediately, without a restart.",
+        "关键帧间隔（毫秒），" APCAM_STRING_VALUE(APCAM_KEYINT_MIN_MS) "–" APCAM_STRING_VALUE(APCAM_KEYINT_MAX_MS)
+            "，默认 " APCAM_STRING_VALUE(APCAM_DEFAULT_KEYINT_MS) "（每秒一个）。按该码流的帧率取整为整数帧；小于一帧时每一帧都是关键帧。"
+            "间隔越短，码流在丢包后恢复越快，播放器也能更快开始播放；但一个关键帧占用的数据量是其他帧的数倍，"
+            "在恒定码率下频繁的关键帧会降低整个画面的质量（或需要更高的码率）。间隔越长则相反。"
+            "播放器需要时随时可以请求关键帧。立即生效，无需重启。",
+        "キーフレームの間隔（ミリ秒）、" APCAM_STRING_VALUE(APCAM_KEYINT_MIN_MS) "～" APCAM_STRING_VALUE(APCAM_KEYINT_MAX_MS)
+            "、初期値 " APCAM_STRING_VALUE(APCAM_DEFAULT_KEYINT_MS) "（1 秒に 1 回）。ストリームのフレームレートで整数フレームに丸められ、"
+            "1 フレームより短い場合は全フレームがキーフレームになります。間隔が短いほどパケットロスからの回復やプレーヤーの"
+            "再生開始が早くなりますが、キーフレームは他のフレームの数倍のデータ量になるため、固定ビットレートでは頻繁な"
+            "キーフレームが画面全体の画質を下げます（または必要なビットレートが上がります）。間隔が長い場合はその逆です。"
+            "プレーヤーは必要なときにいつでもキーフレームを要求できます。再起動なしで即時反映されます。"};
 #endif
 #if APCAM_HAVE_PHOTO_RESOLUTION
     result[S_P_PHOTO_RESOLUTION] = {"Photo resolution", "照片分辨率", "写真の解像度"};

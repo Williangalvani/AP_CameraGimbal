@@ -108,7 +108,9 @@ def sharpness(host):
 
 
 def probe(host, stream, seconds=5):
-    """Codec, size, frame rate and bitrate the RTSP stream delivers."""
+    """Codec, size, frame rate, bitrate and keyframe spacing (s) the RTSP stream delivers.
+    The spacing is the median between keyframes, so the one the RTSP PLAY asks for
+    counts for little; it is 0 with fewer than three keyframes."""
     url = rtsp(host, stream)
     info = json.loads(subprocess.run(
         ['ffprobe', '-v', 'error', '-rtsp_transport', 'tcp', '-select_streams', 'v:0',
@@ -116,16 +118,19 @@ def probe(host, stream, seconds=5):
         capture_output=True, text=True, timeout=30).stdout or '{}').get('streams', [{}])[0]
     packets = json.loads(subprocess.run(
         ['ffprobe', '-v', 'error', '-rtsp_transport', 'tcp', '-select_streams', 'v:0',
-         '-show_entries', 'packet=pts_time,size', '-of', 'json', '-read_intervals',
+         '-show_entries', 'packet=pts_time,size,flags', '-of', 'json', '-read_intervals',
          f'%+{seconds}', url], capture_output=True, text=True, timeout=seconds + 30).stdout
         or '{}').get('packets', [])
     times = [float(p['pts_time']) for p in packets if 'pts_time' in p]
     span = times[-1] - times[0] if len(times) > 1 else 0
     if not info or span <= 0:
         raise GrabError(f'{url}: no stream')
+    keys = [float(p['pts_time']) for p in packets if 'pts_time' in p and 'K' in p.get('flags', '')]
+    gaps = sorted(b - a for a, b in zip(keys, keys[1:]))
     return {'codec': info.get('codec_name'), 'size': f'{info.get("width")}x{info.get("height")}',
             'fps': (len(times) - 1) / span,
-            'kbps': sum(int(p['size']) for p in packets) * 8 / span / 1000}
+            'kbps': sum(int(p['size']) for p in packets) * 8 / span / 1000,
+            'keyframe_s': gaps[len(gaps) // 2] if len(gaps) >= 2 else 0.0}
 
 
 def save_png(path, images):
@@ -363,10 +368,14 @@ CHECKS = [
           kind='main', restart=True, note='applies when camera-app starts'),
     check('main_bitrate', 'main_bitrate', ['4000', '16000'], trend('kbps', 1, 1.0), kind='main',
           note='measured over 5 s; a still scene may not fill the larger budget'),
+    check('main_keyframe_interval', 'main_keyframe_interval', ['500', '2000'],
+          stream_is('keyframe_s', [0.5, 2.0]), kind='main', note='median keyframe spacing over 5 s'),
     check('sub_resolution', 'sub_resolution', ['1280x720', '1920x1080'],
           stream_is('size', ['1280x720', '1920x1080']), kind='sub'),
     check('sub_codec', 'sub_codec', ['h264', 'h265'], stream_is('codec', ['h264', 'hevc']),
           kind='sub'),
+    check('sub_keyframe_interval', 'sub_keyframe_interval', ['500', '2000'],
+          stream_is('keyframe_s', [0.5, 2.0]), kind='sub', note='median keyframe spacing over 5 s'),
     check('capture', None, [], None, kind='capture', note='Sensors: take a photo'),
     check('one_push_white_balance', None, [], None, dict(NEUTRAL_MANUAL, wb_red='256',
           wb_blue='256'), kind='one_push', note='Sensors: one-push white balance, green water'),

@@ -2,6 +2,7 @@
 #include "apcam/APC_Config.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -118,6 +119,70 @@ int main()
         assert(apcam_main_bitrate_kbps(8000U, width, height) == 8000U);
     }
 
+    // keyframe interval in ms to frames per GOP at the stream's frame rate
+    static const unsigned rates[] = {30U, 25U, 15U, 5U};
+    for (unsigned fps : rates) assert(apcam_gop_frames(APCAM_DEFAULT_KEYINT_MS, fps) == fps);
+    assert(apcam_gop_frames(500U, 30U) == 15U && apcam_gop_frames(30U, 30U) == 1U);
+    assert(apcam_gop_frames(10000U, 30U) == 300U && apcam_gop_frames(10000U, 5U) == 50U);
+    assert(apcam_gop_frames(1050U, 30U) == 32U && apcam_gop_frames(1049U, 30U) == 31U);  // 31.5 and 31.47
+    assert(apcam_gop_frames(100U, 25U) == 3U && apcam_gop_frames(60U, 25U) == 2U);      // 2.5 and 1.5 round up
+    assert(apcam_gop_frames(30U, 5U) == 1U && apcam_gop_frames(0U, 30U) == 1U && apcam_gop_frames(1000U, 0U) == 1U);
+    assert(apcam_gop_frames(10000U, 240U) == 2400U && apcam_gop_frames(UINT_MAX, UINT_MAX) == APCAM_GOP_MAX_FRAMES);
+    // and back, as the 4K Cam Manager's gop is saved: within the bounds it gives the frames again
+    for (unsigned fps = 5U; fps <= 30U; fps++) {
+        for (unsigned frames = 1U; frames <= 300U; frames++) {
+            const unsigned ms = apcam_keyint_ms(frames, fps);
+            assert(ms >= APCAM_KEYINT_MIN_MS && ms <= APCAM_KEYINT_MAX_MS);
+            if ((unsigned long)frames * 1000UL <= (unsigned long)APCAM_KEYINT_MAX_MS * fps)
+                assert(apcam_gop_frames(ms, fps) == frames);
+        }
+    }
+    assert(apcam_keyint_ms(15U, 30U) == 500U && apcam_keyint_ms(1U, 30U) == 33U && apcam_keyint_ms(32U, 30U) == 1067U);
+    assert(apcam_keyint_ms(0U, 30U) == APCAM_KEYINT_MIN_MS && apcam_keyint_ms(301U, 30U) == APCAM_KEYINT_MAX_MS);
+    assert(apcam_keyint_ms(1U, 0U) == 1000U);
+
+    // [stream.*] keyframe_interval_ms: VIDEO_MAIN_KEYMS / VIDEO_SUB_KEYMS, live like the bitrate
+    ca_config_defaults(&config);
+    assert(config.main_keyint_ms == 1000U && config.sub_keyint_ms == 1000U);
+    const int main_keyint = ca_config_param_find("VIDEO_MAIN_KEYMS");
+    const int sub_keyint = ca_config_param_find("VIDEO_SUB_KEYMS");
+    assert(main_keyint >= 0 && sub_keyint >= 0 && main_keyint != sub_keyint);
+    assert(!strcmp(ca_config_param_name((size_t)main_keyint), "VIDEO_MAIN_KEYMS"));
+    assert(!strcmp(ca_config_param_name((size_t)sub_keyint), "VIDEO_SUB_KEYMS"));
+    assert(strlen("VIDEO_MAIN_KEYMS") <= 16U);
+    const APC_Config::Field *main_field = APC_Config::find("stream.main", "keyframe_interval_ms");
+    const APC_Config::Field *sub_field = APC_Config::find("stream.sub", "keyframe_interval_ms");
+    assert(main_field != NULL && main_field->minimum == 30 && main_field->maximum == 10000);
+    assert(sub_field != NULL && sub_field->minimum == 30 && sub_field->maximum == 10000);
+    assert(ca_config_param_get(&config, (size_t)main_keyint) == 1000);
+    write_file(path, "[stream.main]\nkeyframe_interval_ms = 500\n[stream.sub]\nkeyframe_interval_ms = 10000\n");
+    ca_config_defaults(&config);
+    assert(ca_config_load(&config, path, error, sizeof(error)) == 0);
+    assert(config.main_keyint_ms == 500U && config.sub_keyint_ms == 10000U);
+    assert(ca_config_param_get(&config, (size_t)sub_keyint) == 10000);
+    assert(ca_config_param_save(&config, path, (size_t)main_keyint, 30) == 0 && config.main_keyint_ms == 30U);
+    assert(ca_config_param_save(&config, path, (size_t)sub_keyint, 2500) == 0 && config.sub_keyint_ms == 2500U);
+    assert(ca_config_param_save(&config, path, (size_t)main_keyint, 29) < 0 && config.main_keyint_ms == 30U);
+    assert(ca_config_param_save(&config, path, (size_t)sub_keyint, 10001) < 0 && config.sub_keyint_ms == 2500U);
+    assert(ca_config_param_save(&config, path, (size_t)sub_keyint, 1000.5f) < 0);
+    ca_config_defaults(&config);
+    assert(ca_config_load(&config, path, error, sizeof(error)) == 0);
+    assert(config.main_keyint_ms == 30U && config.sub_keyint_ms == 2500U);
+    assigned = config;
+    assert(ca_config_param_assign(&assigned, (size_t)main_keyint, 10000) == 0 && assigned.main_keyint_ms == 10000U);
+    assert(ca_config_param_assign(&assigned, (size_t)main_keyint, 0) < 0 && assigned.main_keyint_ms == 10000U);
+    // each alone makes the image settings differ and is copied with them, not with the 4K Cam Manager's
+    assert(!ca_config_image_equal(&config, &assigned));
+    ca_config_copy_image(&assigned, &config);
+    assert(ca_config_image_equal(&config, &assigned) && assigned.main_keyint_ms == 30U);
+    assigned.sub_keyint_ms = 1000U;
+    assert(!ca_config_image_equal(&config, &assigned));
+    ca_config_copy_image(&assigned, &config);
+    assert(assigned.sub_keyint_ms == 2500U);
+    ca_config_defaults(&running);
+    ca_config_copy_4kcam(&running, &config);
+    assert(running.main_keyint_ms == 1000U && running.sub_keyint_ms == 1000U);
+
     const APC_Config::Field *hue = APC_Config::find("image", "hue");
     assert(hue != NULL && hue->param_name == NULL);
 
@@ -126,6 +191,9 @@ int main()
         "[image]\ngain_mode = fixed\n",  "[image]\nwb_water = red\n",    "[image]\nae_strategy = middle\n",
         "[image]\nslow_shutter = maybe\n", "[image]\nshutter = 1/34464\n",
         "[image]\niris_mode = manual\n", "[image]\niris_mode = 1\n", "[image]\niris_mode = Priority\n",
+        "[stream.main]\nkeyframe_interval_ms = 29\n", "[stream.main]\nkeyframe_interval_ms = 10001\n",
+        "[stream.sub]\nkeyframe_interval_ms = 0\n", "[stream.sub]\nkeyframe_interval_ms = 1s\n",
+        "[stream.sub]\nkeyframe_interval_ms = -500\n",
     };
     for (const char *text : invalid) {
         write_file(path, text);

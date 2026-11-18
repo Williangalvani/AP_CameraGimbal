@@ -418,6 +418,18 @@ static unsigned main_bitrate(const struct APC_Media_HiSi_State *media,
                                    media->sizes.height[CA_HISI_MAIN_CHN]);
 }
 
+// the main stream encodes at the configured rate, fixed until camera-app restarts
+static unsigned main_gop(const struct APC_Media_HiSi_State *media,
+                         const struct ca_config *settings)
+{
+    return apcam_gop_frames(settings->main_keyint_ms, media->config.frame_rate);
+}
+
+static unsigned sub_gop(const struct ca_config *settings)
+{
+    return apcam_gop_frames(settings->sub_keyint_ms, APCAM_FRAME_RATE);
+}
+
 int APC_Media_HiSi::init(const struct ca_media_config *config)
 {
     struct APC_Media_HiSi_State *media;
@@ -483,17 +495,21 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     ca_hisi_publish_iris_status();
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_MAIN_VENC], settings->main_codec,
                              sizes->width[CA_HISI_MAIN_CHN], sizes->height[CA_HISI_MAIN_CHN],
-                             config->frame_rate, main_bitrate(media, settings));
+                             config->frame_rate, main_bitrate(media, settings),
+                             main_gop(media, settings));
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_SUB_VENC], settings->sub_codec,
                              sizes->width[CA_HISI_SUB_CHN], sizes->height[CA_HISI_SUB_CHN],
                              APCAM_FRAME_RATE,
                              apcam_hisi_auto_bitrate_kbps(sizes->width[CA_HISI_SUB_CHN],
-                                                          sizes->height[CA_HISI_SUB_CHN]));
+                                                          sizes->height[CA_HISI_SUB_CHN]),
+                             sub_gop(settings));
+    // recordings keep one keyframe a second
     ca_hisi_video_attributes(&media->venc_attr[CA_HISI_RECORD_VENC], CA_VIDEO_H264,
                              sizes->width[CA_HISI_RECORD_CHN], sizes->height[CA_HISI_RECORD_CHN],
                              APCAM_FRAME_RATE,
                              apcam_hisi_auto_bitrate_kbps(sizes->width[CA_HISI_RECORD_CHN],
-                                                          sizes->height[CA_HISI_RECORD_CHN]));
+                                                          sizes->height[CA_HISI_RECORD_CHN]),
+                             APCAM_FRAME_RATE);
     stage = "VENC creation";
     for (unsigned channel = 0; channel < media->venc_count; channel++) {
         if (ss_mpi_venc_create_chn(channel, &media->venc_attr[channel]) != TD_SUCCESS) goto fail;
@@ -563,13 +579,13 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     media->thread_started = true;
     (void)ss_mpi_venc_request_idr(CA_HISI_MAIN_VENC, TD_TRUE);
     (void)ss_mpi_venc_request_idr(CA_HISI_SUB_VENC, TD_TRUE);
-    ca_log("media ready: /video1 %ux%u/%u %s %u kbps; /video2 %ux%u/%u %s; "
+    ca_log("media ready: /video1 %ux%u/%u %s %u kbps gop %u; /video2 %ux%u/%u %s gop %u; "
            "recording %ux%u H.264 (%s encoder); RTSP port %u",
            sizes->width[CA_HISI_MAIN_CHN], sizes->height[CA_HISI_MAIN_CHN],
            config->frame_rate, ca_video_codec_name(settings->main_codec),
-           main_bitrate(media, settings),
+           main_bitrate(media, settings), main_gop(media, settings),
            sizes->width[CA_HISI_SUB_CHN], sizes->height[CA_HISI_SUB_CHN],
-           APCAM_FRAME_RATE, ca_video_codec_name(settings->sub_codec),
+           APCAM_FRAME_RATE, ca_video_codec_name(settings->sub_codec), sub_gop(settings),
            sizes->width[CA_HISI_RECORD_CHN], sizes->height[CA_HISI_RECORD_CHN],
            sizes->record_channel ? "dedicated" : "main", config->rtsp_port);
     return 0;
@@ -809,12 +825,34 @@ int APC_Media_HiSi::apply_image(const struct ca_config *settings)
     pthread_mutex_lock(&media->isp_lock);
     int result = ca_hisi_apply_isp_config(settings, false);
     pthread_mutex_unlock(&media->isp_lock);
-    const unsigned bit_rate = main_bitrate(media, settings);
-    if (result == 0 && bit_rate != main_bitrate(media, &media->config.settings)) {
+    const struct ca_config *applied = &media->config.settings;
+    const unsigned bit_rate = main_bitrate(media, settings), old_bit_rate = main_bitrate(media, applied);
+    const unsigned main_frames = main_gop(media, settings), old_main_frames = main_gop(media, applied);
+    const unsigned sub_frames = sub_gop(settings);
+    bool bit_rate_set = false, main_gop_set = false;
+    if (result == 0 && bit_rate != old_bit_rate) {
         result = ca_hisi_set_bitrate(CA_HISI_MAIN_VENC, bit_rate);
+        bit_rate_set = result == 0;
         if (result == 0) ca_log("main stream bitrate %u kbps", bit_rate);
         else ca_log("main stream bitrate change failed: 0x%x", (unsigned)result);
     }
+    if (result == 0 && main_frames != old_main_frames) {
+        result = ca_hisi_set_gop(CA_HISI_MAIN_VENC, main_frames);
+        main_gop_set = result == 0;
+        if (result == 0) ca_log("main stream keyframe every %u frames (%u ms)", main_frames, settings->main_keyint_ms);
+        else ca_log("main stream keyframe interval change failed: 0x%x", (unsigned)result);
+    }
+    if (result == 0 && sub_frames != sub_gop(applied)) {
+        result = ca_hisi_set_gop(CA_HISI_SUB_VENC, sub_frames);
+        if (result == 0) ca_log("sub stream keyframe every %u frames (%u ms)", sub_frames, settings->sub_keyint_ms);
+        else ca_log("sub stream keyframe interval change failed: 0x%x", (unsigned)result);
+    }
+    // the caller's rollback compares with the applied settings, which still
+    // hold the old values, so it would leave these encoder changes in place
+    if (main_gop_set && result != 0 && ca_hisi_set_gop(CA_HISI_MAIN_VENC, old_main_frames) != TD_SUCCESS)
+        ca_log("main stream keyframe interval rollback failed");
+    if (bit_rate_set && result != 0 && ca_hisi_set_bitrate(CA_HISI_MAIN_VENC, old_bit_rate) != TD_SUCCESS)
+        ca_log("main stream bitrate rollback failed");
     if (result == 0) ca_config_copy_image(&media->config.settings, settings);
     pthread_mutex_unlock(&media->lock);
     if (result != 0) { errno = EIO; return -1; }

@@ -242,8 +242,20 @@ def check_actions(args, check):
     check(status == 200 and reply['code'] == 0, 'setVencConf channel 2 is accepted')
     _, sub = action(args, 'getVencConf', {'channel': 1})
     sub_settings = {key: sub[key] for key in VENC_TYPES}
-    round_trip(args, check, 'setVencConf', {'channel': 1, 'bitrate': sub['bitrate'] // 2 + 1, 'frame_rate': 15, 'gop': 15},
+    round_trip(args, check, 'setVencConf', {'channel': 1, 'bitrate': sub['bitrate'] // 2 + 1, 'frame_rate': 15},
                'getVencConf', {'channel': 1}, sub_settings)
+    # gop sets the channel's keyframe_interval_ms at its frame rate; channel 2, which reads as the sub
+    # stream, sets nothing
+    _, third = action(args, 'getVencConf', {'channel': 2})
+    for channel in (0, 1):
+        _, venc = action(args, 'getVencConf', {'channel': channel})
+        gop = 15 if venc['gop'] != 15 else 10
+        round_trip(args, check, 'setVencConf', {'channel': channel, 'gop': gop}, 'getVencConf', {'channel': channel},
+                   {'gop': gop, 'frame_rate': venc['frame_rate']})
+        round_trip(args, check, 'setVencConf', {'channel': channel, 'gop': venc['gop']}, 'getVencConf',
+                   {'channel': channel}, {'gop': venc['gop']})
+    round_trip(args, check, 'setVencConf', {'channel': 2, 'gop': third['gop'] // 2 + 1}, 'getVencConf',
+               {'channel': 2}, {'gop': third['gop']})
 
     vendor = {'hue': 140, 'sharpness': 200, 'gamma': 40, 'blc_level': 70, 'awb_style_red': 30,
               'awb_style_green': 0, 'awb_style_blue': 60, 'max_sys_gain': 4, 'auto_gain_mode': 1,

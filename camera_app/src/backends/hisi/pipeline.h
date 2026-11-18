@@ -28,14 +28,16 @@ td_s32 ca_hisi_system_init(const struct ca_hisi_output_sizes *sizes);
 void ca_hisi_configure_vi(sample_vi_cfg *vi_cfg);
 td_s32 ca_hisi_vpss_start(const struct ca_hisi_output_sizes *sizes);
 void ca_hisi_vpss_stop(const struct ca_hisi_output_sizes *sizes);
-// frame_rate is the encoded rate; the encoder drops sensor frames to reach it
+// frame_rate is the encoded rate; the encoder drops sensor frames to reach it.
+// gop_frames is the keyframe interval in encoded frames (apcam_gop_frames()).
 void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
                               enum ca_video_codec codec, td_u32 width,
                               td_u32 height, td_u32 frame_rate,
-                              td_u32 bit_rate_kbps);
+                              td_u32 bit_rate_kbps, td_u32 gop_frames);
 // call between create and start
 td_s32 ca_hisi_set_low_delay_vui(ot_venc_chn channel, enum ca_video_codec codec);
 td_s32 ca_hisi_set_bitrate(ot_venc_chn channel, td_u32 bit_rate_kbps);
+td_s32 ca_hisi_set_gop(ot_venc_chn channel, td_u32 gop_frames);
 td_s32 ca_hisi_set_inverted(td_bool inverted, bool record_enabled,
                             const struct ca_hisi_output_sizes *sizes);
 

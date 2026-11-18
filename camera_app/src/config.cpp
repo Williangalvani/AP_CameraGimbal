@@ -46,6 +46,10 @@ void ca_config_defaults(struct ca_config *config)
 #if APCAM_HAVE_VIDEO_FRAME_RATE
     config->main_frame_rate = APCAM_FRAME_RATE;
 #endif
+#if APCAM_HAVE_VIDEO_GOP
+    config->main_keyint_ms = APCAM_DEFAULT_KEYINT_MS;
+    config->sub_keyint_ms = APCAM_DEFAULT_KEYINT_MS;
+#endif
     config->orientation = (enum ca_mount_orientation)APCAM_DEFAULT_ORIENTATION;
     config->uart_protocol = CA_UART_NONE;
     config->thermal_palette = CA_PALETTE_WHITE_HOT;
@@ -543,18 +547,24 @@ int ca_config_param_save(struct ca_config *config, const char *path,
     return 0;
 }
 
-/* The photo size and the video bitrate travel with the image settings to the
- * media backend, which applies them while running. */
+/* The photo size, the video bitrate and the keyframe intervals travel with the
+ * image settings to the media backend, which applies them while running. */
 #if APCAM_HAVE_PHOTO_RESOLUTION
 #define PHOTO_FIELDS(X) X(photo_resolution)
 #else
 #define PHOTO_FIELDS(X)
 #endif
 #if APCAM_HAVE_VIDEO_BITRATE
-#define ENCODER_FIELDS(X) X(main_bitrate_kbps)
+#define BITRATE_FIELDS(X) X(main_bitrate_kbps)
 #else
-#define ENCODER_FIELDS(X)
+#define BITRATE_FIELDS(X)
 #endif
+#if APCAM_HAVE_VIDEO_GOP
+#define GOP_FIELDS(X) X(main_keyint_ms) X(sub_keyint_ms)
+#else
+#define GOP_FIELDS(X)
+#endif
+#define ENCODER_FIELDS(X) BITRATE_FIELDS(X) GOP_FIELDS(X)
 #if APCAM_HAVE_4KCAM_COMPAT
 #define FOURKCAM_FIELDS(X) X(hue) X(sharpness) X(gamma) X(backlight) X(wb_style_red) X(wb_style_green) \
     X(wb_style_blue) X(wb_water) X(max_gain) X(gain_mode) X(max_again) X(max_dgain) X(manual_again) \

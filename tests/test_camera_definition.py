@@ -60,6 +60,20 @@ class Definitions(unittest.TestCase):
                                      [('auto', '0'), ('priority', '1')])
                     self.assertIn('iris priority', iris.findtext('description'))
 
+    def test_keyframe_interval_only_on_hisi(self):
+        """Only the hisi backend sets its encoders' keyframe intervals; no other target lists them."""
+        for target in ('mt11', 'a8', 'zr10', 'zt30', 'z1mini', 'rpi_libcam_caddx', 'hisi'):
+            with self.subTest(target=target):
+                root = ET.parse(ROOT / 'build/camera-definitions' / (target + '.xml')).getroot()
+                params = {p.get('name'): p for p in root.findall('parameters/parameter')}
+                for name in ('VIDEO_MAIN_KEYMS', 'VIDEO_SUB_KEYMS'):
+                    self.assertEqual(name in params, target == 'hisi')
+                    if target == 'hisi':
+                        keyint = params[name]
+                        self.assertEqual((keyint.get('type'), keyint.get('min'), keyint.get('max'),
+                                          keyint.get('default')), ('int32', '30', '10000', '1000'))
+                        self.assertIn('keyframe interval (ms)', keyint.findtext('description'))
+
     def test_target_capabilities(self):
         for target in ('mt11', 'a8', 'zr10', 'zt30', 'z1mini'):
             with self.subTest(target=target):

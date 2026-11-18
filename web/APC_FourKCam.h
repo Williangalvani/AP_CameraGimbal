@@ -6,6 +6,7 @@
  * with the value reads report changes nothing, so a client echoing a whole
  * reply back doesn't move settings that don't map exactly. */
 #include "APC_StringBuffer.h"
+#include "../include/apcam/keyframe_interval.h"
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -304,7 +305,14 @@ struct Stream {
     bool configurable = false;  // bitrate and frame rate are settings
     long min_frame_rate = 30;
     long max_bitrate_kbps = 0;
+    unsigned keyint_ms = APCAM_DEFAULT_KEYINT_MS;  // keyframe_interval_ms, a setting of every stream
 };
+
+/* The encoder's GOP in frames, as camera-app sets it */
+inline long gop(const Stream &stream)
+{
+    return (long)apcam_gop_frames(stream.keyint_ms, stream.frame_rate);
+}
 
 struct Identity {
     const char *mac;  // "aa-bb-cc-dd-ee-ff", the vendor's form
@@ -403,7 +411,7 @@ inline void venc(APC_StringBuffer &out, long channel, const Stream &stream,
     out.appendf("],\"pic_width\":%ld,\"pic_height\":%ld,\"rc_mode\":1,\"bitrate\":%ld,"
                 "\"max_framerate\":%ld,\"frame_rate\":%ld,\"gop\":%ld,",
                 u16(stream.width), u16(stream.height), u16(stream.bitrate_kbps), u16(stream.max_frame_rate),
-                u16(stream.frame_rate), u16(stream.frame_rate * 2L));
+                u16(stream.frame_rate), u16(gop(stream)));
 }
 
 inline void finish(APC_StringBuffer &out, int code, const char *log, const Identity &identity)
@@ -561,19 +569,30 @@ inline void venc_changes(const Field *fields, size_t count, const Stream &stream
         if (chosen != NULL && strcmp(chosen, current) != 0) changes.set(section, "resolution", chosen);
     }
 
-    if (!stream.configurable) return;
-    // a maximum of 0 means the bitrate isn't a setting
-    const Field *bitrate = find(fields, count, "bitrate");
-    if (bitrate != NULL && stream.max_bitrate_kbps > 0) {
-        const long value = clamp(bitrate->value, 1, stream.max_bitrate_kbps);
-        if (bitrate->value != (long)stream.bitrate_kbps && value != (long)stream.bitrate_kbps)
-            changes.set_number(section, "bitrate_kbps", value);
+    long frame_rate = stream.frame_rate;  // once this request is applied
+    if (stream.configurable) {
+        // a maximum of 0 means the bitrate isn't a setting
+        const Field *bitrate = find(fields, count, "bitrate");
+        if (bitrate != NULL && stream.max_bitrate_kbps > 0) {
+            const long value = clamp(bitrate->value, 1, stream.max_bitrate_kbps);
+            if (bitrate->value != (long)stream.bitrate_kbps && value != (long)stream.bitrate_kbps)
+                changes.set_number(section, "bitrate_kbps", value);
+        }
+        const Field *rate = find(fields, count, "frame_rate");
+        if (rate != NULL) {
+            const long value = clamp(rate->value, stream.min_frame_rate, (long)stream.max_frame_rate);
+            if (rate->value != (long)stream.frame_rate && value != (long)stream.frame_rate) {
+                changes.set_number(section, "frame_rate", value);
+                frame_rate = value;
+            }
+        }
     }
-    const Field *rate = find(fields, count, "frame_rate");
-    if (rate != NULL) {
-        const long value = clamp(rate->value, stream.min_frame_rate, (long)stream.max_frame_rate);
-        if (rate->value != (long)stream.frame_rate && value != (long)stream.frame_rate)
-            changes.set_number(section, "frame_rate", value);
+    // gop is in frames, keyframe_interval_ms the time they last at that frame rate
+    const Field *frames = find(fields, count, "gop");
+    if (frames != NULL && frames->value != u16(gop(stream))) {
+        const long value = apcam_keyint_ms((unsigned)clamp(frames->value, 1, (long)APCAM_GOP_MAX_FRAMES),
+                                           (unsigned)frame_rate);
+        if (value != (long)stream.keyint_ms) changes.set_number(section, "keyframe_interval_ms", value);
     }
 }
 

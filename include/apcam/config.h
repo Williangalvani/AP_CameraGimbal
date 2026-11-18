@@ -220,6 +220,11 @@ struct ca_config {
 #if defined(APCAM_HAVE_VIDEO_FRAME_RATE) && APCAM_HAVE_VIDEO_FRAME_RATE
     unsigned main_frame_rate;
 #endif
+#if defined(APCAM_HAVE_VIDEO_GOP) && APCAM_HAVE_VIDEO_GOP
+    /* time between keyframes in ms, whatever the stream's frame rate */
+    unsigned main_keyint_ms;
+    unsigned sub_keyint_ms;
+#endif
 #if defined(APCAM_HAVE_PHOTO_RESOLUTION) && APCAM_HAVE_PHOTO_RESOLUTION
     enum ca_photo_resolution photo_resolution;
 #endif

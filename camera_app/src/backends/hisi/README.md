@@ -69,6 +69,26 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   restart applies it. `bitrate_kbps` / `VIDEO_MAIN_KBPS` applies
   live to the main encoder (so to shared recordings too); 0 (the default) picks
   12 Mbit/s at 2160p, 4 Mbit/s at 1080p and 2 Mbit/s below.
+- **Keyframe interval**: `[stream.main]` / `[stream.sub]`
+  `keyframe_interval_ms` (`VIDEO_MAIN_KEYMS` / `VIDEO_SUB_KEYMS`), 30-10000 ms,
+  default 1000. The encoder's GOP is `max(1, round(ms * fps / 1000))` frames,
+  at the main encoder's configured `frame_rate` and the sub stream's 30 fps, so
+  an interval below one frame makes every frame a keyframe. The dedicated
+  recorder (VENC 2) keeps 30 frames (1 s); recordings that share the main
+  encoder (the defaults) get the main interval. A change is set like the
+  bitrate, without a restart (`ss_mpi_venc_get_chn_attr`, the CBR `gop`,
+  `ss_mpi_venc_set_chn_attr`); whether the encoder takes a new GOP on a
+  running channel is not yet verified on hardware. If it refuses, camera-app
+  logs the SDK error and keeps the old GOP and bitrate: a MAVLink set is
+  refused, and a web save reports "Could not apply saved settings" (the saved
+  value then applies when camera-app next starts). The "media ready" log line shows each stream's `gop` in
+  frames, and a live change logs "main/sub stream keyframe every N frames".
+  The keyframes RTSP PLAY, RTCP PLI/FIR and frame-socket clients ask for
+  (`ss_mpi_venc_request_idr`) are separate and unchanged. At CBR a keyframe
+  takes several times the bits of another frame, so a shorter interval
+  recovers from loss and lets players join sooner but lowers the quality of
+  the whole picture at the same bitrate; a longer one does the opposite.
+  The 4K Cam Manager `gop` maps to it; see `docs/4kcam-manager-compat.md`.
 - **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
   `max_num_reorder_frames = 0`. Without it Chrome's decoder holds the level's
   whole DPB (5 frames at 4K) before showing the first one.

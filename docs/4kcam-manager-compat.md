@@ -188,6 +188,7 @@ Field mapping:
 | `pic_width` × `pic_height`, `pixel_list` | `resolution`, from the target's resolution list: the requested size, else one of the same height (the extension's recommended sub stream is 640×480) |
 | `bitrate` (kbps) | `[stream.main] bitrate_kbps`, 1–50000. Reads of 0 (automatic), and of the sub stream, report the automatic rate for the resolution |
 | `frame_rate` | `[stream.main] frame_rate`, 5–30; the sub stream reports 30 |
+| `gop` (frames) | the encoder's keyframe interval: `[stream.main]` / `[stream.sub] keyframe_interval_ms` rounded to frames at the stream's frame rate, at most 65535 in the reply. A set that differs from the reported value saves `round(gop × 1000 / frame_rate)` ms, clamped to 30–10000 (gop 0 counts as 1), at the frame rate the same request leaves; the sub stream's is set too, although its bitrate and frame rate aren't. Echoing a read back changes nothing, even for an interval that isn't a whole number of frames. Applied live like `bitrate`; that the encoder takes it live is not yet verified on hardware |
 | `max_framerate` | 30 |
 | anything else, including `setImageAdjustmentEx`'s `set_default` | accepted and ignored; reads report the vendor's defaults |
 
@@ -221,6 +222,7 @@ the extension's stream settings, gets `restart in progress`. Other
 | `[compat] onvif_password` | **ONVIF password** | `blue` |
 | `[image] wb_water` | **One-push water** (green / blue), which also sets the auto white balance calibration | `green` |
 | `[image] hue`, `sharpness`, `gamma`, `backlight`, `wb_style_*`, `max_gain`, `gain_mode`, `max_again`, `max_dgain`, `manual_again`, `again`, `manual_dgain`, `dgain`, `ae_strategy`, `max_exposure`, `slow_shutter` | Video tab, in the units above | vendor defaults: 128, 128, 20, 50, 0, 12, auto, 32, 0, false, 128, false, 128, highlight, 25, false |
+| `[stream.main] keyframe_interval_ms`, `[stream.sub] keyframe_interval_ms` | **Main / Sub RTSP keyframe interval (ms)**, 30–10000, also `VIDEO_MAIN_KEYMS` / `VIDEO_SUB_KEYMS`; the vendor's `gop` above. Recordings from the main encoder follow the main interval; a dedicated recorder keeps 1 s | `1000` |
 | `[image] iris_mode` | **Iris mode** (auto / iris priority), also `IMG_IRIS_MODE`; not part of the vendor API, which neither sets it nor resets it with `set_default` (like `iso`). The API doesn't see it either: in iris priority the shutter it reads is still the requested one, even when a frame-long limit applies a shorter one; the web row shows the applied shutter, and is disabled on cameras without a working DC iris | `auto` |
 
 With **Allow 4K Cam Manager** off, discovery doesn't answer and

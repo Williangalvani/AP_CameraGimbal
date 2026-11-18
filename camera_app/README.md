@@ -595,6 +595,7 @@ through the web UI/INI. The additional proxy parameters are listed in
 | `VIDEO_MAIN_CODEC` | `stream.main.codec` | 0 H.264, 1 H.265 |
 | `VIDEO_SUB_RES` | `stream.sub.resolution` | 0 720p, 1 1080p, 2 2160p, 3 1440p; target availability below |
 | `VIDEO_SUB_CODEC` | `stream.sub.codec` | 0 H.264, 1 H.265 |
+| `VIDEO_MAIN_KEYMS`, `VIDEO_SUB_KEYMS` | `stream.main.keyframe_interval_ms`, `stream.sub.keyframe_interval_ms` | hisi only: 30–10000 ms between keyframes, default 1000, rounded to whole frames at the stream's frame rate (see the hisi backend README) |
 | `IMG_BRIGHTNESS` | `image.brightness` | 0–100 |
 | `IMG_SATURATION` | `image.saturation` | 0–100 |
 | `IMG_CONTRAST` | `image.contrast` | 0–100 |

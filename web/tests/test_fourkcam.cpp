@@ -18,7 +18,8 @@ static const Update *change(const Changes &changes, const char *key)
 {
     for (size_t i = 0; i < changes.count; i++)
         if (!strcmp(changes.updates[i].key, key)) return &changes.updates[i];
-    return NULL;
+    fprintf(stderr, "no change to %s\n", key);
+    abort();
 }
 
 static void test_json()
@@ -334,9 +335,11 @@ static void test_venc()
     assert(parse("{\"channel\":0,\"encode_type\":5,\"pic_width\":1920,\"pic_height\":1080,"
                  "\"bitrate\":12000,\"frame_rate\":25,\"gop\":60}", fields, &count));
     venc_changes(fields, count, main_stream(), main_names, 5, "stream.main", changes);
-    assert(changes.count == 3 && !strcmp(change(changes, "codec")->value, "h265"));
+    assert(changes.count == 4 && !strcmp(change(changes, "codec")->value, "h265"));
     assert(!strcmp(change(changes, "resolution")->value, "1920x1080"));
     assert(!strcmp(change(changes, "frame_rate")->value, "25"));
+    // 60 frames at the 25 fps the same request sets
+    assert(!strcmp(change(changes, "keyframe_interval_ms")->value, "2400"));
     assert(changes.restart);
 
     /* a codec change, either way, restarts camera-app unless it switches live;
@@ -412,6 +415,73 @@ static void test_venc()
     assert(!strcmp(changes.updates[0].section, "stream.sub"));
 }
 
+/* gop: the encoder's frames per keyframe on reads; a different one sets the stream's keyframe_interval_ms. */
+static void test_gop()
+{
+    Field fields[16];
+    size_t count;
+    Changes changes;
+    APC_StringBuffer out;
+
+    Stream stream = main_stream();
+    stream.keyint_ms = 500;
+    venc(out, 0, stream, main_names, 5);
+    assert(strstr(out.data(), "\"frame_rate\":30,\"gop\":15,"));
+    out.reset();
+    stream.keyint_ms = 2000;
+    stream.frame_rate = 15;
+    venc(out, 0, stream, main_names, 5);
+    assert(strstr(out.data(), "\"frame_rate\":15,\"gop\":30,"));
+    out.reset();
+    Stream sub;
+    sub.keyint_ms = 30;
+    venc(out, 1, sub, sub_names, 3);
+    assert(strstr(out.data(), "\"frame_rate\":30,\"gop\":1,"));
+
+    static const struct {
+        long gop;
+        const char *keyint_ms;  // NULL: unchanged
+    } requests[] = {
+        {30, NULL}, {15, "500"}, {60, "2000"}, {1, "33"}, {0, "33"}, {-5, "33"}, {32, "1067"},
+        {300, "10000"}, {301, "10000"}, {70000, "10000"},
+    };
+    for (const auto &request : requests) {
+        char body[64];
+        snprintf(body, sizeof(body), "{\"channel\":0,\"gop\":%ld}", request.gop);
+        changes = Changes();
+        assert(parse(body, fields, &count));
+        venc_changes(fields, count, main_stream(), main_names, 5, "stream.main", changes);
+        if (request.keyint_ms == NULL) {
+            assert(changes.count == 0);
+        } else {
+            assert(changes.count == 1 && !strcmp(changes.updates[0].section, "stream.main"));
+            assert(!strcmp(change(changes, "keyframe_interval_ms")->value, request.keyint_ms) && !changes.restart);
+        }
+    }
+    // a gop that saves the interval already set changes nothing
+    Stream longest = main_stream();
+    longest.keyint_ms = 10000;
+    changes = Changes();
+    assert(parse("{\"gop\":400}", fields, &count));
+    venc_changes(fields, count, longest, main_names, 5, "stream.main", changes);
+    assert(changes.count == 0);
+
+    // the sub stream's bitrate and frame rate aren't settings, its keyframe interval is
+    sub = Stream();
+    sub.width = 1280;
+    sub.height = 720;
+    sub.bitrate_kbps = 2048;
+    changes = Changes();
+    assert(parse("{\"channel\":1,\"bitrate\":1024,\"frame_rate\":15,\"gop\":15}", fields, &count));
+    venc_changes(fields, count, sub, sub_names, 3, "stream.sub", changes);
+    assert(changes.count == 1 && !strcmp(changes.updates[0].section, "stream.sub"));
+    assert(!strcmp(change(changes, "keyframe_interval_ms")->value, "500"));
+    changes = Changes();
+    assert(parse("{\"channel\":1,\"gop\":30}", fields, &count));
+    venc_changes(fields, count, sub, sub_names, 3, "stream.sub", changes);
+    assert(changes.count == 0);
+}
+
 static void test_replies()
 {
     APC_StringBuffer out;
@@ -447,8 +517,9 @@ static void test_replies()
     // the encoder's profile in the extension's enum: H.264 High (2), H.265 Main (1)
     assert(strstr(out.data(), "\"channel\":0,\"encode_type\":1,\"encode_profile\":2,"));
     assert(strstr(out.data(), "\"pixel_list\":[{\"width\":3840,\"height\":2160},{\"width\":1920,\"height\":1080}],"));
+    // gop is the encoder's: keyframe_interval_ms (default 1000) at the frame rate
     assert(strstr(out.data(), "\"pic_width\":3840,\"pic_height\":2160,\"rc_mode\":1,\"bitrate\":12000,"
-                              "\"max_framerate\":30,\"frame_rate\":30,\"gop\":60,"));
+                              "\"max_framerate\":30,\"frame_rate\":30,\"gop\":30,"));
     assert(strstr(out.data(), "\"code\":-1,") && strstr(out.data(), "\"log\":\"say \\\"hi\\\"\\\\\\u000a\""));
 
     out.reset();
@@ -464,6 +535,7 @@ static void test_replies()
     huge.bitrate_kbps = 70000;
     huge.frame_rate = 40000;
     huge.max_frame_rate = 70000;
+    huge.keyint_ms = 10000;
     static const char *const huge_names[] = {"70000x2160"};
     venc(out, 7, huge, huge_names, 1);
     assert(strstr(out.data(), "\"channel\":2,"));
@@ -510,13 +582,17 @@ static void test_echo()
         assert(changes.count == 0 && !changes.one_push);
     }
 
-    Stream streams[3] = {main_stream(), main_stream(), Stream()};
+    Stream streams[5] = {main_stream(), main_stream(), Stream(), main_stream(), Stream()};
     streams[1].h265 = true;
     streams[1].frame_rate = 60;
     streams[1].bitrate_kbps = 30000;
     streams[2].width = 1280;
     streams[2].height = 720;
     streams[2].bitrate_kbps = 2048;
+    // intervals that aren't whole frames read as the encoder's rounded gop
+    streams[3].frame_rate = 25;
+    streams[3].keyint_ms = 1050;
+    streams[4].keyint_ms = 33;
     for (const Stream &stream : streams) {
         APC_StringBuffer out;
         out.append("{");
@@ -634,6 +710,7 @@ int main()
     test_image_ex_changes();
     test_reset();
     test_venc();
+    test_gop();
     test_replies();
     test_echo();
     test_vendor_image_fields();

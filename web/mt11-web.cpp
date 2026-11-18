@@ -768,11 +768,19 @@ static const struct parameter replacement_parameters[] = {
     {"main_frame_rate", "stream.main", "frame_rate", S_P_MAIN_FPS, S_H_MAIN_FPS,
      PARAM_INTEGER, APCAM_MAIN_FPS_MIN, APCAM_FRAME_RATE, 1, NULL, 0},
 #endif
+#if APCAM_HAVE_VIDEO_GOP
+    {"main_keyframe_interval", "stream.main", "keyframe_interval_ms", S_P_MAIN_KEYINT, S_H_KEYINT,
+     PARAM_INTEGER, APCAM_KEYINT_MIN_MS, APCAM_KEYINT_MAX_MS, 1, NULL, 0},
+#endif
     {"sub_resolution", "stream.sub", "resolution", S_P_SUB_RESOLUTION,
      TARGET_TEXT(S_H_SUB_RESOLUTION_MT11, S_H_SUB_RESOLUTION_A8),
      PARAM_ENUM, 0, 0, 0, sub_resolution_options, sizeof(sub_resolution_options) / sizeof(sub_resolution_options[0])},
     {"sub_codec", "stream.sub", "codec", S_P_SUB_CODEC, S_H_SUB_CODEC,
      PARAM_ENUM, 0, 0, 0, replacement_codec_options, sizeof(replacement_codec_options) / sizeof(replacement_codec_options[0])},
+#if APCAM_HAVE_VIDEO_GOP
+    {"sub_keyframe_interval", "stream.sub", "keyframe_interval_ms", S_P_SUB_KEYINT, S_H_KEYINT,
+     PARAM_INTEGER, APCAM_KEYINT_MIN_MS, APCAM_KEYINT_MAX_MS, 1, NULL, 0},
+#endif
     {"main_alias", "stream.main", "alias", S_P_MAIN_ALIAS, S_H_MAIN_ALIAS,
      PARAM_TEXT, 0, 63, 1, NULL, 0},
     {"sub_alias", "stream.sub", "alias", S_P_SUB_ALIAS, S_H_SUB_ALIAS,
@@ -958,7 +966,13 @@ static const char *replacement_defaults[] = {
 #if APCAM_HAVE_VIDEO_FRAME_RATE
     APCAM_STRING_VALUE(APCAM_FRAME_RATE),
 #endif
+#if APCAM_HAVE_VIDEO_GOP
+    APCAM_STRING_VALUE(APCAM_DEFAULT_KEYINT_MS),
+#endif
     APCAM_RESOLUTION_NAME(APCAM_DEFAULT_SUB_RESOLUTION), "h264",
+#if APCAM_HAVE_VIDEO_GOP
+    APCAM_STRING_VALUE(APCAM_DEFAULT_KEYINT_MS),
+#endif
     APCAM_DEFAULT_MAIN_ALIAS, APCAM_DEFAULT_SUB_ALIAS,
     APCAM_RESOLUTION_NAME(APCAM_DEFAULT_RECORDING_RESOLUTION), "false",
 #if APCAM_HAVE_PHOTO_RESOLUTION
@@ -5084,8 +5098,9 @@ static bool restarted_config_ok(char *error, size_t error_size)
 
 #if APCAM_HAVE_4KCAM_COMPAT
 /* ---- 4K Cam Manager and MAVLink Camera Manager (docs/4kcam-manager-compat.md) ---- */
-static_assert(APCAM_HAVE_VIDEO_BITRATE && APCAM_HAVE_VIDEO_FRAME_RATE && APCAM_HAVE_WB_TUNING,
-              "the 4K Cam Manager mapping uses bitrate, frame rate and one-push white balance");
+static_assert(APCAM_HAVE_VIDEO_BITRATE && APCAM_HAVE_VIDEO_FRAME_RATE && APCAM_HAVE_VIDEO_GOP &&
+                  APCAM_HAVE_WB_TUNING,
+              "the 4K Cam Manager mapping uses bitrate, frame rate, keyframe interval and one-push white balance");
 
 /* The web's default for a camera.ini key, or NULL if it has none. */
 static const char *default_value(const char *section, const char *key)
@@ -5208,6 +5223,8 @@ static void fourkcam_stream(const char *config, bool main_stream, apc_fourkcam::
     stream.h265 = strcmp(value, "h265") == 0;
     stream.frame_rate = stream.max_frame_rate = APCAM_FRAME_RATE;
     stream.bitrate_kbps = apcam_hisi_auto_bitrate_kbps(stream.width, stream.height);
+    effective_value(config, section, "keyframe_interval_ms", value, sizeof(value));
+    if (strtoul(value, NULL, 10) != 0) stream.keyint_ms = (unsigned)strtoul(value, NULL, 10);
     if (!main_stream) return;
     stream.configurable = true;
     stream.min_frame_rate = APCAM_MAIN_FPS_MIN;

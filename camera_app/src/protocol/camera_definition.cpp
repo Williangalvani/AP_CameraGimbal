@@ -85,9 +85,15 @@ static const struct ca_camera_parameter parameters[] = {
 #if APCAM_HAVE_VIDEO_FRAME_RATE
     CONFIG("VIDEO_MAIN_FPS", "Main RGB stream frame rate (fps, applies when camera-app restarts)"),
 #endif
+#if APCAM_HAVE_VIDEO_GOP
+    CONFIG("VIDEO_MAIN_KEYMS", "Main RGB stream keyframe interval (ms)"),
+#endif
 #if APCAM_NUM_STREAMS >= 2
     CONFIG("VIDEO_SUB_RES", "Secondary RGB stream resolution"),
     CONFIG("VIDEO_SUB_CODEC", "Secondary RGB stream codec"),
+#endif
+#if APCAM_HAVE_VIDEO_GOP
+    CONFIG("VIDEO_SUB_KEYMS", "Secondary RGB stream keyframe interval (ms)"),
 #endif
 #if APCAM_HAVE_RECORDING_RESOLUTION
     CONFIG("REC_RESOLUTION", "Recording resolution"),

@@ -291,6 +291,11 @@ private:
          sizeof(((struct ca_config *)0)->main_frame_rate), NULL, 0U,
          APCAM_MAIN_FPS_MIN, APCAM_FRAME_RATE, "VIDEO_MAIN_FPS"},
 #endif
+#if APCAM_HAVE_VIDEO_GOP
+        {"stream.main", "keyframe_interval_ms", Kind::Uint, offsetof(struct ca_config, main_keyint_ms),
+         sizeof(((struct ca_config *)0)->main_keyint_ms), NULL, 0U,
+         APCAM_KEYINT_MIN_MS, APCAM_KEYINT_MAX_MS, "VIDEO_MAIN_KEYMS"},
+#endif
         {"stream.sub", "resolution", Kind::Enum,
          offsetof(struct ca_config, sub_resolution),
          sizeof(((struct ca_config *)0)->sub_resolution), sub_resolution_options,
@@ -298,6 +303,11 @@ private:
         {"stream.sub", "codec", Kind::Enum, offsetof(struct ca_config, sub_codec),
          sizeof(((struct ca_config *)0)->sub_codec), codec_options,
          sizeof(codec_options) / sizeof(codec_options[0]), 0, 0, "VIDEO_SUB_CODEC"},
+#if APCAM_HAVE_VIDEO_GOP
+        {"stream.sub", "keyframe_interval_ms", Kind::Uint, offsetof(struct ca_config, sub_keyint_ms),
+         sizeof(((struct ca_config *)0)->sub_keyint_ms), NULL, 0U,
+         APCAM_KEYINT_MIN_MS, APCAM_KEYINT_MAX_MS, "VIDEO_SUB_KEYMS"},
+#endif
         {"stream.main", "alias", Kind::String, offsetof(struct ca_config, main_alias),
          sizeof(((struct ca_config *)0)->main_alias), NULL, 0U, 0, 63, NULL},
         {"stream.sub", "alias", Kind::String, offsetof(struct ca_config, sub_alias),

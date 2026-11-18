@@ -93,6 +93,8 @@ static inline unsigned apcam_hisi_auto_bitrate_kbps(unsigned width, unsigned hei
 #define APCAM_MAIN_BITRATE_MIN_KBPS 0
 #define APCAM_MAIN_BITRATE_MAX_KBPS 50000
 #define APCAM_HAVE_VIDEO_FRAME_RATE 1
+/* the main and sub encoders' keyframe intervals; the dedicated recorder keeps 1 s */
+#define APCAM_HAVE_VIDEO_GOP 1
 /* IMX678 4K@30 (10/12-bit); 60 fps mode exists but 30 is the qualified default. */
 #define APCAM_FRAME_RATE 30
 #define APCAM_THERMAL_FRAME_RATE 0

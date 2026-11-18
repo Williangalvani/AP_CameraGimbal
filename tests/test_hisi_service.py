@@ -658,6 +658,38 @@ while :; do sleep 1; done
         assert saved_iris_mode() == 'priority', ini.read_text()
         status, page = save({'iris_mode': 'auto'})
         assert status == 200 and saved_iris_mode() == 'auto', ini.read_text()
+
+        # Keyframe intervals: number rows saved to [stream.main] / [stream.sub], applied live.
+        def keyint_field(name):
+            page = web_request('/parameters')[1].decode()
+            start = page.index(f'<label for="{name}">')
+            return page[start:page.index('</div>', page.index('<div class=help>', start))]
+
+        def saved_keyint(stream):
+            match = re.search(rf'^\[stream\.{stream}\][^\[]*?^keyframe_interval_ms = (\d+)$', ini.read_text(), re.M)
+            return match.group(1) if match else None
+
+        rows = (('main_keyframe_interval', 'main', 'Main RTSP keyframe interval (ms)'),
+                ('sub_keyframe_interval', 'sub', 'Sub RTSP keyframe interval (ms)'))
+        for name, stream, label in rows:
+            field = keyint_field(name)
+            assert f'>{label}</label><input required name="{name}" id="{name}" type=number min="30" ' \
+                   f'max="10000" step="1" value="1000">' in field, field
+            assert 'at the constant bitrate frequent keyframes lower the quality' in field, field
+            assert saved_keyint(stream) == '1000', ini.read_text()
+        old = ready.read_text()
+        status, page = save({'main_keyframe_interval': '500', 'sub_keyframe_interval': '2000'})
+        assert status == 200 and b'Parameters saved' in page, page
+        assert (saved_keyint('main'), saved_keyint('sub')) == ('500', '2000'), ini.read_text()
+        assert 'value="500">' in keyint_field('main_keyframe_interval')
+        assert 'value="2000">' in keyint_field('sub_keyframe_interval')
+        assert ready.read_text() == old, 'a keyframe interval applied live restarted camera-app'
+        before = ini.read_text()
+        for value in ('29', '10001', '1.5'):
+            status, page = save({'main_keyframe_interval': value})
+            assert status == 400 and ini.read_text() == before, (value, status, page)
+        status, page = save({'main_keyframe_interval': '1000', 'sub_keyframe_interval': '1000'})
+        assert status == 200 and (saved_keyint('main'), saved_keyint('sub')) == ('1000', '1000'), ini.read_text()
         (root / 'live-apply').unlink()
         iris_file.unlink()
         update_type.unlink()
@@ -671,7 +703,7 @@ while :; do sleep 1; done
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
               'restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
               'repeated SIGTERM, live and restarting codec change, '
-              'web respawn, iris mode row and save, MCM start after ready, restart backoff, mcm.disable, '
+              'web respawn, iris mode row and save, keyframe interval rows and save, MCM start after ready, restart backoff, mcm.disable, '
               'missing bundle, log pruning and stop')
     finally:
         try:

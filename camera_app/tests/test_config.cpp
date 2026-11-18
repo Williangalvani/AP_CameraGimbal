@@ -294,6 +294,12 @@ int main(int argc, char **argv)
         assert(ca_config_load(&config, path, error, sizeof(error)) < 0);
         assert(strstr(error, "alias") != NULL);
     }
+#if !APCAM_HAVE_VIDEO_GOP
+    // the keyframe intervals are only settings where the backend applies them
+    assert(ca_config_param_find("VIDEO_MAIN_KEYMS") == -1 && ca_config_param_find("VIDEO_SUB_KEYMS") == -1);
+    assert(APC_Config::find("stream.main", "keyframe_interval_ms") == nullptr);
+    assert(APC_Config::find("stream.sub", "keyframe_interval_ms") == nullptr);
+#endif
 #if !APCAM_HAVE_4KCAM_COMPAT
     // iris priority needs the hisi backend's DC iris
     assert(ca_config_param_find("IMG_IRIS_MODE") == -1);
