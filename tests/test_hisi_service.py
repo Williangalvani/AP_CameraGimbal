@@ -4,6 +4,7 @@ from pathlib import Path
 import base64
 import fcntl
 import http.client
+import json
 import os
 import re
 import shutil
@@ -48,9 +49,41 @@ with tempfile.TemporaryDirectory(prefix='hisi-service-') as directory:
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
+/* Loses the first ignore_terms SIGTERMs, as camera-app does after a live media
+ * reconfigure while the vendor ISP thread has SIGTERM ignored. */
+static int ignore_terms;
+static volatile sig_atomic_t terms;
+static void on_term(int signal_number) {
+    (void)signal_number;
+    if (++terms <= ignore_terms) return;
+    char text[64];
+    int length = snprintf(text, sizeof(text), "fake camera-app %d stopped by SIGTERM %d\n",
+                          (int)getpid(), (int)terms);
+    if (write(STDOUT_FILENO, text, (size_t)length) < 0) _exit(1);
+    _exit(0);
+}
+static int acknowledge(uint64_t hash) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s.config", getenv("CAMERA_APP_READY_PATH"));
+    FILE *status = fopen(path, "w");
+    if (!status) return -1;
+    fprintf(status, "%016llx %ld applied\nConfiguration applied.\n",
+            (unsigned long long)hash, (long)getpid());
+    return fclose(status);
+}
 int main(void) {
     if (access(getenv("TEST_IGNORE_TERM"), F_OK) == 0) signal(SIGTERM, SIG_IGN);
+    FILE *ignore = fopen(getenv("TEST_IGNORE_TERMS"), "r");
+    if (ignore) {
+        if (fscanf(ignore, "%d", &ignore_terms) != 1) ignore_terms = 0;
+        fclose(ignore);
+        struct sigaction action;
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = on_term;
+        sigaction(SIGTERM, &action, NULL);
+    }
     int fd = open(getenv("TEST_HARDWARE"), O_CREAT|O_RDWR, 0600);
     if (fd < 0 || flock(fd, LOCK_EX|LOCK_NB)) {
         FILE *bad = fopen(getenv("TEST_OVERLAP"), "w");
@@ -66,20 +99,21 @@ int main(void) {
         return 1;
     }
     /* The web accepts a restart once the new PID acknowledges the saved INI. */
-    char path[4096];
-    uint64_t hash;
+    uint64_t hash, acknowledged;
     if (apcam_config_file_hash(getenv("CAMERA_APP_CONFIG"), &hash)) return 5;
-    snprintf(path, sizeof(path), "%s.config", getenv("CAMERA_APP_READY_PATH"));
-    FILE *status = fopen(path, "w");
-    if (!status) return 4;
-    fprintf(status, "%016llx %ld applied\nConfiguration applied.\n",
-            (unsigned long long)hash, (long)getpid());
-    fclose(status);
+    if (acknowledge(hash)) return 4;
+    acknowledged = hash;
     FILE *ready = fopen(getenv("CAMERA_APP_READY_PATH"), "w");
     if (!ready) return 4;
     fprintf(ready, "backend=hisi\npid=%ld\n", (long)getpid());
     fclose(ready);
-    while (1) pause();
+    /* With TEST_LIVE_APPLY, a saved INI is applied live, as camera-app does. */
+    while (1) {
+        usleep(100000);
+        if (access(getenv("TEST_LIVE_APPLY"), F_OK) != 0 ||
+            apcam_config_file_hash(getenv("CAMERA_APP_CONFIG"), &hash) || hash == acknowledged) continue;
+        if (acknowledge(hash) == 0) acknowledged = hash;
+    }
 }
 ''')
     subprocess.run(['cc', '-O2', '-I' + str(repo / 'include'), str(source),
@@ -184,7 +218,8 @@ while :; do sleep 1; done
     env = dict(os.environ, PATH=str(commands) + ':' + os.environ['PATH'],
                TEST_ROOT=str(root), TEST_HARDWARE=str(root / 'hardware'),
                TEST_OVERLAP=str(root / 'overlap'), TEST_FAIL=str(root / 'fail'),
-               TEST_IGNORE_TERM=str(root / 'ignore-term'), TEST_STALE=str(root / 'stale'),
+               TEST_IGNORE_TERM=str(root / 'ignore-term'), TEST_IGNORE_TERMS=str(root / 'ignore-terms'),
+               TEST_LIVE_APPLY=str(root / 'live-apply'), TEST_STALE=str(root / 'stale'),
                SDCARD_DISKS=str(root / 'mmcblk0'), SDCARD_MOUNTS=str(mounts), SDCARD_HOST='')
     log = open(root / 'service.log', 'w+')
     process = subprocess.Popen(['sh', str(script)], env=env, stdout=log, stderr=log,
@@ -233,6 +268,15 @@ while :; do sleep 1; done
         connection.request('GET' if body is None else 'POST', path, body, headers)
         response = connection.getresponse()
         result = response.status, response.read()
+        connection.close()
+        return result
+
+    def action(name, fields):
+        # 4K Cam Manager's /action requests: no login, no Origin.
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=90)
+        connection.request('POST', '/action/' + name, json.dumps(fields))
+        response = connection.getresponse()
+        result = response.status, json.loads(response.read())
         connection.close()
         return result
 
@@ -454,6 +498,54 @@ while :; do sleep 1; done
         wait_for(lambda: ready.exists() and ready.read_text() != old, 'SIGTERM-proof camera-app not replaced')
         assert len(pids('camera-app')) == 1, pids('camera-app')
 
+        # One that loses its first SIGTERMs, as camera-app does after a live
+        # media reconfigure, stops on a repeated one before the SIGKILL: the
+        # supervisor's alone, then the web's and the supervisor's.
+        app_log = runtime / 'camera_app.log'
+        for ignored, restart in ((1, request_restart),
+                                 (2, lambda: web_request('/restart', f'csrf={csrf()}'))):
+            (root / 'ignore-terms').write_text(f'{ignored}\n')
+            old = ready.read_text()
+            request_restart()
+            wait_for(lambda: ready.exists() and ready.read_text() != old, 'camera-app not restarted')
+            (root / 'ignore-terms').unlink()
+            pid = pids('camera-app')[0]
+            old = ready.read_text()
+            restart()
+            wait_for(lambda: ready.exists() and ready.read_text() != old,
+                     'camera-app that lost SIGTERMs not replaced')
+            assert f'fake camera-app {pid} stopped by SIGTERM {ignored + 1}\n' in app_log.read_text(), \
+                f'camera-app {pid} not stopped by a repeated SIGTERM\n{app_log.read_text()}'
+            assert len(pids('camera-app')) == 1, pids('camera-app')
+
+        # A 4K Cam Manager codec change that camera-app applies live doesn't restart it.
+        web_log = runtime / 'hisi-web.log'
+
+        def main_codec():
+            return re.search(r'\[stream\.main\][^\[]*?^codec = (\w+)$', ini.read_text(), re.M).group(1)
+        assert main_codec() == 'h264'
+        (root / 'live-apply').touch()
+        old = ready.read_text()
+        status, reply = action('setVencConf', {'channel': 0, 'encode_type': 5})
+        assert status == 200 and reply['code'] == 0, reply
+        assert main_codec() == 'h265'
+        time.sleep(2)
+        assert ready.read_text() == old, 'a codec change applied live restarted camera-app'
+        assert 'restarting to apply the codec' not in web_log.read_text()
+        # One that isn't acknowledged as applied restarts camera-app after the reply.
+        (root / 'live-apply').unlink()
+        status, reply = action('setVencConf', {'channel': 0, 'encode_type': 1})
+        assert status == 200 and reply['code'] == 0, reply
+        try:
+            replaced = ready.read_text() != old
+        except FileNotFoundError:
+            replaced = False
+        assert not replaced, 'setVencConf replied only after the restart'
+        assert main_codec() == 'h264'
+        wait_for(lambda: ready.exists() and ready.read_text() != old,
+                 'unacknowledged codec change did not restart camera-app')
+        assert 'restarting to apply the codec' in web_log.read_text(), web_log.read_text()
+
         old_web = pids('hisi-web')[0]
         os.kill(old_web, signal.SIGKILL)
         wait_for(lambda: pids('hisi-web') and pids('hisi-web')[0] != old_web, 'web did not respawn')
@@ -469,6 +561,7 @@ while :; do sleep 1; done
         assert not alive(pid), 'MCM left running by stop'
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
               'restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
+              'repeated SIGTERM, live and restarting codec change, '
               'web respawn, MCM start after ready, restart backoff, mcm.disable, missing bundle, '
               'log pruning and stop')
     finally:

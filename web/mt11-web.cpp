@@ -4434,11 +4434,12 @@ static void stop_pids(const pid_t *pids, size_t count)
 {
     size_t remaining;
 
-    for (size_t i = 0; i < count; i++) (void)kill(pids[i], SIGTERM);
+    /* SIGTERM again every second: after a live media reconfigure the vendor
+     * ISP thread ignores it for about a second, and one sent then is lost. */
     for (unsigned attempt = 0; attempt < 150U; attempt++) {
         remaining = 0;
         for (size_t i = 0; i < count; i++) {
-            if (kill(pids[i], 0) == 0) remaining++;
+            if (kill(pids[i], attempt % 10U == 0U ? SIGTERM : 0) == 0) remaining++;
         }
         if (remaining == 0) return;
         usleep(100000);
@@ -4892,7 +4893,7 @@ static void append_nav(APC_StringBuffer *page, const char *route,
 
 /* Match the app acknowledgement to both the saved bytes and running PID. */
 static bool live_config_notice(const char *config, size_t length, char *message,
-                                size_t capacity, bool *is_error)
+                                size_t capacity, bool *is_error, bool *applied = NULL)
 {
     char path[sizeof(CAMERA_READY_PATH) + 8], state[16];
     snprintf(path, sizeof(path), "%s.config", CAMERA_READY_PATH);
@@ -4913,6 +4914,7 @@ static bool live_config_notice(const char *config, size_t length, char *message,
         text[strcspn(text, "\r\n")] = 0;
         snprintf(message, capacity, "Parameters saved. %s", text);
         *is_error = strcmp(state, "error") == 0;
+        if (applied) *applied = strcmp(state, "applied") == 0;
         found = true;
     }
     free(status);
@@ -4920,11 +4922,14 @@ static bool live_config_notice(const char *config, size_t length, char *message,
     return found;
 }
 
-static bool wait_live_config(const char *config, size_t length, char *message, size_t capacity, bool require_ack)
+/* applied: camera-app reported every saved setting applied without a restart */
+static bool wait_live_config(const char *config, size_t length, char *message, size_t capacity, bool require_ack,
+                             bool *applied = NULL)
 {
     bool is_error = false;
+    if (applied) *applied = false;
     for (unsigned attempt = 0; attempt < 30; attempt++) {
-        if (live_config_notice(config, length, message, capacity, &is_error)) return is_error;
+        if (live_config_notice(config, length, message, capacity, &is_error, applied)) return is_error;
         if (access(CAMERA_READY_PATH, R_OK) != 0) break;
         usleep(100000);
     }
@@ -5085,9 +5090,12 @@ static void fourkcam_stream(const char *config, bool main_stream, apc_fourkcam::
     if (strtoul(value, NULL, 10) != 0) stream.frame_rate = (unsigned)strtoul(value, NULL, 10);
 }
 
-/* Saved like the parameter form saves; camera-app applies it within 500 ms. */
-static bool fourkcam_save(const char *config, const apc_fourkcam::Changes &changes, char *message, size_t size)
+/* Saved like the parameter form saves; camera-app applies it within 500 ms.
+ * applied: camera-app acknowledged the saved bytes as applied without a restart. */
+static bool fourkcam_save(const char *config, const apc_fourkcam::Changes &changes, char *message, size_t size,
+                          bool *applied)
 {
+    *applied = false;
     struct ini_update updates[sizeof(changes.updates) / sizeof(changes.updates[0])];
     for (size_t i = 0; i < changes.count; i++) {
         updates[i].section = changes.updates[i].section;
@@ -5100,7 +5108,7 @@ static bool fourkcam_save(const char *config, const apc_fourkcam::Changes &chang
     bool ok = updated != NULL &&
               save_config(config_path(CAMERA_REPLACEMENT), config_backup_path(CAMERA_REPLACEMENT),
                           updated, length, message, size);
-    if (ok && wait_live_config(updated, length, message, size, false)) ok = false;
+    if (ok && wait_live_config(updated, length, message, size, false, applied)) ok = false;
     free(updated);
     return ok;
 }
@@ -5199,12 +5207,17 @@ static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const
         code = -1;
         snprintf(message, sizeof(message), "unsupported action %s", logged_name);
     }
-    if (code == 0 && changes.count > 0 && !fourkcam_save(config, changes, message, sizeof(message))) code = -1;
+    bool applied = false;
+    if (code == 0 && changes.count > 0 && !fourkcam_save(config, changes, message, sizeof(message), &applied))
+        code = -1;
     if (code == 0 && changes.one_push &&
         !start_white_balance(image.blue_water ? '2' : '1', message, sizeof(message))) code = -1;
     if (lock >= 0) close(lock);
-    if (code == 0 && changes.restart && !restart_camera(message, sizeof(message), true)) code = -1;
+    /* camera-app normally switches the codec live; restart only when it did not
+     * (recording, a restart-only setting or an error), after replying */
+    const bool restart = code == 0 && changes.restart && !applied;
     if (code != 0) log_message("4K Cam Manager %s from %s failed: %s", logged_name, peer, message);
+    else if (restart) log_message("4K Cam Manager %s by %s; restarting to apply the codec", logged_name, peer);
     else if (changes.count > 0 || changes.one_push) log_message("4K Cam Manager %s by %s", logged_name, peer);
 
     unsigned char mac[6] = {0};
@@ -5217,6 +5230,12 @@ static void handle_fourkcam_action(int fd, const APC_HTTPRequest *request, const
     if (reply.valid()) send_response(fd, 200, "OK", "application/json", reply.data(), reply.size(), NULL);
     else send_text_errorf(fd, 500, "Internal Server Error", S_OUT_OF_MEMORY);
     free(config);
+    if (restart) {
+        /* the client has its reply and needn't hold the connection through the restart */
+        (void)shutdown(fd, SHUT_RDWR);
+        if (!restart_camera(message, sizeof(message), true))
+            log_message("4K Cam Manager %s from %s: restart failed: %s", logged_name, peer, message);
+    }
 }
 
 static void handle_onvif(int fd, const APC_HTTPRequest *request)

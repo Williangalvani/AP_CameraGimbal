@@ -197,7 +197,10 @@ static void install_signal_handlers(void)
 }
 
 /* vendor media libraries keep replacing the SIGTERM disposition from their
- * own threads (SigmaStar MI sets it to SIG_IGN once the ISP is running) */
+ * own threads (SigmaStar MI sets it to SIG_IGN once the ISP is running, and
+ * the hisi ISP thread does so for about a second after a live media pipeline
+ * reconfigure); a SIGTERM that arrives meanwhile is lost, so this runs on
+ * every main-loop iteration */
 static void restore_signal_handlers(void)
 {
     struct sigaction current;
@@ -603,7 +606,6 @@ int APC_CameraApp::run(int argc, char **argv)
            ca_uart_protocol_name(app_config.uart_protocol),
            (long)getpid());
 
-    unsigned loops = 0;
     while (!stop_requested) {
 #ifdef CAMERA_APP_ZT30_RAM
         if(ca_zt30::ram_media_finished())return ca_zt30::ram_media_result();
@@ -624,7 +626,7 @@ int APC_CameraApp::run(int argc, char **argv)
 #if APCAM_HAVE_XFROBOT
         ca_xfrobot_server_update(_xfrobot, _backend, _media, _manual.active);
 #endif
-        if (++loops % 50U == 0U) restore_signal_handlers();
+        restore_signal_handlers();
         struct pollfd items[4] = {
             {.fd = ca_siyi_server_fd(_server), .events = POLLIN},
             {.fd = ca_backend_fd(_backend), .events = POLLIN},

@@ -80,12 +80,14 @@ uptime_s()
     read -r now _ </proc/uptime
     now=${now%.*}
 }
+# SIGTERM is sent every second: after a live media reconfigure the vendor ISP
+# thread ignores it for about a second, and a SIGTERM sent then is lost.
 stop_child()
 {
     [ -n "$app_pid" ] || return 0
-    kill -TERM "$app_pid" 2>/dev/null || true
     for _ in $(seq 1 "$STOP_TIMEOUT_S"); do
         process_alive "$app_pid" || break
+        kill -TERM "$app_pid" 2>/dev/null || true
         sleep 1
     done
     if process_alive "$app_pid"; then

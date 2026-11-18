@@ -159,28 +159,31 @@ Field mapping:
 | `low_farme_rate` 0 / 1 (`setImageAdjustmentEx`) | `image.slow_shutter`: auto exposure may lower the frame rate in the dark |
 | `mirror`, `flip` | `mount.orientation`, which only has a 180° rotation: reads report both as 1 for `inverted` and both as 0 otherwise. The extension sends one of them alone; any one sent that differs from the current state sets `inverted` (1) or `upright` (0), and otherwise nothing changes |
 | `set_default` 1 (`setImageAdjustment`) | resets every `[image]` key above that `setImageAdjustment` maps (not `slow_shutter` or orientation) to the web's defaults; the request's other fields are ignored. The extension sends it for the image parameters' **Restore defaults** and with its recommended settings |
-| `encode_type` 1 / 5 | `codec` `h264` / `h265`; a change restarts camera-app (below) |
+| `encode_type` 1 / 5 | `codec` `h264` / `h265`; camera-app switches a change live, and restarts only if it can't (below) |
 | `pic_width` × `pic_height`, `pixel_list` | `resolution`, from the target's resolution list: the requested size, else one of the same height (the extension's recommended sub stream is 640×480) |
 | `bitrate` (kbps) | `[stream.main] bitrate_kbps`, 1–50000. Reads of 0 (automatic), and of the sub stream, report the automatic rate for the resolution |
 | `frame_rate` | `[stream.main] frame_rate`, 5–30; the sub stream reports 30 |
 | `max_framerate` | 30 |
 | anything else, including `setImageAdjustmentEx`'s `set_default` | accepted and ignored; reads report the vendor's defaults |
 
-Resolution and codec changes need camera-app to restart. As with the vendor,
-they apply on the extension's **Save and restart camera**, which sends
-`restart`. The reply comes once camera-app is back. The extension then waits
+Resolution changes need camera-app to restart. As with the vendor, they
+apply on the extension's **Save and restart camera**, which sends `restart`. The reply comes once camera-app is back. The extension then waits
 for the camera to stop answering, up to its 60 s offline timeout, and since the
 web stays up during a camera-app restart it always waits the full 60 s
 before it carries on.
 
-A `setVencConf` that changes the codec of channel 0 or 1 also restarts
-camera-app itself once the change is saved, as `restart` does, and replies
-once it is back (`code` −1 and the error if the restart fails, including
-`restart in progress`). The vendor switches the encoder live, and the
-extension's H.265 toggle (master) sends only `setVencConf` and then has MCM
-recreate the stream. Where the extension's stream settings send `restart`
-after `setVencConf`, as in every version, a codec change restarts camera-app
-twice. Other `setVencConf` changes don't restart.
+The vendor switches the encoder live, and the extension's H.265 toggle
+(master) sends only `setVencConf` and then has MCM recreate the stream. A
+`setVencConf` that changes the codec of channel 0 or 1 is saved, and
+camera-app reconfigures its media pipeline without restarting; the reply
+comes once camera-app reports the saved settings applied. Only if it doesn't
+(it is recording, so the change waits; another saved setting needs a restart;
+the change failed; or no acknowledgement within 3 s) does the web restart
+camera-app, as `restart` does, but after replying `code` 0: the reply never
+waits for, or reports, that restart, whose failure (including `restart in
+progress`) is only logged; a `restart` that follows while it runs, as from
+the extension's stream settings, gets `restart in progress`. Other
+`setVencConf` changes don't restart.
 
 ### Settings
 
