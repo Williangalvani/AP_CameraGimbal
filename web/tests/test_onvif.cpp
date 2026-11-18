@@ -94,6 +94,57 @@ static void test_username_token()
                                            "admin", "blue") == apc_onvif::Auth::missing);
 }
 
+static std::string token_created(const char *created)
+{
+    return std::string("<wsse:UsernameToken><wsse:Username>admin</wsse:Username><wsu:Created>") + created +
+           "</wsu:Created></wsse:UsernameToken>";
+}
+
+static bool token_time(const char *created, time_t *epoch)
+{
+    return apc_onvif::username_token_time(token_created(created).c_str(), epoch);
+}
+
+static void test_username_token_time()
+{
+    time_t epoch = 0;
+    assert(token_time("2026-11-18T12:43:22Z", &epoch) && epoch == 1795005802);
+    // onvif-rs (MCM) sends milliseconds
+    assert(token_time("2026-11-18T12:43:22.123Z", &epoch) && epoch == 1795005802);
+    assert(token_time(" 2026-11-18T12:43:22.999999Z\n", &epoch) && epoch == 1795005802);
+    assert(token_time("2010-09-16T07:50:45Z", &epoch) && epoch == 1284623445);
+    assert(token_time("1970-01-01T00:00:00Z", &epoch) && epoch == 0);
+    assert(token_time("2026-01-01T00:00:00Z", &epoch) && epoch == 1767225600);
+    assert(token_time("2028-02-29T00:00:00Z", &epoch) && epoch == 1835395200);
+    assert(token_time("2000-02-29T00:00:00Z", &epoch) && epoch == 951782400);
+    assert(token_time("2026-12-31T23:59:59Z", &epoch) && epoch == 1798761599);
+    assert(token_time("2027-01-01T00:00:00Z", &epoch) && epoch == 1798761600);
+
+    epoch = 42;
+    static const char *const rejected[] = {
+        "2026-11-18T12:43:22+00:00", "2026-11-18T09:43:22-03:00", "2026-11-18T12:43:22",
+        "2026-11-18T12:43:22z", "2026-11-18T12:43:22.Z", "2026-11-18T12:43:22.5", "2026-11-18T12:43:22ZZ",
+        "2026-11-18 12:43:22Z", "2026-11-18", "26-11-18T12:43:22Z", "2026-1-18T12:43:22Z",
+        "2026-13-01T00:00:00Z", "2026-00-01T00:00:00Z", "2026-11-00T00:00:00Z", "2026-11-31T00:00:00Z",
+        "2026-02-29T00:00:00Z", "2100-02-29T00:00:00Z", "2026-11-18T24:00:00Z", "2026-11-18T12:60:00Z",
+        "2026-11-18T12:43:60Z", "+026-11-18T12:43:22Z", "", "garbage",
+    };
+    for (const char *created : rejected) assert(!token_time(created, &epoch) && epoch == 42);
+    assert(!apc_onvif::username_token_time("<s:Envelope><s:Body/></s:Envelope>", &epoch));
+    assert(!apc_onvif::username_token_time("<wsse:UsernameToken><wsse:Username>admin</wsse:Username>"
+                                           "</wsse:UsernameToken>", &epoch));
+    assert(!apc_onvif::username_token_time("<wsu:Created>2026-11-18T12:43:22Z</wsu:Created>", &epoch));
+
+    // a wsu:Timestamp's Created before the token isn't the token's
+    const std::string stamped =
+        "<wsu:Timestamp><wsu:Created>2030-01-01T00:00:00Z</wsu:Created></wsu:Timestamp>" +
+        token_created("2026-11-18T12:43:22Z");
+    assert(apc_onvif::username_token_time(stamped.c_str(), &epoch) && epoch == 1795005802);
+
+    const std::string mcm = fixture("GetDeviceInformation.xml");
+    assert(apc_onvif::username_token_time(mcm.c_str(), &epoch) && epoch == 1793136016);  // 2026-10-27T21:20:16.596Z
+}
+
 static void test_probe()
 {
     char id[128];
@@ -241,6 +292,7 @@ int main(int argc, char **argv)
     test_sha1_base64();
     test_xml();
     test_username_token();
+    test_username_token_time();
     test_probe();
     test_hostile();
     test_replies();

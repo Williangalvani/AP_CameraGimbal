@@ -2885,6 +2885,58 @@ done:
     return ok;
 }
 
+#if APCAM_HAVE_4KCAM_COMPAT
+#ifndef MT11_WEB_TEST
+#include <linux/rtc.h>
+#include <sys/ioctl.h>
+#endif
+
+/* anything earlier is a clock that was never set */
+static const time_t CLOCK_SET_FLOOR = 1767225600;            /* 2026-01-01T00:00:00Z */
+static const int64_t CLOCK_SET_CEILING = INT64_C(4922899200); /* 2126-01-01T00:00:00Z */
+
+/* With only MAVLink Camera Manager on its network the camera has no RTC
+ * battery time, NTP or autopilot SYSTEM_TIME, but MCM's UsernameToken Created
+ * is its own UTC time. Only for an authenticated request, and never once the
+ * clock is set. */
+static void set_clock_from_onvif(int fd, const char *body)
+{
+    time_t created;
+    if (time(NULL) >= CLOCK_SET_FLOOR || !apc_onvif::username_token_time(body, &created) ||
+        created < CLOCK_SET_FLOOR || (int64_t)created >= CLOCK_SET_CEILING) return;
+    char peer[INET_ADDRSTRLEN] = "unknown", when[32];
+    struct sockaddr_in address;
+    socklen_t address_length = sizeof(address);
+    if (getpeername(fd, (struct sockaddr *)&address, &address_length) == 0 && address.sin_family == AF_INET)
+        (void)inet_ntop(AF_INET, &address.sin_addr, peer, sizeof(peer));
+    struct tm utc;
+    gmtime_r(&created, &utc);
+    strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%SZ", &utc);
+#ifdef MT11_WEB_TEST
+    log_message("test build: clock not set from ONVIF client %s: %s", peer, when);
+#else
+    const struct timespec requested = {.tv_sec = created, .tv_nsec = 0};
+    if (clock_settime(CLOCK_REALTIME, &requested) < 0) {
+        log_message("cannot set clock from ONVIF client %s: %s", peer, strerror(errno));
+        return;
+    }
+    log_message("clock set from ONVIF client %s: %s", peer, when);
+    /* so a soft reboot keeps it */
+    struct rtc_time rtc = {};
+    rtc.tm_sec = utc.tm_sec;
+    rtc.tm_min = utc.tm_min;
+    rtc.tm_hour = utc.tm_hour;
+    rtc.tm_mday = utc.tm_mday;
+    rtc.tm_mon = utc.tm_mon;
+    rtc.tm_year = utc.tm_year;
+    const int rtc_fd = open("/dev/rtc0", O_RDONLY | O_CLOEXEC);
+    if (rtc_fd < 0 || ioctl(rtc_fd, RTC_SET_TIME, &rtc) < 0)
+        log_message("cannot store clock in /dev/rtc0: %s", strerror(errno));
+    if (rtc_fd >= 0) close(rtc_fd);
+#endif
+}
+#endif
+
 #if WEB_HAVE_SSH_KEYS
 static char *read_authorized_keys(size_t *length)
 {
@@ -5251,6 +5303,9 @@ static void handle_onvif(int fd, const APC_HTTPRequest *request)
     const bool have_password = effective_value(config, "compat", "onvif_password", password, sizeof(password)) &&
                                password[0] != '\0';
     local_address(fd, address, sizeof(address));
+    const bool authorized = have_password &&
+                            apc_onvif::check_username_token(body, "admin", password) == apc_onvif::Auth::ok;
+    if (authorized) set_clock_from_onvif(fd, body);
     APC_StringBuffer reply;
     int status = 200;
 
@@ -5262,7 +5317,7 @@ static void handle_onvif(int fd, const APC_HTTPRequest *request)
         struct tm utc;
         gmtime_r(&now, &utc);
         apc_onvif::system_date_and_time(reply, utc);
-    } else if (!have_password || apc_onvif::check_username_token(body, "admin", password) != apc_onvif::Auth::ok) {
+    } else if (!authorized) {
         status = 400;
         apc_onvif::fault(reply, "Sender", "NotAuthorized", "Sender not authorized");
     } else if (!strcmp(operation, "GetDeviceInformation")) {

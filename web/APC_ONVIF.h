@@ -183,11 +183,9 @@ inline bool body_operation(const char *xml, char *out, size_t capacity)
 
 enum class Auth { ok, missing, bad };
 
-/* WS-Security UsernameToken, PasswordDigest = Base64(SHA-1(nonce + created +
- * password)). Created isn't compared with the clock, which may not be set.
- * The fields are read from the token on, so a wsu:Timestamp's Created before
- * it can't stand in for the token's. */
-inline Auth check_username_token(const char *xml, const char *user, const char *password)
+/* The first UsernameToken start tag, or NULL. Its fields are read from here
+ * on, so a wsu:Timestamp's Created before it can't stand in for the token's. */
+inline const char *username_token(const char *xml)
 {
     const char *local;
     size_t length;
@@ -195,6 +193,14 @@ inline Auth check_username_token(const char *xml, const char *user, const char *
     while (token != NULL && !local_name_is(local, length, "UsernameToken")) {
         token = next_start_tag(token + 1, &local, &length);
     }
+    return token;
+}
+
+/* WS-Security UsernameToken, PasswordDigest = Base64(SHA-1(nonce + created +
+ * password)). Created isn't compared with the clock, which may not be set. */
+inline Auth check_username_token(const char *xml, const char *user, const char *password)
+{
+    const char *token = username_token(xml);
     char username[64], digest[64], nonce[96], created[64];
     if (token == NULL || !element_text(token, "Username", username, sizeof(username))) return Auth::missing;
     if (!element_text(token, "Password", digest, sizeof(digest)) ||
@@ -218,6 +224,59 @@ inline Auth check_username_token(const char *xml, const char *user, const char *
     unsigned char difference = 0;
     for (size_t i = 0; i < expected_length; i++) difference |= (unsigned char)(expected[i] ^ digest[i]);
     return difference == 0U ? Auth::ok : Auth::bad;
+}
+
+inline bool fixed_digits(const char *&p, int count, unsigned *value)
+{
+    unsigned v = 0;
+    for (int i = 0; i < count; i++, p++) {
+        if (*p < '0' || *p > '9') return false;
+        v = v * 10U + (unsigned)(*p - '0');
+    }
+    *value = v;
+    return true;
+}
+
+/* Days from 1970-01-01 to a proleptic Gregorian date, year 0 on (Howard
+ * Hinnant's days_from_civil), so no TZ or timegm is involved. */
+inline int64_t days_from_civil(unsigned year, unsigned month, unsigned day)
+{
+    const int64_t y = (int64_t)year - (month <= 2U ? 1 : 0);
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned year_of_era = (unsigned)(y - era * 400);
+    const unsigned day_of_year = (153U * (month > 2U ? month - 3U : month + 9U) + 2U) / 5U + day - 1U;
+    const unsigned day_of_era = year_of_era * 365U + year_of_era / 4U - year_of_era / 100U + day_of_year;
+    return era * 146097 + (int64_t)day_of_era - 719468;
+}
+
+/* The UsernameToken's own Created, YYYY-MM-DDTHH:MM:SS[.fraction]Z in UTC
+ * (no other zone), as seconds since the epoch, the fraction dropped. */
+inline bool username_token_time(const char *xml, time_t *epoch)
+{
+    const char *token = username_token(xml);
+    char created[64];
+    if (token == NULL || !element_text(token, "Created", created, sizeof(created))) return false;
+    const char *p = created;
+    unsigned year, month, day, hour, minute, second;
+    if (!fixed_digits(p, 4, &year) || *p++ != '-' || !fixed_digits(p, 2, &month) || *p++ != '-' ||
+        !fixed_digits(p, 2, &day) || *p++ != 'T' || !fixed_digits(p, 2, &hour) || *p++ != ':' ||
+        !fixed_digits(p, 2, &minute) || *p++ != ':' || !fixed_digits(p, 2, &second))
+        return false;
+    if (*p == '.') {
+        if (p[1] < '0' || p[1] > '9') return false;
+        for (p++; *p >= '0' && *p <= '9'; p++) {}
+    }
+    if (strcmp(p, "Z") != 0) return false;
+    static const unsigned char month_days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const bool leap = year % 4U == 0U && (year % 100U != 0U || year % 400U == 0U);
+    if (month < 1U || month > 12U || day < 1U ||
+        day > month_days[month - 1U] + (month == 2U && leap ? 1U : 0U) ||
+        hour > 23U || minute > 59U || second > 59U)
+        return false;
+    const int64_t seconds = days_from_civil(year, month, day) * 86400 + hour * 3600U + minute * 60U + second;
+    if ((int64_t)(time_t)seconds != seconds) return false;
+    *epoch = (time_t)seconds;
+    return true;
 }
 
 /* The MessageID of a WS-Discovery Probe; false for any other message or an

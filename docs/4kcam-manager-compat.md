@@ -107,6 +107,30 @@ and namespaces; `web/tests/onvif-check` checks them. onvif-rs's ver10 encoding
 enum has no H.265, so a stream set to H.265 reads there as an unknown
 encoding. MCM keeps the profile and takes the codec from the RTSP stream.
 
+### Clock
+
+The camera has no battery for its RTC, and on a BlueOS network with only MCM
+there may be no NTP and no autopilot, so its clock can boot at 1970. MCM puts
+its own UTC time in every UsernameToken's `Created` (onvif-rs, no time-gap
+correction). While the camera's clock reads before 2026-01-01T00:00:00Z
+(anything earlier is a clock that was never set), a request whose
+UsernameToken passes the check above sets the clock to that `Created`:
+
+- only the token's own `Created`, as `YYYY-MM-DDTHH:MM:SS[.fraction]Z` in UTC
+  (the fraction is dropped; any other zone or a malformed or out-of-range
+  value is ignored), and only from 2026-01-01 to before 2126-01-01;
+- `clock_settime(CLOCK_REALTIME)`, then the same time in `/dev/rtc0`
+  (`RTC_SET_TIME`) so a soft reboot keeps it; an RTC failure is only logged;
+- logged once as `clock set from ONVIF client <address>: <time>`.
+
+A clock at or after 2026-01-01 is never moved, and an unauthenticated request
+(including a bare `GetSystemDateAndTime`) never sets it. Replies are
+unchanged, except that a `GetSystemDateAndTime` that set the clock reports the
+new time. MAVLink `SYSTEM_TIME` and the web's browser time sync work as
+before, and either may later move a clock set this way. Since `Created`
+isn't checked for freshness, a replayed request can set an unset clock to the
+time it was captured.
+
 ### Control protocol
 
 `POST /action/<name>` returns HTTP 200 and a flat JSON object: the requested
