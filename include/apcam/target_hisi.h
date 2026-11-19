@@ -191,6 +191,10 @@ static inline unsigned apcam_hisi_auto_bitrate_kbps(unsigned width, unsigned hei
 #endif
 #define APP_STORAGE_PATH APP_INSTALL_DIR
 #define SETTINGS_STORAGE_PATH APP_DIR
+/* The web's microSD benchmark; service.sh exports SDBENCH_TOOL. */
+#ifndef SDBENCH_TOOL_PATH
+#define SDBENCH_TOOL_PATH APP_INSTALL_DIR "/sdbench.sh"
+#endif
 #ifndef REBOOT_COMMAND
 #define REBOOT_COMMAND "reboot"
 #endif

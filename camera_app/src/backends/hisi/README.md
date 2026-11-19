@@ -244,6 +244,16 @@ timing and clock. It refuses while any process has a file open on the card,
 so stop recording first, and holds `sdcard.sh`'s lock so the card is not
 mounted or formatted meanwhile. The temporary file is removed when it exits.
 
+The Status page's "Benchmark microSD card" button (a ready card only) runs
+it with 128 MiB in the background (`SDBENCH_TOOL`, exported by `service.sh`)
+and shows its progress, then the write and read speeds or its refusal, on a
+"microSD speed" row that stays until the next benchmark or boot.
+`GET /storage/state` reports it as `bench`. The output goes to
+`/run/sdbench.result`, whose first line is `running`, then `done` or
+`failed <status>`; the benchmark holds `/run/sdbench.lock` while it runs,
+so one at a time, and one left `running` without the lock (killed) is
+reported failed. It is detached from hisi-web and survives its restarts.
+
 ## Boot (`packaging/hisi`)
 rcS starts the rootfs recovery updater, then `/appfs/sh/start.sh`, then
 telnetd. Our `start.sh` replaces the vendor one and never starts `xipc`:

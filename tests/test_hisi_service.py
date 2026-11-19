@@ -212,6 +212,25 @@ while :; do sleep 1; done
     script = app / 'service.sh'
     script.write_text(service)
     shutil.copy(repo / 'packaging/hisi/sdcard.sh', app / 'sdcard.sh')
+    # sdbench.sh's output, one speed at a time once the test allows it, or
+    # its refusal; it records how the web started it.
+    (app / 'sdbench.sh').write_text('''#!/bin/sh
+echo "$*" >"$TEST_ROOT/sdbench.args"
+ls -l /proc/$$/fd >"$TEST_ROOT/sdbench.fds"
+cut -d' ' -f6 /proc/$$/stat >"$TEST_ROOT/sdbench.sid"
+if [ -e "$TEST_ROOT/sdbench.refuse" ]; then
+    echo "sdbench: recording in progress; stop it first" >&2
+    exit 1
+fi
+echo "card: SB64G (SDXC, 59.5 GiB, manfid 0x000003, oemid 0x5344)"
+echo "bus: sd high-speed, 4 bits, 25.0 MHz"
+while [ ! -e "$TEST_ROOT/sdbench.write" ]; do sleep 0.1; done
+echo "write: 14.9 MB/s (128 MiB in 8.6 s)"
+while [ ! -e "$TEST_ROOT/sdbench.read" ]; do sleep 0.1; done
+echo "read: 22.2 MB/s (128 MiB in 5.8 s)"
+echo ok
+''')
+    (app / 'sdbench.sh').chmod(0o755)
     # The real mcm.sh, and an MCM bundle whose run.sh records its PID and
     # arguments, then stays up as MCM does.
     mcm = re.sub(r'(?<![\w.])/run/', str(runtime) + '/', (repo / 'packaging/hisi/mcm.sh').read_text())
@@ -412,7 +431,8 @@ while :; do sleep 1; done
         assert sdcard_state.read_text() == 'absent\n'
         status_page = web_request('/')[1]
         assert b'<th>microSD</th><td id=sdcard-state>no card inserted</td>' in status_page
-        assert b'/storage/format' not in status_page
+        assert b'/storage/format' not in status_page and b'/storage/bench' not in status_page
+        assert b'<tr id=sdcard-bench-row hidden>' in status_page
         assert b'http-equiv=refresh' not in status_page and b'/storage.js' not in status_page
         # The card's state for the Status page's script, behind the login
         # without a Basic challenge (a dialog over a polling page).
@@ -467,9 +487,114 @@ while :; do sleep 1; done
             assert '<noscript><meta http-equiv=refresh content="3;url=/"></noscript>' in status_page
             assert '<script src=/storage.js defer></script>' in status_page
             assert 'action=/storage/format hidden>' in status_page
+            assert 'action=/storage/bench hidden>' in status_page
             assert 'This page updates automatically' in status_page
+            # Only a ready card is benchmarked: no button for these states.
+            for state in ('unformatted /dev/mmcblk0', 'error'):
+                sdcard_state.write_text(state + '\n')
+                status_page = web_request('/')[1].decode()
+                assert '/storage/bench' not in status_page, (state, status_page)
+            status, page = web_request('/storage/bench', f'csrf={csrf()}')
+            assert status == 400 and b'The microSD card does not respond; reinsert it' in page, page
+            assert not (runtime / 'sdbench.result').exists()
+            sdcard_state.write_text('formatting\n')
         wait_for(lambda: sdcard_state.read_text() == 'ready\n', 'card not ready after the format')
         assert storage_state()['state'] == 'ready'
+
+        # The microSD benchmark: behind the login and the form token, like Format.
+        bench_result = runtime / 'sdbench.result'
+        status_page = web_request('/')[1].decode()
+        assert '<form id=sdcard-bench method=post action=/storage/bench><input type=hidden name=csrf' \
+            in status_page, status_page
+        assert 'Writes a temporary 128 MiB file to the card' in status_page
+        assert 'Stop recording first.' in status_page
+        assert '<tr id=sdcard-bench-row hidden>' in status_page
+        assert 'bench' not in storage_state()
+        status, page = web_request('/storage/bench', '')
+        assert status == 400 and b'Invalid or expired form token' in page, page
+        status, headers, _ = web_response('/storage/bench', f'csrf={csrf()}', auth=False)
+        assert status == 401, (status, headers)
+        assert not bench_result.exists() and not (root / 'sdbench.args').exists()
+
+        def bench_state():
+            return storage_state().get('bench')
+
+        def post_bench():
+            began = time.monotonic()
+            status, page = web_request('/storage/bench', f'csrf={csrf()}')
+            return status, page.decode(), time.monotonic() - began
+
+        # The page answers at once while the tool runs detached, and watches it.
+        status, page, elapsed = post_bench()
+        assert status == 200 and elapsed < 5, (status, elapsed, page)
+        assert '<noscript><meta http-equiv=refresh content="3;url=/"></noscript>' in page, page
+        assert '<script src=/storage.js data-bench defer></script>' in page, page
+        assert 'action=/storage/format hidden>' in page and 'action=/storage/bench hidden>' in page
+        assert 'This page updates automatically and shows the speeds when it finishes.' in page
+        assert '<tr id=sdcard-bench-row><th>microSD speed</th><td id=sdcard-bench>' \
+            'Benchmarking the microSD card…</td></tr>' in page, page
+        assert bench_state() == {'status': 'running', 'text': 'Benchmarking the microSD card…'}
+        wait_for(lambda: (root / 'sdbench.sid').exists(), 'benchmark tool not started')
+        assert (root / 'sdbench.args').read_text() == '128\n'
+        fds = (root / 'sdbench.fds').read_text()
+        assert re.search(r' 0 -> /dev/null$', fds, re.M) and 'socket:' not in fds, fds
+        web_pid = pids('hisi-web')[0]
+        web_sid = Path(f'/proc/{web_pid}/stat').read_text().split(') ')[1].split()[3]
+        assert (root / 'sdbench.sid').read_text().strip() != web_sid, 'benchmark not in its own session'
+        # One at a time, and no format meanwhile.
+        status, page, _ = post_bench()
+        assert status == 400 and 'A microSD card benchmark is running; wait for it to finish' in page, page
+        status, page = web_request('/storage/format', f'csrf={csrf()}&confirm=yes')
+        assert status == 400 and b'A microSD card benchmark is running' in page, page
+        # The Status page loaded meanwhile polls, or reloads itself.
+        status_page = web_request('/')[1].decode()
+        assert '<script src=/storage.js data-bench defer></script>' in status_page
+        assert 'http-equiv=refresh' in status_page and 'action=/storage/bench hidden>' in status_page
+        status, _, script = web_response('/storage.js')
+        assert status == 200 and b"hasAttribute('data-bench')" in script
+        # It survives a web restart, and reports each speed as it comes.
+        os.kill(web_pid, signal.SIGKILL)
+        wait_for(lambda: pids('hisi-web') and pids('hisi-web')[0] != web_pid, 'web did not respawn')
+        wait_for(lambda: web_request('/')[0] == 200, 'respawned web UI not reachable')
+        assert bench_state()['status'] == 'running'
+        (root / 'sdbench.write').touch()
+        wait_for(lambda: bench_state().get('write') == '14.9', 'write speed not reported')
+        assert bench_state() == {'status': 'running', 'write': '14.9',
+                                 'text': 'Benchmarking the microSD card… write 14.9 MB/s'}
+        (root / 'sdbench.read').touch()
+        wait_for(lambda: bench_state()['status'] != 'running', 'benchmark did not finish')
+        done = {'status': 'done', 'write': '14.9', 'read': '22.2',
+                'text': 'Benchmark: write 14.9 MB/s, read 22.2 MB/s'}
+        assert bench_state() == done, bench_state()
+        assert bench_result.read_text().splitlines()[0] == 'done', bench_result.read_text()
+        # The last result stays on the Status page, which no longer polls.
+        status_page = web_request('/')[1].decode()
+        assert '<tr id=sdcard-bench-row><th>microSD speed</th><td id=sdcard-bench>' \
+            'Benchmark: write 14.9 MB/s, read 22.2 MB/s</td></tr>' in status_page, status_page
+        assert '/storage.js' not in status_page and 'http-equiv=refresh' not in status_page
+        assert 'action=/storage/bench>' in status_page and 'action=/storage/format>' in status_page
+
+        # The tool's refusal is the failure's reason.
+        (root / 'sdbench.refuse').touch()
+        status, page, _ = post_bench()
+        assert status == 200, page
+        wait_for(lambda: bench_state()['status'] != 'running', 'refused benchmark still running')
+        assert bench_state() == {'status': 'failed',
+                                 'text': 'Benchmark failed: recording in progress; stop it first'}, bench_state()
+        assert bench_result.read_text().splitlines()[0] == 'failed 1', bench_result.read_text()
+        assert 'Benchmark failed: recording in progress; stop it first</td>' in web_request('/')[1].decode()
+        (root / 'sdbench.refuse').unlink()
+
+        # One left running by a wrapper that died is failed, not running for
+        # ever, and the next one replaces it.
+        bench_result.write_text('running\ncard: SB64G (SDXC, 59.5 GiB)\nwrite: 14.9 MB/s (128 MiB in 8.6 s)\n')
+        assert bench_state() == {'status': 'failed', 'write': '14.9',
+                                 'text': 'Benchmark failed: it stopped before reporting the speeds'}, bench_state()
+        assert '/storage.js' not in web_request('/')[1].decode()
+        status, page, _ = post_bench()
+        assert status == 200, page
+        wait_for(lambda: bench_state()['status'] == 'done', 'benchmark after a stale one did not finish')
+        assert bench_state() == done
         (root / 'mmcblk0').unlink()
         (root / 'mmcblk0p1').unlink()
         wait_for(lambda: sdcard_state.read_text() == 'absent\n', 'removed card not detached')
@@ -795,7 +920,7 @@ while :; do sleep 1; done
         assert process.wait(timeout=30) == 0, service_log()
         assert not alive(pid), 'MCM left running by stop'
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
-              'restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
+              'microSD benchmark, restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
               'repeated SIGTERM, live and restarting codec change, '
               'web respawn, iris mode row and save, keyframe interval rows and save, MCM start after ready, restart backoff, mcm.disable, '
               'missing bundle, log pruning and stop')

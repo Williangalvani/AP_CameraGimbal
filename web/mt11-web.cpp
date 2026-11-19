@@ -191,6 +191,12 @@
 #if APCAM_HAVE_SDCARD && !defined(SDCARD_STATE_PATH)
 #define SDCARD_STATE_PATH RUNTIME_DIR "/sdcard.state"
 #endif
+#if APCAM_HAVE_SDCARD && !defined(SDBENCH_RESULT_PATH)
+#define SDBENCH_RESULT_PATH RUNTIME_DIR "/sdbench.result"
+#endif
+#if APCAM_HAVE_SDCARD && !defined(SDBENCH_LOCK_PATH)
+#define SDBENCH_LOCK_PATH RUNTIME_DIR "/sdbench.lock"
+#endif
 #ifndef CAMERA_READY_PATH
 #define CAMERA_READY_PATH "/run/camera-app.ready"
 #endif
@@ -4237,6 +4243,141 @@ static bool camera_format_sdcard(char *error, size_t error_size)
     command_refused(result, S_E_FORMAT_FAILED, error, error_size);
     return false;
 }
+
+/* Whether a benchmark's wrapper shell, which inherits the lock taken by
+ * start_sdbench(), is still running. */
+static bool sdbench_running(void)
+{
+    int lock = open(SDBENCH_LOCK_PATH, O_RDONLY | O_CLOEXEC);
+    bool held = lock >= 0 && flock(lock, LOCK_SH | LOCK_NB) < 0 &&
+                (errno == EWOULDBLOCK || errno == EAGAIN);
+    if (lock >= 0) close(lock);
+    return held;
+}
+
+/* Starts SDBENCH_TOOL in its own session and returns at once. The result
+ * file holds "running" and then the tool's output; when the tool exits, the
+ * wrapper renames over it a copy whose first line is "done" or
+ * "failed <status>". */
+static bool start_sdbench(int client, char *error, size_t error_size)
+{
+    static const char wrapper[] =
+        "\"$2\" 128 >>\"$1\" 2>&1\n"
+        "status=$?\n"
+        "{ if [ $status -eq 0 ]; then echo done; else echo \"failed $status\"; fi\n"
+        "  sed 1d \"$1\"; } >\"$1.new\" && mv -f \"$1.new\" \"$1\"\n";
+    const char *tool = getenv("SDBENCH_TOOL");
+    char reason[256];
+    int lock = open(SDBENCH_LOCK_PATH, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+
+    if (tool == NULL || tool[0] == '\0') tool = SDBENCH_TOOL_PATH;
+    if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB) < 0) {
+        if (lock >= 0 && (errno == EWOULDBLOCK || errno == EAGAIN))
+            snprintf(error, error_size, "%s", T(S_SDCARD_BENCH_BUSY));
+        else
+            snprintf(error, error_size, T(S_E_SDBENCH_START), strerror(errno));
+        if (lock >= 0) close(lock);
+        return false;
+    }
+    if (!save_atomic_file(SDBENCH_RESULT_PATH, "running\n", 8, 0644, reason, sizeof(reason))) {
+        snprintf(error, error_size, T(S_E_SDBENCH_START), reason);
+        close(lock);
+        return false;
+    }
+    pid_t child = fork();
+    if (child == 0) {
+        int null_fd = open("/dev/null", O_RDONLY);
+        if (listen_fd >= 0) close(listen_fd);
+        close(client);
+        if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0 || fcntl(lock, F_SETFD, 0) < 0) _exit(127);
+        if (null_fd > STDERR_FILENO) close(null_fd);
+        signal(SIGCHLD, SIG_DFL);
+        signal(SIGPIPE, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
+        signal(SIGINT, SIG_DFL);
+        (void)setsid();
+        execl("/bin/sh", "sh", "-c", wrapper, "sh", SDBENCH_RESULT_PATH, tool, (char *)NULL);
+        _exit(127);
+    }
+    int fork_error = errno;
+    close(lock);
+    if (child < 0) {
+        (void)unlink(SDBENCH_RESULT_PATH);
+        snprintf(error, error_size, T(S_E_SDBENCH_START), strerror(fork_error));
+        return false;
+    }
+    return true;
+}
+
+/* "write: 14.9 MB/s (...)": the speed after name. */
+static bool sdbench_speed(const char *line, const char *name, char speed[16])
+{
+    size_t name_length = strlen(name);
+    size_t length;
+
+    if (strncmp(line, name, name_length) != 0) return false;
+    line += name_length;
+    length = strspn(line, "0123456789.");
+    if (length == 0 || length >= 16 || strncmp(line + length, " MB/s", 5) != 0) return false;
+    memcpy(speed, line, length);
+    speed[length] = '\0';
+    return true;
+}
+
+struct sdbench_result {
+    const char *status; /* idle, running, done or failed */
+    char write[16];
+    char read[16];
+    char text[384];
+};
+
+/* The last benchmark since boot. One left "running" by a wrapper that no
+ * longer holds the lock was killed: failed. */
+static void read_sdbench(struct sdbench_result *result)
+{
+    size_t length;
+    char *contents = read_file(SDBENCH_RESULT_PATH, 64U * 1024U, &length);
+    char message[256] = "";
+    char *line = contents;
+    char *next;
+
+    result->status = "idle";
+    result->write[0] = result->read[0] = result->text[0] = '\0';
+    if (contents == NULL) return;
+    next = strchr(line, '\n');
+    if (next != NULL) *next++ = '\0';
+    bool running = strcmp(line, "running") == 0;
+    bool done = strcmp(line, "done") == 0;
+    if (!running && !done && strncmp(line, "failed ", 7) != 0) {
+        free(contents);
+        return;
+    }
+    /* the tool's report lines, and its last other line: why it stopped */
+    for (line = next; line != NULL; line = next) {
+        next = strchr(line, '\n');
+        if (next != NULL) *next++ = '\0';
+        if (line[0] == '\0' || sdbench_speed(line, "write: ", result->write) || sdbench_speed(line, "read: ", result->read) ||
+            strncmp(line, "card: ", 6) == 0 || strncmp(line, "bus: ", 5) == 0 ||
+            strncmp(line, "kernel: ", 8) == 0 || strcmp(line, "ok") == 0) continue;
+        if (strncmp(line, "sdbench: ", 9) == 0) line += 9;
+        snprintf(message, sizeof(message), "%s", line);
+    }
+    free(contents);
+    if (running && sdbench_running()) {
+        result->status = "running";
+        if (result->write[0] != '\0')
+            snprintf(result->text, sizeof(result->text), T(S_SDCARD_BENCH_RUNNING_WRITE), result->write);
+        else
+            snprintf(result->text, sizeof(result->text), "%s", T(S_SDCARD_BENCH_RUNNING));
+    } else if (done && result->write[0] != '\0' && result->read[0] != '\0') {
+        result->status = "done";
+        snprintf(result->text, sizeof(result->text), T(S_SDCARD_BENCH_DONE), result->write, result->read);
+    } else {
+        result->status = "failed";
+        snprintf(result->text, sizeof(result->text), T(S_SDCARD_BENCH_FAILED),
+                 message[0] != '\0' ? message : T(S_SDCARD_BENCH_STOPPED));
+    }
+}
 #endif
 
 #if APCAM_WEB_CONTROL_MAVLINK && APCAM_HAVE_PHOTO
@@ -5908,6 +6049,9 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     char card[16];
     sdcard_state(card, sizeof(card));
     bool formatting = format_started || strcmp(card, "formatting") == 0;
+    struct sdbench_result bench;
+    read_sdbench(&bench);
+    bool benchmarking = strcmp(bench.status, "running") == 0;
 #else
     (void)format_started;
 #endif
@@ -5915,9 +6059,10 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     page.reset();
     snprintf(title, sizeof(title), T(S_TITLE_CONTROL), PRODUCT_NAME);
 #if APCAM_HAVE_SDCARD
-    /* without JavaScript the page reloads itself until the format ends */
+    /* without JavaScript the page reloads itself until the format or
+     * benchmark ends */
     append_head(&page, title, page_style,
-                formatting ? "<noscript><meta http-equiv=refresh content=\"3;url=/\"></noscript>" : NULL);
+                formatting || benchmarking ? "<noscript><meta http-equiv=refresh content=\"3;url=/\"></noscript>" : NULL);
 #else
     append_head(&page, title, page_style, NULL);
 #endif
@@ -5928,8 +6073,9 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     append_notice(&page, message, message_is_error);
 #if APCAM_HAVE_SDCARD
     page.appendf("<p id=sdcard-status class=notice role=status aria-live=polite%s>",
-                 formatting ? "" : " hidden");
+                 formatting || benchmarking ? "" : " hidden");
     if (formatting) page.append_html(T(S_SDCARD_FORMAT_STARTED));
+    else if (benchmarking) page.append_html(T(S_SDCARD_BENCH_STARTED));
     page.append("</p>");
 #endif
     page.appendf("<div class=grid><section class=card><h2>%s</h2><table>",
@@ -6002,6 +6148,10 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
         if (strcmp(card, "ready") == 0) (void)filesystem_usage(MEDIA_ROOT, usage, total, available);
         page.appendf("<tr><th>%s</th><td id=sdcard-state>%s</td></tr>", T(S_STORAGE_MICROSD),
                      strcmp(card, "ready") == 0 ? usage : sdcard_state_text(card));
+        page.appendf("<tr id=sdcard-bench-row%s><th>%s</th><td id=sdcard-bench>",
+                     strcmp(bench.status, "idle") == 0 ? " hidden" : "", T(S_SDCARD_BENCH_HEADING));
+        page.append_html(bench.text);
+        page.append("</td></tr>");
     }
 #elif WEB_MEDIA_IS_MOUNT
     append_filesystem_status(&page, T(S_STORAGE_MICROSD), MEDIA_ROOT);
@@ -6012,11 +6162,17 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     page.append(T(S_STATUS_RESTART));
     page.append("</button></form>");
 #if APCAM_HAVE_SDCARD
-    /* storage.js shows the form again once a format leaves the card formattable */
-    if (formatting || strcmp(card, "ready") == 0 || strcmp(card, "unformatted") == 0)
-        webroot.render(page, "status-sdcard.html", {formatting ? " hidden" : "", csrf_token, T(S_SDCARD_FORMAT_CONFIRM), T(S_SDCARD_FORMAT_BUTTON)});
+    /* storage.js shows the forms again once a format or benchmark ends */
+    if (formatting || benchmarking || strcmp(card, "ready") == 0 || strcmp(card, "unformatted") == 0)
+        webroot.render(page, "status-sdcard.html", {formatting || benchmarking ? " hidden" : "", csrf_token,
+                                                    T(S_SDCARD_FORMAT_CONFIRM), T(S_SDCARD_FORMAT_BUTTON)});
+    if (formatting || benchmarking || strcmp(card, "ready") == 0)
+        webroot.render(page, "status-sdbench.html", {formatting || benchmarking ? " hidden" : "", csrf_token,
+                                                     T(S_SDCARD_BENCH_BUTTON), T(S_SDCARD_BENCH_HELP)});
     if (formatting)
         page.appendf("<script src=/storage.js%s defer></script>", format_started ? " data-started" : "");
+    else if (benchmarking)
+        page.append("<script src=/storage.js data-bench defer></script>");
 #endif
 #ifdef ZT30_WEB_NATIVE
     std::string previous_bundle, previous_error;
@@ -7100,6 +7256,23 @@ static void send_sdcard_state_json(int fd)
         append_json_text(&json, total);
         json.append(",\"free\":");
         append_json_text(&json, available);
+    }
+    struct sdbench_result bench;
+    read_sdbench(&bench);
+    if (strcmp(bench.status, "idle") != 0) {
+        json.append(",\"bench\":{\"status\":");
+        append_json_text(&json, bench.status);
+        if (bench.write[0] != '\0') {
+            json.append(",\"write\":");
+            append_json_text(&json, bench.write);
+        }
+        if (bench.read[0] != '\0') {
+            json.append(",\"read\":");
+            append_json_text(&json, bench.read);
+        }
+        json.append(",\"text\":");
+        append_json_text(&json, bench.text);
+        json.append("}");
     }
     json.append("}\n");
     send_response(fd, 200, "OK", "application/json; charset=utf-8", json.data(), json.size(), NULL);
@@ -8901,11 +9074,24 @@ static void handle_request(int fd, const char *peer)
             free(confirmation);
             if (!confirmed) {
                 send_page(fd, T(S_SDCARD_FORMAT_UNCONFIRMED), true);
+            } else if (sdbench_running()) {
+                send_page(fd, T(S_SDCARD_BENCH_BUSY), true);
             } else if (camera_format_sdcard(error, sizeof(error))) {
                 log_message("microSD format requested by %s", peer);
                 send_page(fd, NULL, false, true);
             } else {
                 log_message("microSD format failed for %s: %s", peer, error);
+                send_page(fd, error, true);
+            }
+        } else if (strcmp(request.path, "/storage/bench") == 0) {
+            const char *problem = sdcard_problem();
+            if (problem != NULL) {
+                send_page(fd, problem, true);
+            } else if (start_sdbench(fd, error, sizeof(error))) {
+                log_message("microSD benchmark started by %s", peer);
+                send_page(fd, NULL, false);
+            } else {
+                log_message("microSD benchmark not started for %s: %s", peer, error);
                 send_page(fd, error, true);
             }
 #endif

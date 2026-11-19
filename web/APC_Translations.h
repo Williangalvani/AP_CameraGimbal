@@ -750,6 +750,17 @@ enum string_id {
     S_SDCARD_FORMAT_FAILED,
     S_SDCARD_FORMAT_TIMEOUT,
     S_SDCARD_STATE_RETRYING,
+    S_SDCARD_BENCH_BUTTON,
+    S_SDCARD_BENCH_HELP,
+    S_SDCARD_BENCH_HEADING,
+    S_SDCARD_BENCH_STARTED,
+    S_SDCARD_BENCH_RUNNING,
+    S_SDCARD_BENCH_RUNNING_WRITE,
+    S_SDCARD_BENCH_DONE,
+    S_SDCARD_BENCH_FAILED,
+    S_SDCARD_BENCH_STOPPED,
+    S_SDCARD_BENCH_BUSY,
+    S_E_SDBENCH_START,
     S_E_SDCARD_ABSENT,
     S_E_SDCARD_UNFORMATTED,
     S_E_SDCARD_BUSY,
@@ -1396,6 +1407,17 @@ static constexpr Translations translations = [] {
     result[S_SDCARD_FORMAT_FAILED] = {"Format failed. microSD card: %s", "格式化失败。microSD 卡：%s", "フォーマットに失敗しました。microSD カード: %s"};
     result[S_SDCARD_FORMAT_TIMEOUT] = {"The format has not finished after 10 minutes. Refresh this page to check the microSD card.", "格式化 10 分钟后仍未完成。请刷新此页面查看 microSD 卡的状态。", "10 分経ってもフォーマットが完了していません。このページを再読み込みして microSD カードを確認してください。"};
     result[S_SDCARD_STATE_RETRYING] = {"Cannot reach the camera; retrying…", "无法连接相机，正在重试…", "カメラに接続できません。再試行しています…"};
+    result[S_SDCARD_BENCH_BUTTON] = {"Benchmark microSD card", "测试 microSD 卡速度", "microSD カードの速度を測定"};
+    result[S_SDCARD_BENCH_HELP] = {"Writes a temporary 128 MiB file to the card and reads it back to measure its speed. Stop recording first.", "向卡写入一个 128 MiB 的临时文件并读回，以测量读写速度。请先停止录像。", "カードに 128 MiB の一時ファイルを書き込んで読み戻し、速度を測定します。先に録画を停止してください。"};
+    result[S_SDCARD_BENCH_HEADING] = {"microSD speed", "microSD 卡速度", "microSD 速度"};
+    result[S_SDCARD_BENCH_STARTED] = {"Benchmarking the microSD card. This page updates automatically and shows the speeds when it finishes.", "正在测试 microSD 卡速度。此页面会自动更新，并在完成时显示速度。", "microSD カードの速度を測定しています。このページは自動的に更新され、完了すると速度が表示されます。"};
+    result[S_SDCARD_BENCH_RUNNING] = {"Benchmarking the microSD card…", "正在测试 microSD 卡速度…", "microSD カードの速度を測定中…"};
+    result[S_SDCARD_BENCH_RUNNING_WRITE] = {"Benchmarking the microSD card… write %s MB/s", "正在测试 microSD 卡速度… 写入 %s MB/s", "microSD カードの速度を測定中… 書き込み %s MB/s"};
+    result[S_SDCARD_BENCH_DONE] = {"Benchmark: write %s MB/s, read %s MB/s", "测速结果：写入 %s MB/s，读取 %s MB/s", "測定結果: 書き込み %s MB/s、読み込み %s MB/s"};
+    result[S_SDCARD_BENCH_FAILED] = {"Benchmark failed: %s", "测速失败：%s", "速度測定に失敗しました: %s"};
+    result[S_SDCARD_BENCH_STOPPED] = {"it stopped before reporting the speeds", "测试在给出速度之前已停止", "速度が出る前に停止しました"};
+    result[S_SDCARD_BENCH_BUSY] = {"A microSD card benchmark is running; wait for it to finish", "microSD 卡测速正在进行，请等待其完成", "microSD カードの速度測定中です。完了するまでお待ちください"};
+    result[S_E_SDBENCH_START] = {"Cannot start the benchmark: %s", "无法开始测速：%s", "速度測定を開始できません: %s"};
     result[S_E_SDCARD_ABSENT] = {"No microSD card is inserted", "未插入 microSD 卡", "microSD カードが挿入されていません"};
     result[S_E_SDCARD_UNFORMATTED] = {"The microSD card is not formatted; format it on the Status page", "microSD 卡未格式化；请在状态页面将其格式化", "microSD カードがフォーマットされていません。ステータスページでフォーマットしてください"};
     result[S_E_SDCARD_BUSY] = {"The microSD card is being formatted", "microSD 卡正在格式化", "microSD カードをフォーマット中です"};
