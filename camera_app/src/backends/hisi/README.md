@@ -237,6 +237,13 @@ about 10 MB/s, well above a 4K recording's 1.5 MB/s. The cause may
 be the board's 1.8 V I/O switch for the slot, since the device tree
 advertises SDR104.
 
+`ap_cameragimbal/sdbench.sh [SIZE_MIB]` measures a card from the shell: it
+writes SIZE_MIB (default 256) to `/mnt/.sdbench.tmp`, drops the page cache,
+reads it back and prints both speeds, after the card's name, size, bus
+timing and clock. It refuses while any process has a file open on the card,
+so stop recording first, and holds `sdcard.sh`'s lock so the card is not
+mounted or formatted meanwhile. The temporary file is removed when it exits.
+
 ## Boot (`packaging/hisi`)
 rcS starts the rootfs recovery updater, then `/appfs/sh/start.sh`, then
 telnetd. Our `start.sh` replaces the vendor one and never starts `xipc`:

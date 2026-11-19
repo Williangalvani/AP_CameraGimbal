@@ -502,6 +502,7 @@ hisi-test: generated z1mini-test-headers
 	python3 tests/test_build_hisi_appfs.py
 	python3 tests/test_hisi_service.py
 	python3 tests/test_hisi_sdcard.py
+	python3 tests/test_hisi_sdbench.py
 	python3 tests/test_hisi_dhcp.py
 .PHONY: zr10_sitl-test
 zr10_sitl-test: zr10_sitl

@@ -103,6 +103,9 @@ class Staging(unittest.TestCase):
         app = staging / 'ap_cameragimbal'
         self.assertTrue((app / 'bin/camera-app').is_file())
         self.assertTrue((app / 'lib/libss_mpi.so').is_file())
+        for name in ('sdcard.sh', 'sdbench.sh'):
+            self.assertEqual(mode(app / name), 0o755, name)
+            self.assertEqual((app / name).read_bytes(), (ROOT / 'packaging/hisi' / name).read_bytes())
         self.assertEqual([path for path in staging.rglob('*') if 'mcm' in path.name], [])
 
     def test_with_bundle(self):
