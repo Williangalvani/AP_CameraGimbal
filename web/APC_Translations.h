@@ -745,6 +745,11 @@ enum string_id {
     S_SDCARD_FORMAT_BUTTON,
     S_SDCARD_FORMAT_UNCONFIRMED,
     S_SDCARD_FORMAT_STARTED,
+    S_SDCARD_FORMAT_DONE,
+    S_SDCARD_FORMAT_DONE_SIZE,
+    S_SDCARD_FORMAT_FAILED,
+    S_SDCARD_FORMAT_TIMEOUT,
+    S_SDCARD_STATE_RETRYING,
     S_E_SDCARD_ABSENT,
     S_E_SDCARD_UNFORMATTED,
     S_E_SDCARD_BUSY,
@@ -1385,7 +1390,12 @@ static constexpr Translations translations = [] {
     result[S_SDCARD_FORMAT_CONFIRM] = {"Erase everything on the microSD card", "清除 microSD 卡上的全部内容", "microSD カードの内容をすべて消去する"};
     result[S_SDCARD_FORMAT_BUTTON] = {"Format microSD card", "格式化 microSD 卡", "microSD カードをフォーマット"};
     result[S_SDCARD_FORMAT_UNCONFIRMED] = {"Tick the box to confirm erasing the microSD card", "请勾选复选框以确认清除 microSD 卡", "microSD カードの消去を確認するにはチェックを入れてください"};
-    result[S_SDCARD_FORMAT_STARTED] = {"Formatting the microSD card; recording stays stopped until it finishes. Refresh this page to see when the card is ready.", "正在格式化 microSD 卡；完成前录像保持停止。刷新此页面查看卡何时就绪。", "microSD カードをフォーマットしています。完了するまで録画は停止したままです。このページを再読み込みすると、カードの準備ができたか確認できます。"};
+    result[S_SDCARD_FORMAT_STARTED] = {"Formatting the microSD card; recording stays stopped until it finishes. This page updates automatically and shows when the card is ready.", "正在格式化 microSD 卡；完成前录像保持停止。此页面会自动更新，并在卡就绪时显示。", "microSD カードをフォーマットしています。完了するまで録画は停止したままです。このページは自動的に更新され、カードの準備ができると表示されます。"};
+    result[S_SDCARD_FORMAT_DONE] = {"microSD card ready", "microSD 卡已就绪", "microSD カードの準備ができました"};
+    result[S_SDCARD_FORMAT_DONE_SIZE] = {"microSD card ready (%s, %s free)", "microSD 卡已就绪（%s，可用 %s）", "microSD カードの準備ができました（%s、空き %s）"};
+    result[S_SDCARD_FORMAT_FAILED] = {"Format failed. microSD card: %s", "格式化失败。microSD 卡：%s", "フォーマットに失敗しました。microSD カード: %s"};
+    result[S_SDCARD_FORMAT_TIMEOUT] = {"The format has not finished after 10 minutes. Refresh this page to check the microSD card.", "格式化 10 分钟后仍未完成。请刷新此页面查看 microSD 卡的状态。", "10 分経ってもフォーマットが完了していません。このページを再読み込みして microSD カードを確認してください。"};
+    result[S_SDCARD_STATE_RETRYING] = {"Cannot reach the camera; retrying…", "无法连接相机，正在重试…", "カメラに接続できません。再試行しています…"};
     result[S_E_SDCARD_ABSENT] = {"No microSD card is inserted", "未插入 microSD 卡", "microSD カードが挿入されていません"};
     result[S_E_SDCARD_UNFORMATTED] = {"The microSD card is not formatted; format it on the Status page", "microSD 卡未格式化；请在状态页面将其格式化", "microSD カードがフォーマットされていません。ステータスページでフォーマットしてください"};
     result[S_E_SDCARD_BUSY] = {"The microSD card is being formatted", "microSD 卡正在格式化", "microSD カードをフォーマット中です"};

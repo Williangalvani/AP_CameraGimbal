@@ -11,8 +11,11 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 
@@ -172,6 +175,9 @@ while :; do sleep 1; done
         'SESSION_PATH': runtime / 'sessions', 'RUNTIME_DIR': runtime,
         'HISI_UPDATE_TYPE_PATH': root / 'updatetype.ini',
     }
+    # The served asset allowlist, as make generates it.
+    subprocess.run([sys.executable, str(repo / 'tools/build_webroot.py'), str(repo / 'web/webroot'),
+                    str(repo / 'web/build/webroot.h')], check=True)
     subprocess.run(['c++', '-std=gnu++17', '-O2', '-Wno-missing-field-initializers',
                     '-Wno-address-of-packed-member', '-DAPCAM_TARGET=APCAM_TARGET_HISI',
                     '-DMT11_WEB_TEST',
@@ -182,6 +188,10 @@ while :; do sleep 1; done
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0))
         port = listener.getsockname()[1]
+    # camera-app's MAVLink TCP port, where the web sends its commands.
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        camera_port = listener.getsockname()[1]
 
     # Change paths only; run the supervisor's real loading and restart logic.
     service = (repo / 'packaging/hisi/service.sh').read_text()
@@ -223,7 +233,8 @@ while :; do sleep 1; done
                TEST_OVERLAP=str(root / 'overlap'), TEST_FAIL=str(root / 'fail'),
                TEST_IGNORE_TERM=str(root / 'ignore-term'), TEST_IGNORE_TERMS=str(root / 'ignore-terms'),
                TEST_LIVE_APPLY=str(root / 'live-apply'), TEST_STALE=str(root / 'stale'),
-               SDCARD_DISKS=str(root / 'mmcblk0'), SDCARD_MOUNTS=str(mounts), SDCARD_HOST='')
+               SDCARD_DISKS=str(root / 'mmcblk0'), SDCARD_MOUNTS=str(mounts), SDCARD_HOST='',
+               MT11_WEB_CAMERA_PORT=str(camera_port))
     log = open(root / 'service.log', 'w+')
     process = subprocess.Popen(['sh', str(script)], env=env, stdout=log, stderr=log,
                                start_new_session=True)
@@ -263,15 +274,58 @@ while :; do sleep 1; done
             generation = int(request_file.read_text()) if request_file.exists() else 0
             request_file.write_text(f'{generation + 1}\n')
 
-    def web_request(path, body=None):
-        headers = {'Authorization': 'Basic ' + base64.b64encode(b'admin:test-password').decode()}
+    def web_response(path, body=None, auth=True):
+        headers = {}
+        if auth:
+            headers['Authorization'] = 'Basic ' + base64.b64encode(b'admin:test-password').decode()
         if body is not None:
             headers['Content-Type'] = 'application/x-www-form-urlencoded'
         connection = http.client.HTTPConnection('127.0.0.1', port, timeout=90)
         connection.request('GET' if body is None else 'POST', path, body, headers)
         response = connection.getresponse()
-        result = response.status, response.read()
+        result = response.status, dict(response.getheaders()), response.read()
         connection.close()
+        return result
+
+    def web_request(path, body=None):
+        status, _, page = web_response(path, body)
+        return status, page
+
+    def storage_state():
+        status, headers, body = web_response('/storage/state')
+        assert status == 200 and headers['Cache-Control'] == 'no-store', (status, headers)
+        assert headers['Content-Type'] == 'application/json; charset=utf-8', headers
+        return json.loads(body)
+
+    def x25(data):
+        crc = 0xffff
+        for byte in data:
+            byte ^= crc & 0xff
+            byte = (byte ^ (byte << 4)) & 0xff
+            crc = (crc >> 8) ^ (byte << 8) ^ (byte << 3) ^ (byte >> 4)
+        return crc
+
+    def format_card():
+        # camera-app's answer to MAV_CMD_STORAGE_FORMAT (526): a MAVLink 1
+        # COMMAND_ACK (77, CRC extra 143) with MAV_RESULT_IN_PROGRESS (5).
+        frame = bytes((3, 0, 1, 100, 77)) + struct.pack('<HB', 526, 5)
+        frame = b'\xfe' + frame + struct.pack('<H', x25(frame + bytes((143,))))
+        token = csrf()
+        with socket.socket() as camera:
+            camera.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            camera.bind(('127.0.0.1', camera_port))
+            camera.listen(1)
+            camera.settimeout(30)
+
+            def answer():
+                connection, _ = camera.accept()
+                with connection:
+                    connection.recv(512)
+                    connection.sendall(frame)
+            thread = threading.Thread(target=answer)
+            thread.start()
+            result = web_request('/storage/format', f'csrf={token}&confirm=yes')
+            thread.join(30)
         return result
 
     def action(name, fields):
@@ -357,8 +411,14 @@ while :; do sleep 1; done
         sdcard_state = runtime / 'sdcard.state'
         assert sdcard_state.read_text() == 'absent\n'
         status_page = web_request('/')[1]
-        assert b'<th>microSD</th><td>no card inserted</td>' in status_page
+        assert b'<th>microSD</th><td id=sdcard-state>no card inserted</td>' in status_page
         assert b'/storage/format' not in status_page
+        assert b'http-equiv=refresh' not in status_page and b'/storage.js' not in status_page
+        # The card's state for the Status page's script, behind the login
+        # without a Basic challenge (a dialog over a polling page).
+        status, headers, _ = web_response('/storage/state', auth=False)
+        assert status == 401 and 'WWW-Authenticate' not in headers, (status, headers)
+        assert storage_state() == {'state': 'absent', 'text': 'no card inserted'}
         sensors_page = web_request('/sensors')[1]
         assert b'action=/sensors/record' in sensors_page
         assert b'No microSD card is inserted' in sensors_page
@@ -376,6 +436,40 @@ while :; do sleep 1; done
         assert status == 400 and b'Tick the box to confirm erasing' in page, page
         status, page = web_request('/sensors/record', f'csrf={csrf()}&action=pause')
         assert status == 400 and b'Unknown recording action' in page, page
+        # A ready card: its row as the Status page shows it.
+        card = storage_state()
+        assert card['state'] == 'ready' and ('size' in card) == ('free' in card), card
+        status_page = web_request('/')[1].decode()
+        assert f'<td id=sdcard-state>{card["text"]}</td>' in status_page, status_page
+        assert 'http-equiv=refresh' not in status_page and '/storage.js' not in status_page
+        # The page answering the button watches the format before sdcard.sh
+        # reports it, and reloads itself without JavaScript.
+        status, page = format_card()
+        page = page.decode()
+        assert status == 200, page
+        assert '<noscript><meta http-equiv=refresh content="3;url=/"></noscript>' in page, page
+        assert '<script src=/storage.js data-started defer></script>' in page, page
+        assert '<form id=sdcard-format method=post action=/storage/format hidden>' in page, page
+        assert 'This page updates automatically and shows when the card is ready.' in page, page
+        assert 'Refresh this page' not in page
+        status, headers, script = web_response('/storage.js')
+        assert status == 200 and headers['Content-Type'] == 'application/javascript; charset=utf-8'
+        assert script.startswith(b"const L = {") and b"readySize:'microSD card ready (%s, %s free)'" in script
+        assert b"'/storage/state?t='" in script
+        # While sdcard.sh formats (holding its lock), the Status page polls,
+        # or reloads itself, and hides the form.
+        with open(runtime / 'sdcard.lock', 'w') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            sdcard_state.write_text('formatting\n')
+            assert storage_state() == {'state': 'formatting', 'text': 'formatting…'}
+            status_page = web_request('/')[1].decode()
+            assert '<td id=sdcard-state>formatting…</td>' in status_page, status_page
+            assert '<noscript><meta http-equiv=refresh content="3;url=/"></noscript>' in status_page
+            assert '<script src=/storage.js defer></script>' in status_page
+            assert 'action=/storage/format hidden>' in status_page
+            assert 'This page updates automatically' in status_page
+        wait_for(lambda: sdcard_state.read_text() == 'ready\n', 'card not ready after the format')
+        assert storage_state()['state'] == 'ready'
         (root / 'mmcblk0').unlink()
         (root / 'mmcblk0p1').unlink()
         wait_for(lambda: sdcard_state.read_text() == 'absent\n', 'removed card not detached')

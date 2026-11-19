@@ -34,8 +34,10 @@ echo "umount $*" >>"$TEST_ROOT/calls"
 awk -v dir="$1" '$2 != dir' "$TEST_ROOT/mounts" >"$TEST_ROOT/mounts.new"
 mv "$TEST_ROOT/mounts.new" "$TEST_ROOT/mounts"
 ''')
+    # Keeps the state published while it runs, which the web watches.
     (commands / 'mkfs.vfat').write_text('''#!/bin/sh
 echo "mkfs.vfat $*" >>"$TEST_ROOT/calls"
+cp "$TEST_ROOT/sdcard.state" "$TEST_ROOT/mkfs.state"
 [ -e "$TEST_ROOT/mkfs-fails" ] && exit 1
 for device; do :; done
 touch "$device"
@@ -97,12 +99,15 @@ echo "[END]"
     # A failed format is reported and leaves the card unformatted.
     (root / 'mkfs-fails').touch()
     assert run('format', expect=1)[-1] == f'mkfs.vfat -n APCAM {partition}'
+    assert (root / 'mkfs.state').read_text() == 'formatting\n'
     assert current() == 'unformatted'
     (root / 'mkfs-fails').unlink()
 
     # Format: one FAT32 LBA partition from 4 MiB to the end, then mounted.
+    (root / 'mkfs.state').unlink()
     assert run('format') == [f'mkfs.vfat -n APCAM {partition}',
                              f'mount -o noatime {partition} {media}']
+    assert (root / 'mkfs.state').read_text() == 'formatting\n'
     assert current() == 'ready'
     with open(disk, 'rb') as card:
         mbr = card.read(1024 * 1024)

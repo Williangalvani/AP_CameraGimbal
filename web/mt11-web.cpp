@@ -4187,6 +4187,14 @@ static void sdcard_state(char *state, size_t size)
     if (state[0] == '\0') snprintf(state, size, "absent");
 }
 
+/* The Status page's microSD row for a card that is not ready. */
+static const char *sdcard_state_text(const char *state)
+{
+    return T(strcmp(state, "unformatted") == 0 ? S_SDCARD_UNFORMATTED :
+             strcmp(state, "formatting") == 0 ? S_SDCARD_FORMATTING :
+             strcmp(state, "error") == 0 ? S_SDCARD_ERROR : S_SDCARD_ABSENT);
+}
+
 /* Why the card cannot be written now, or NULL. */
 static const char *sdcard_problem(void)
 {
@@ -4732,28 +4740,42 @@ static void format_bytes(uint64_t bytes, char output[32])
              value, units[unit]);
 }
 
-static void append_filesystem_status(APC_StringBuffer *page,
-                                     const char *label, const char *path)
+/* The status page's "used / total (percent%)" for path; false, with total
+ * and available "unavailable", when its size is unknown. */
+static bool filesystem_usage(const char *path, char text[160], char total[32], char available[32])
 {
     struct statvfs fs;
     char used[32];
-    char total[32];
     unsigned percent = 0;
     bool mounted = !WEB_MEDIA_IS_MOUNT || strcmp(path, MEDIA_ROOT) != 0 || is_mounted(path);
+    bool known = mounted && statvfs(path, &fs) == 0 && fs.f_blocks > 0;
 
     snprintf(used, sizeof(used), "%s", T(S_UNAVAILABLE));
-    snprintf(total, sizeof(total), "%s", T(S_UNAVAILABLE));
+    snprintf(total, 32, "%s", T(S_UNAVAILABLE));
+    snprintf(available, 32, "%s", T(S_UNAVAILABLE));
 
-    if (mounted && statvfs(path, &fs) == 0 && fs.f_blocks > 0) {
+    if (known) {
         uint64_t total_bytes = (uint64_t)fs.f_blocks * fs.f_frsize;
         uint64_t free_bytes = (uint64_t)fs.f_bavail * fs.f_frsize;
         uint64_t used_bytes = total_bytes - free_bytes;
         format_bytes(used_bytes, used);
         format_bytes(total_bytes, total);
+        format_bytes(free_bytes, available);
         percent = (unsigned)((used_bytes * 100U) / total_bytes);
     }
-    page->appendf("<tr><th>%s</th><td>%s%s / %s (%u%%)</td></tr>",
-               label, mounted ? "" : T(S_NOT_MOUNTED), used, total, percent);
+    snprintf(text, 160, "%s%s / %s (%u%%)", mounted ? "" : T(S_NOT_MOUNTED), used, total, percent);
+    return known;
+}
+
+static void append_filesystem_status(APC_StringBuffer *page,
+                                     const char *label, const char *path)
+{
+    char text[160];
+    char total[32];
+    char available[32];
+
+    (void)filesystem_usage(path, text, total, available);
+    page->appendf("<tr><th>%s</th><td>%s</td></tr>", label, text);
 }
 
 static void ipv4_addresses(char *output, size_t output_size)
@@ -5833,7 +5855,10 @@ static bool read_cpu_busy(unsigned *percent, unsigned *cpus)
 #include "zt30-bundle-status.h"
 #endif
 
-static char *render_page(const char *message, bool message_is_error, size_t *page_len)
+/* format_started: the page answering "Format microSD card", which watches
+ * the format even before sdcard.sh reports it. */
+static char *render_page(const char *message, bool message_is_error, size_t *page_len,
+                         bool format_started)
 {
     APC_StringBuffer page;
     char title[96];
@@ -5879,15 +5904,34 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     }
     (void)read_memory(&mem_total, &mem_available);
     ipv4_addresses(addresses, sizeof(addresses));
+#if APCAM_HAVE_SDCARD
+    char card[16];
+    sdcard_state(card, sizeof(card));
+    bool formatting = format_started || strcmp(card, "formatting") == 0;
+#else
+    (void)format_started;
+#endif
 
     page.reset();
     snprintf(title, sizeof(title), T(S_TITLE_CONTROL), PRODUCT_NAME);
+#if APCAM_HAVE_SDCARD
+    /* without JavaScript the page reloads itself until the format ends */
+    append_head(&page, title, page_style,
+                formatting ? "<noscript><meta http-equiv=refresh content=\"3;url=/\"></noscript>" : NULL);
+#else
     append_head(&page, title, page_style, NULL);
+#endif
     page.append("<header id=top><h1>");
     page.append_html(title);
     page.appendf("</h1><div class=muted>%s</div></header>", T(S_STATUS_SUBTITLE));
     append_nav(&page, "/", NULL);
     append_notice(&page, message, message_is_error);
+#if APCAM_HAVE_SDCARD
+    page.appendf("<p id=sdcard-status class=notice role=status aria-live=polite%s>",
+                 formatting ? "" : " hidden");
+    if (formatting) page.append_html(T(S_SDCARD_FORMAT_STARTED));
+    page.append("</p>");
+#endif
     page.appendf("<div class=grid><section class=card><h2>%s</h2><table>",
                T(S_STATUS_HEADING));
     page.appendf("<tr><th>%s</th><td id=firmware-version>", T(S_STATUS_FIRMWARE_VERSION));
@@ -5953,15 +5997,11 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     append_filesystem_status(&page, T(S_STORAGE_SETTINGS), SETTINGS_STORAGE_PATH);
 #endif
 #if APCAM_HAVE_SDCARD
-    char card[16];
-    sdcard_state(card, sizeof(card));
-    if (strcmp(card, "ready") == 0) {
-        append_filesystem_status(&page, T(S_STORAGE_MICROSD), MEDIA_ROOT);
-    } else {
-        page.appendf("<tr><th>%s</th><td>%s</td></tr>", T(S_STORAGE_MICROSD),
-                     T(strcmp(card, "unformatted") == 0 ? S_SDCARD_UNFORMATTED :
-                       strcmp(card, "formatting") == 0 ? S_SDCARD_FORMATTING :
-                       strcmp(card, "error") == 0 ? S_SDCARD_ERROR : S_SDCARD_ABSENT));
+    {
+        char usage[160], total[32], available[32];
+        if (strcmp(card, "ready") == 0) (void)filesystem_usage(MEDIA_ROOT, usage, total, available);
+        page.appendf("<tr><th>%s</th><td id=sdcard-state>%s</td></tr>", T(S_STORAGE_MICROSD),
+                     strcmp(card, "ready") == 0 ? usage : sdcard_state_text(card));
     }
 #elif WEB_MEDIA_IS_MOUNT
     append_filesystem_status(&page, T(S_STORAGE_MICROSD), MEDIA_ROOT);
@@ -5972,8 +6012,11 @@ static char *render_page(const char *message, bool message_is_error, size_t *pag
     page.append(T(S_STATUS_RESTART));
     page.append("</button></form>");
 #if APCAM_HAVE_SDCARD
-    if (strcmp(card, "ready") == 0 || strcmp(card, "unformatted") == 0)
-        webroot.render(page, "status-sdcard.html", {csrf_token, T(S_SDCARD_FORMAT_CONFIRM), T(S_SDCARD_FORMAT_BUTTON)});
+    /* storage.js shows the form again once a format leaves the card formattable */
+    if (formatting || strcmp(card, "ready") == 0 || strcmp(card, "unformatted") == 0)
+        webroot.render(page, "status-sdcard.html", {formatting ? " hidden" : "", csrf_token, T(S_SDCARD_FORMAT_CONFIRM), T(S_SDCARD_FORMAT_BUTTON)});
+    if (formatting)
+        page.appendf("<script src=/storage.js%s defer></script>", format_started ? " data-started" : "");
 #endif
 #ifdef ZT30_WEB_NATIVE
     std::string previous_bundle, previous_error;
@@ -6880,10 +6923,10 @@ static bool wants_html(const APC_HTTPRequest *request)
     return false;
 }
 
-static void send_page(int fd, const char *message, bool is_error)
+static void send_page(int fd, const char *message, bool is_error, bool format_started = false)
 {
     size_t length;
-    char *page = render_page(message, is_error, &length);
+    char *page = render_page(message, is_error, &length, format_started);
     if (page == NULL) {
         if (send_missing_webroot_error(fd)) return;
         send_text_errorf(fd, 500, "Internal Server Error", S_OUT_OF_MEMORY);
@@ -7018,6 +7061,48 @@ static void send_sensors_json(int fd)
     send_response(fd, 200, "OK", "application/json; charset=utf-8",
                   json.data(), json.size(), "Cache-Control: no-store\r\n");
     json.reset();
+}
+#endif
+
+#if APCAM_HAVE_SDCARD
+static void append_json_text(APC_StringBuffer *json, const char *text)
+{
+    json->append("\"");
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if (*p == '"' || *p == '\\') json->appendf("\\%c", *p);
+        else if (*p < 32) json->appendf("\\u%04x", *p);
+        else json->append_n((const char *)p, 1);
+    }
+    json->append("\"");
+}
+
+/* sdcard.sh's state word and the Status page's microSD row; a ready card's
+ * size and free space too, when known. */
+static void send_sdcard_state_json(int fd)
+{
+    char state[16];
+    char usage[160];
+    char total[32];
+    char available[32];
+    bool ready;
+    bool known = false;
+    APC_StringBuffer json;
+
+    sdcard_state(state, sizeof(state));
+    ready = strcmp(state, "ready") == 0;
+    if (ready) known = filesystem_usage(MEDIA_ROOT, usage, total, available);
+    json.append("{\"state\":");
+    append_json_text(&json, state);
+    json.append(",\"text\":");
+    append_json_text(&json, ready ? usage : sdcard_state_text(state));
+    if (known) {
+        json.append(",\"size\":");
+        append_json_text(&json, total);
+        json.append(",\"free\":");
+        append_json_text(&json, available);
+    }
+    json.append("}\n");
+    send_response(fd, 200, "OK", "application/json; charset=utf-8", json.data(), json.size(), NULL);
 }
 #endif
 
@@ -7193,6 +7278,21 @@ static void send_live_script(int fd)
 }
 
 static const char *status_script = "status.js";
+
+#if APCAM_HAVE_SDCARD
+static const char *storage_script = "storage.js";
+
+static void send_storage_script(int fd)
+{
+    const struct js_string items[] = {
+        {"ready", T(S_SDCARD_FORMAT_DONE)}, {"readySize", T(S_SDCARD_FORMAT_DONE_SIZE)},
+        {"failed", T(S_SDCARD_FORMAT_FAILED)}, {"timeout", T(S_SDCARD_FORMAT_TIMEOUT)},
+        {"retrying", T(S_SDCARD_STATE_RETRYING)}, {"formatting", T(S_SDCARD_FORMAT_STARTED)},
+    };
+
+    send_script(fd, items, sizeof(items) / sizeof(items[0]), storage_script);
+}
+#endif
 
 /* the nav and login language selectors apply on change; the fallback
  * button is hidden once the script runs */
@@ -8505,7 +8605,8 @@ static void handle_request(int fd, const char *peer)
             send_asset(fd, language_script, "application/javascript; charset=utf-8");
         } else if (strcmp(request.method, "GET") == 0 &&
                    (strcmp(request.path, "/upgrade-status") == 0 || strcmp(request.path, "/upgrade-result") == 0 ||
-                    strcmp(request.path, "/network-capture-status") == 0)) {
+                    strcmp(request.path, "/network-capture-status") == 0 ||
+                    (APCAM_HAVE_SDCARD && strcmp(request.path, "/storage/state") == 0))) {
             /* Reboot polling must reach its onload handler when the cookie
              * expires. A Basic challenge can instead block on a browser auth
              * dialog. No status/token is disclosed to this unauthenticated request. */
@@ -8587,6 +8688,12 @@ static void handle_request(int fd, const char *peer)
 #endif
     } else if (strcmp(request.method, "GET") == 0 && strcmp(request.path, "/status.js") == 0) {
         send_asset(fd, status_script, "application/javascript; charset=utf-8");
+#if APCAM_HAVE_SDCARD
+    } else if (strcmp(request.method, "GET") == 0 && strcmp(request.path, "/storage/state") == 0) {
+        send_sdcard_state_json(fd);
+    } else if (strcmp(request.method, "GET") == 0 && strcmp(request.path, "/storage.js") == 0) {
+        send_storage_script(fd);
+#endif
     } else if (strcmp(request.method, "GET") == 0 && strcmp(request.path, "/language.js") == 0) {
         send_asset(fd, language_script, "application/javascript; charset=utf-8");
 #if WEB_HAVE_SSH_KEYS
@@ -8796,7 +8903,7 @@ static void handle_request(int fd, const char *peer)
                 send_page(fd, T(S_SDCARD_FORMAT_UNCONFIRMED), true);
             } else if (camera_format_sdcard(error, sizeof(error))) {
                 log_message("microSD format requested by %s", peer);
-                send_page(fd, T(S_SDCARD_FORMAT_STARTED), false);
+                send_page(fd, NULL, false, true);
             } else {
                 log_message("microSD format failed for %s: %s", peer, error);
                 send_page(fd, error, true);
