@@ -88,7 +88,16 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   takes several times the bits of another frame, so a shorter interval
   recovers from loss and lets players join sooner but lowers the quality of
   the whole picture at the same bitrate; a longer one does the opposite.
+  Recordings that share the main encoder get its interval too: with a long
+  one, players seek only to keyframes that far apart, and a crash or power
+  cut can lose up to that much at the end of the file. The CBR rate control's
+  `stats_time` stays 1 s (`pipeline.cpp`) whatever the GOP; whether a GOP
+  longer than 1 s needs `stats_time` of at least GOP/fps to avoid quality
+  pumping is still to be checked on hardware.
   The 4K Cam Manager `gop` maps to it; see `docs/4kcam-manager-compat.md`.
+  The `gop` it reports is computed from the saved `frame_rate`, which applies
+  only when camera-app restarts, so after a frame rate change it can differ
+  from the running encoder's until then (the "media ready" line shows that).
 - **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
   `max_num_reorder_frames = 0`. Without it Chrome's decoder holds the level's
   whole DPB (5 frames at 4K) before showing the first one.
@@ -240,19 +249,41 @@ advertises SDR104.
 `ap_cameragimbal/sdbench.sh [SIZE_MIB]` measures a card from the shell: it
 writes SIZE_MIB (default 256) to `/mnt/.sdbench.tmp`, drops the page cache,
 reads it back and prints both speeds, after the card's name, size, bus
-timing and clock. It refuses while any process has a file open on the card,
-so stop recording first, and holds `sdcard.sh`'s lock so the card is not
-mounted or formatted meanwhile. The temporary file is removed when it exits.
+timing and clock. It refuses while any process has a file open on the card
+(recording, logging or a download; it names the process), and holds
+`sdcard.sh`'s lock so the card is not mounted or formatted meanwhile. It
+also holds `/run/sdbench.lock` (`SDBENCH_LOCK`), so benchmarks run one at a
+time from the shell and the web alike, and camera-app checks it
+(`CAMERA_APP_STORAGE_BENCH_LOCK`): while it is held, starting a recording
+or a BIN log fails with EBUSY, auto-record waits, and a MAVLink format is
+`TEMPORARILY_REJECTED`. The write and the read are each stopped after
+`SDBENCH_TIMEOUT` seconds (default 180) with BusyBox or coreutils `timeout`,
+or a watchdog without it, so a failing card cannot keep the locks. The
+temporary file is removed when it exits. Its exit status: 0 done, 2 usage,
+3 card not ready, 4 card busy (a lock is held), 5 a file on the card is
+open, 6 not enough space, 1 any other failure; the reason is on its last
+`sdbench: ` line.
 
 The Status page's "Benchmark microSD card" button (a ready card only) runs
 it with 128 MiB in the background (`SDBENCH_TOOL`, exported by `service.sh`)
-and shows its progress, then the write and read speeds or its refusal, on a
-"microSD speed" row that stays until the next benchmark or boot.
-`GET /storage/state` reports it as `bench`. The output goes to
-`/run/sdbench.result`, whose first line is `running`, then `done` or
-`failed <status>`; the benchmark holds `/run/sdbench.lock` while it runs,
-so one at a time, and one left `running` without the lock (killed) is
-reported failed. It is detached from hisi-web and survives its restarts.
+and shows its progress, then the write and read speeds, the card and bus
+lines, or its refusal (translated for statuses 3-6), on a "microSD speed"
+row that stays until the next benchmark or boot. `GET /storage/state`
+reports it as `bench`. The output goes to `/run/sdbench.result`, whose
+first line is `running`, then `done` or `failed <status>`; the web takes
+`/run/sdbench.lock` itself and passes it to the tool
+(`SDBENCH_LOCK_INHERITED=1`), and one left `running` without the lock
+(killed) is reported failed. It is detached from hisi-web and survives its
+restarts. The page stops following a benchmark after 10 minutes.
+
+The Format and Benchmark forms answer with a 303 to the Status page
+(`/?sdcard=format&since=…`, `/?sdcard=bench`, or `/?notice=N` for a
+refusal), so reloading it never repeats the POST; `storage.js` then drops
+the query. `sdcard.sh format` leaves its result in `/run/sdcard.state.format`
+(`ok UPTIME` or `failed REASON UPTIME`), which `GET /storage/state` reports
+as `format`; the page waits for a result newer than the one before its
+format (`since`) rather than taking a ready card for success, for up to
+10 minutes.
 
 ## Boot (`packaging/hisi`)
 rcS starts the rootfs recovery updater, then `/appfs/sh/start.sh`, then

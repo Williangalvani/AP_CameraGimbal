@@ -282,8 +282,10 @@ export SDCARD_HOST=${SDCARD_HOST-10030000.SDIO}
 export SDCARD_CLOCK_REG=${SDCARD_CLOCK_REG-0x110135c0}
 export CAMERA_APP_STORAGE_STATE=$SDCARD_STATE
 export CAMERA_APP_STORAGE_TOOL=$APP_ROOT/sdcard.sh
-# The web's microSD benchmark button.
-export SDBENCH_TOOL=$APP_ROOT/sdbench.sh
+# The web's microSD benchmark button. A benchmark holds SDBENCH_LOCK, and
+# camera-app neither writes to the card nor formats it meanwhile.
+export SDBENCH_TOOL=$APP_ROOT/sdbench.sh SDBENCH_LOCK=/run/sdbench.lock
+export CAMERA_APP_STORAGE_BENCH_LOCK=$SDBENCH_LOCK
 # The microSD card is mounted when inserted and detached when removed, about
 # a second later; sdcard.sh publishes its state for camera-app and the web.
 # Its own loop: a failing card can block a mount in I/O for a long time.

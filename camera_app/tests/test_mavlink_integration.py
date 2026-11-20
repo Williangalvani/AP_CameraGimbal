@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the native MT11 MAVLink camera and gimbal-device services."""
 
+import fcntl
 import math
 import os
 import pathlib
@@ -734,7 +735,7 @@ def wait_ack(connection, command_id, timeout=8):
     raise TimeoutError(f"no final ACK for command {command_id}")
 
 
-def managed_storage_test(connection, state, tool):
+def managed_storage_test(connection, state, tool, bench_lock):
     """A card mounted and formatted by a packaging helper (sdcard.sh)."""
     mav = mavutil.mavlink
 
@@ -771,6 +772,18 @@ def managed_storage_test(connection, state, tool):
     # Ready: a format stops the recording and answers in progress, then done.
     state.write_text("ready\n")
     assert storage().status == mav.STORAGE_STATUS_READY
+    # Not while sdbench.sh holds its lock: recordings, stills and a format
+    # (which would wait for it) are refused until it finishes.
+    with open(bench_lock, "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert result(mav.MAV_CMD_VIDEO_START_CAPTURE) == \
+            mav.MAV_RESULT_TEMPORARILY_REJECTED
+        assert result(mav.MAV_CMD_IMAGE_START_CAPTURE,
+                      [0.0, 0.0, 1.0]) == mav.MAV_RESULT_TEMPORARILY_REJECTED
+        assert result(mav.MAV_CMD_STORAGE_FORMAT,
+                      [1.0, 1.0]) == mav.MAV_RESULT_TEMPORARILY_REJECTED
+        assert storage().status == mav.STORAGE_STATUS_READY
+    assert not tool.with_suffix(".sh.log").exists()
     assert result(mav.MAV_CMD_VIDEO_START_CAPTURE) == mav.MAV_RESULT_ACCEPTED
     assert result(mav.MAV_CMD_STORAGE_FORMAT,
                   [1.0, 1.0, 1.0]) == mav.MAV_RESULT_IN_PROGRESS
@@ -874,6 +887,7 @@ def main():
         storage_state = directory / "storage.state"
         storage_state.write_text("ready\n")
         storage_tool = directory / "sdcard.sh"
+        bench_lock = directory / "sdbench.lock"
         storage_tool.write_text(STORAGE_TOOL)
         storage_tool.chmod(0o755)
         config_path.write_text(
@@ -910,6 +924,7 @@ def main():
                 "CAMERA_APP_SITL_PHOTO": str(camera_binary.parent / "photo.jpg"),
                 "CAMERA_APP_STORAGE_STATE": str(storage_state),
                 "CAMERA_APP_STORAGE_TOOL": str(storage_tool),
+                "CAMERA_APP_STORAGE_BENCH_LOCK": str(bench_lock),
             })
             camera_log = (directory / "camera.log").open("w", encoding="utf-8")
             logs.append(camera_log)
@@ -941,7 +956,7 @@ def main():
             trigger_device_information_announcement(tcp, position_targeting)
             full_capability_test(tcp, siyi_port, capture_root, recording_state,
                                  position_targeting)
-            managed_storage_test(tcp, storage_state, storage_tool)
+            managed_storage_test(tcp, storage_state, storage_tool, bench_lock)
             tcp.close()
 
             udp = mavutil.mavlink_connection(

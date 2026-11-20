@@ -10,6 +10,10 @@
 #   error        a card that cannot be read
 #   formatting   "format" is running
 #   ready        mounted on SDCARD_MEDIA, with the output directories made
+# "format" also leaves its result in SDCARD_STATE.format, written once it has
+# the lock and has finished: "ok UPTIME", or "failed REASON UPTIME" with
+# REASON one of absent, unmount, size, small, write, table, partition, mkfs
+# or mount, and UPTIME the first field of /proc/uptime then.
 # A card that does not mount is not retried every second (the kernel logs
 # every attempt), only once it has been removed and inserted again.
 # This board's cards can come up unreadable (command timeouts, error -110);
@@ -28,6 +32,7 @@ STATE=${SDCARD_STATE:-/run/sdcard.state}
 LOCK=${SDCARD_LOCK:-/run/sdcard.lock}
 DISKS=${SDCARD_DISKS:-/dev/mmcblk0 /dev/mmcblk1}
 MOUNTS=${SDCARD_MOUNTS:-/proc/mounts}
+UPTIME=${SDCARD_UPTIME:-/proc/uptime}
 HOST=${SDCARD_HOST-}
 HOST_DRIVER=${SDCARD_HOST_DRIVER:-/sys/bus/platform/drivers/sdhci_nebula}
 CLOCK_REG=${SDCARD_CLOCK_REG-}
@@ -40,6 +45,19 @@ PART_START=8192
 log()
 {
     echo "sdcard: $*" >&2
+}
+# REASON MESSAGE: why the format failed.
+format_error()
+{
+    reason=$1
+    shift
+    log "$*"
+    return 1
+}
+format_result()
+{
+    read -r up _ <"$UPTIME" 2>/dev/null || up=0
+    printf '%s %s\n' "$*" "$up" >"$STATE.format.new" && mv -f "$STATE.format.new" "$STATE.format"
 }
 set_state()
 {
@@ -191,22 +209,22 @@ disk_sectors()
 }
 do_format()
 {
-    find_disk || { log 'no card to format'; set_state absent; return 1; }
+    find_disk || { set_state absent; format_error absent 'no card to format'; return; }
     raise_clock
     set_state formatting
     media_mount
     if [ -n "$mounted" ]; then
         umount "$MEDIA" 2>/dev/null || umount -l "$MEDIA" ||
-            { log "cannot unmount $MEDIA"; return 1; }
+            { format_error unmount "cannot unmount $MEDIA"; return; }
     fi
-    sectors=$(disk_sectors) || return 1
+    sectors=$(disk_sectors) || { format_error size "cannot read the size of $disk"; return; }
     # FAT32 needs at least 65525 clusters; below 64 MiB is not a real card.
     [ "$sectors" -gt $((PART_START + 131072)) ] ||
-        { log "$disk is too small ($sectors sectors)"; return 1; }
+        { format_error small "$disk is too small ($sectors sectors)"; return; }
     log "formatting $disk ($sectors sectors)"
     # Clears the old partition table and whatever filesystem headers follow it.
     dd if=/dev/zero of="$disk" bs=1M count=1 conv=notrunc 2>/dev/null ||
-        { log "cannot write $disk"; return 1; }
+        { format_error write "cannot write $disk"; return; }
     # One FAT32 LBA (type 0x0c) partition; CHS fields marked unused.
     {
         dd if=/dev/zero bs=446 count=1 2>/dev/null
@@ -216,7 +234,7 @@ do_format()
         dd if=/dev/zero bs=48 count=1 2>/dev/null
         printf '\125\252'
     } | dd of="$disk" conv=notrunc 2>/dev/null ||
-        { log "cannot write the partition table"; return 1; }
+        { format_error table "cannot write the partition table"; return; }
     sync
     partition=$(partition_of "$disk")
     if [ -b "$disk" ]; then
@@ -225,11 +243,11 @@ do_format()
             [ -b "$partition" ] && break
             sleep 1
         done
-        [ -b "$partition" ] || { log "$partition did not appear"; return 1; }
+        [ -b "$partition" ] || { format_error partition "$partition did not appear"; return; }
     fi
-    mkfs.vfat -n APCAM "$partition" >/dev/null || { log "mkfs.vfat failed"; return 1; }
+    mkfs.vfat -n APCAM "$partition" >/dev/null || { format_error mkfs "mkfs.vfat failed"; return; }
     sync
-    try_mount || { log "the new filesystem does not mount"; return 1; }
+    try_mount || { format_error mount "the new filesystem does not mount"; return; }
     log "formatted and mounted $partition"
     set_state ready
 }
@@ -243,7 +261,9 @@ mount)
     ;;
 format)
     flock 7
+    reason=
     if do_format; then
+        format_result ok
         exit 0
     fi
     media_mount
@@ -254,6 +274,7 @@ format)
     else
         set_state absent
     fi
+    format_result failed "${reason:-unknown}"
     exit 1
     ;;
 *)

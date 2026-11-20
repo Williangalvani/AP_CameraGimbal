@@ -3,9 +3,12 @@
 from pathlib import Path
 import fcntl
 import os
+import shutil
 import struct
 import subprocess
 import tempfile
+import sys
+import time
 
 repo = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='hisi-sdcard-') as directory:
@@ -30,6 +33,7 @@ echo "$1 $2 vfat $mode,noatime 0 0" >>"$TEST_ROOT/mounts"
 ''')
     (commands / 'umount').write_text('''#!/bin/sh
 echo "umount $*" >>"$TEST_ROOT/calls"
+[ -e "$TEST_ROOT/umount-fails" ] && exit 1
 [ "$1" = -l ] && shift
 awk -v dir="$1" '$2 != dir' "$TEST_ROOT/mounts" >"$TEST_ROOT/mounts.new"
 mv "$TEST_ROOT/mounts.new" "$TEST_ROOT/mounts"
@@ -61,19 +65,31 @@ echo "[END]"
         path.chmod(0o755)
     state = root / 'sdcard.state'
     lock = root / 'sdcard.lock'
+    uptime = root / 'uptime'
+    # The web's Status page compares this with the one it loaded with.
+    result = root / 'sdcard.state.format'
     env = dict(os.environ, PATH=str(commands) + ':' + os.environ['PATH'],
                TEST_ROOT=str(root), SDCARD_MEDIA=str(media), SDCARD_STATE=str(state),
-               SDCARD_LOCK=str(lock), SDCARD_DISKS=str(disk), SDCARD_MOUNTS=str(mounts))
+               SDCARD_LOCK=str(lock), SDCARD_DISKS=str(disk), SDCARD_MOUNTS=str(mounts),
+               SDCARD_UPTIME=str(uptime))
+    # The shells camera-app may find on the board, where the host has them.
+    shell = os.environ.get('SDCARD_TEST_SHELL', 'sh').split()
 
-    def run(command, expect=0):
+    def run(command, expect=0, at=None):
         calls.write_text('')
-        result = subprocess.run(['sh', str(repo / 'packaging/hisi/sdcard.sh'), command],
+        if at is not None:
+            uptime.write_text(f'{at} 1.00\n')
+        result = subprocess.run([*shell, str(repo / 'packaging/hisi/sdcard.sh'), command],
                                 env=env, capture_output=True, text=True, timeout=60)
         assert result.returncode == expect, (command, result.returncode, result.stderr)
         return calls.read_text().splitlines()
 
     def current():
         return state.read_text().split()[0]
+
+    def formatted():
+        assert not Path(f'{result}.new').exists()
+        return result.read_text()
 
     # No card.
     assert run('mount') == []
@@ -97,18 +113,35 @@ echo "[END]"
         assert run('mount') == []
 
     # A failed format is reported and leaves the card unformatted.
+    assert not result.exists()
     (root / 'mkfs-fails').touch()
-    assert run('format', expect=1)[-1] == f'mkfs.vfat -n APCAM {partition}'
+    assert run('format', expect=1, at='100.25')[-1] == f'mkfs.vfat -n APCAM {partition}'
     assert (root / 'mkfs.state').read_text() == 'formatting\n'
     assert current() == 'unformatted'
+    assert formatted() == 'failed mkfs 100.25\n'
     (root / 'mkfs-fails').unlink()
+
+    # A format waiting for the lock (a mount stuck in I/O, or a benchmark)
+    # reports nothing until it has run.
+    uptime.write_text('105.50 1.00\n')
+    with open(lock, 'w') as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        waiting = subprocess.Popen([*shell, str(repo / 'packaging/hisi/sdcard.sh'), 'format'],
+                                   env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+        assert waiting.poll() is None and formatted() == 'failed mkfs 100.25\n'
+        assert current() == 'unformatted'
+    assert waiting.wait(timeout=60) == 0
+    assert formatted() == 'ok 105.50\n' and current() == 'ready'
 
     # Format: one FAT32 LBA partition from 4 MiB to the end, then mounted.
     (root / 'mkfs.state').unlink()
-    assert run('format') == [f'mkfs.vfat -n APCAM {partition}',
-                             f'mount -o noatime {partition} {media}']
+    mounts.write_text('')
+    assert run('format', at='110.00') == [f'mkfs.vfat -n APCAM {partition}',
+                                          f'mount -o noatime {partition} {media}']
     assert (root / 'mkfs.state').read_text() == 'formatting\n'
     assert current() == 'ready'
+    assert formatted() == 'ok 110.00\n'
     with open(disk, 'rb') as card:
         mbr = card.read(1024 * 1024)
     assert disk.stat().st_size == sectors * 512
@@ -124,16 +157,22 @@ echo "[END]"
     assert current() == 'ready'
 
     # Formatting a mounted card unmounts it first.
-    assert run('format')[:2] == [f'umount {media}', f'mkfs.vfat -n APCAM {partition}']
-    assert current() == 'ready'
+    assert run('format', at='120.00')[:2] == [f'umount {media}', f'mkfs.vfat -n APCAM {partition}']
+    assert current() == 'ready' and formatted() == 'ok 120.00\n'
+
+    # One it cannot unmount stays mounted, and ready, but the format failed.
+    (root / 'umount-fails').touch()
+    assert run('format', expect=1, at='125.00') == [f'umount {media}', f'umount -l {media}']
+    assert current() == 'ready' and formatted() == 'failed unmount 125.00\n'
+    (root / 'umount-fails').unlink()
 
     # Removed: detached lazily, since a recording may still be open on it.
     disk.unlink()
     partition.unlink()
     assert run('mount') == [f'umount -l {media}']
     assert current() == 'absent' and mounts.read_text() == ''
-    assert run('format', expect=1) == []
-    assert current() == 'absent'
+    assert run('format', expect=1, at='130.00') == []
+    assert current() == 'absent' and formatted() == 'failed absent 130.00\n'
 
     # A card that only mounts read-only is not used.
     with open(disk, 'wb') as card:
@@ -148,8 +187,8 @@ echo "[END]"
     # Too small for FAT32.
     with open(disk, 'wb') as card:
         card.truncate(32 * 1024 * 1024)
-    assert run('format', expect=1) == []
-    assert current() == 'unformatted'
+    assert run('format', expect=1, at='140.00') == []
+    assert current() == 'unformatted' and formatted() == 'failed small 140.00\n'
 
     # A card that cannot be read (here a directory): the controller is bound
     # to its driver again, twice at most, then the card is reported.
@@ -217,4 +256,12 @@ echo "[END]"
     assert current() == 'absent' and (driver / 'unbind').exists()
     disk.rmdir()
     run('mount')
-print('hisi sdcard tests passed')
+print(f"hisi sdcard tests passed ({' '.join(shell)})")
+# The board runs BusyBox ash; the host's sh may be bash.
+if 'SDCARD_TEST_SHELL' not in os.environ:
+    for other in ('dash', 'busybox sh'):
+        if shutil.which(other.split()[0]):
+            subprocess.run([sys.executable, __file__], env=dict(os.environ, SDCARD_TEST_SHELL=other),
+                           check=True)
+        else:
+            print(f'hisi sdcard tests skipped under {other}: not installed')

@@ -489,6 +489,16 @@ tests/test_timezone: tests/test_timezone.cpp $(APCAM_HEADERS)
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(CPPFLAGS) $(APP_CXXFLAGS) -o $@ $<
 
+.PHONY: storage-test
+storage-test: tests/test_storage
+	./tests/test_storage
+
+tests/test_storage: tests/test_storage.cpp include/camera_app/storage.h
+	$(call progress,Linking $@)
+	$(HOST_CXX) $(APP_CXXFLAGS) -Iinclude -std=gnu++17 -Wall -Wextra -Werror -o $@ $<
+
+test: storage-test
+
 .PHONY: hisi-image-test
 hisi-image-test: tests/test_hisi_tuning tests/test_hisi_one_push tests/test_hisi_config tests/test_hisi_ircut \
 	tests/test_hisi_iris

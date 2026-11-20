@@ -1758,7 +1758,8 @@ static uint8_t format_storage(struct ca_mavlink_server *server, const struct rou
     enum ca_storage_state state = ca_storage_state();
     if (state == CA_STORAGE_UNMANAGED) return MAV_RESULT_UNSUPPORTED;
     if (params[0] != 1.0f) return MAV_RESULT_DENIED;
-    if (server->format_child > 0 || state == CA_STORAGE_FORMATTING)
+    /* sdcard.sh would wait for the benchmark's lock, with the ACK outstanding. */
+    if (server->format_child > 0 || state == CA_STORAGE_FORMATTING || ca_storage_benchmarking())
         return MAV_RESULT_TEMPORARILY_REJECTED;
     if (params[1] == 1.0f && state == CA_STORAGE_ABSENT) return MAV_RESULT_DENIED;
     if (params[2] == 1.0f) {
@@ -3743,10 +3744,12 @@ static void check_storage(struct ca_mavlink_server *server, uint64_t now)
     broadcast_capture_status(server);
     if (state == CA_STORAGE_READY && server->settings.autorecord == CA_AUTORECORD_ENABLED &&
         !ca_media_recording(server->media)) {
-        if (ca_media_set_recording(server->media, true) < 0)
-            ca_log("automatic recording could not start: %s", strerror(errno));
-        else
+        if (ca_media_set_recording(server->media, true) == 0)
             ca_log("recording started: storage ready");
+        else if (errno == EBUSY)
+            ca_media_defer_autorecord(server->media);
+        else
+            ca_log("automatic recording could not start: %s", strerror(errno));
     }
 }
 

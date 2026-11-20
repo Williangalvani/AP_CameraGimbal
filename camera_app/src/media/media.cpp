@@ -451,6 +451,9 @@ void APC_Media::periodic(uint64_t now_ms)
     _backend->periodic(now_ms);
     if (_config.settings.autorecord!=CA_AUTORECORD_ENABLED) _autorecord_pending=false;
     if (!_autorecord_pending || now_ms<_autorecord_next) return;
+    // A format or benchmark holds the card for minutes; the wait for media
+    // readiness starts once it is done.
+    if (ca_storage_writable()<0 && errno==EBUSY) { _autorecord_deadline=0; _autorecord_next=now_ms+500; return; }
     if (!_autorecord_deadline) _autorecord_deadline=now_ms+60000;
     if (now_ms>=_autorecord_deadline) {
         _autorecord_pending=false;

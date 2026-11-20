@@ -159,6 +159,20 @@ int main()
     const auto attempts=recording_calls;
     media->periodic(65000);recording_error=0;media->periodic(65500);
     assert(recording_calls==attempts && !recording_active);
+    // A format or benchmark holding the card for minutes does not use up the
+    // wait for readiness; recording starts once the card is free.
+    char storage[]="/tmp/camera-app-media-storage-XXXXXX";
+    int storage_fd=mkstemp(storage);
+    assert(storage_fd>=0 && write(storage_fd,"formatting\n",11)==11);
+    setenv("CAMERA_APP_STORAGE_STATE",storage,1);
+    ca_media_defer_autorecord(media);
+    media->periodic(70000);media->periodic(140000);
+    assert(recording_calls==attempts && !recording_active);
+    assert(ftruncate(storage_fd,0)==0 && pwrite(storage_fd,"ready\n",6,0)==6);
+    media->periodic(140600);
+    assert(recording_calls==attempts+1 && recording_active);
+    unsetenv("CAMERA_APP_STORAGE_STATE");
+    close(storage_fd);unlink(storage);
     ca_media_close(media);
     puts("PASS media controls, overlay errors, recording guard, rollback, lifetime and deferred autorecord");
 }

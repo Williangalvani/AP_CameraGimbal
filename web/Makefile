@@ -176,6 +176,7 @@ test: zt30-parameters-test tests/test_zt30_process $(HOST_TEST) $(A8_HOST_CHECK)
 	python3 tests/test_a8_upgrade.py
 	python3 tests/test_rpi_parameters.py ./$(RPI_HOST_CHECK) '$(RPI_TEST_ROOT)'
 	node tests/test_video_uri.js webroot/parameters.js
+	node tests/test_storage_js.js webroot/storage.js
 
 clean:
 	rm -f tests/test_zt30_process tests/test_string_buffer tests/test_onvif tests/test_fourkcam tests/test_webroot mt11-web a8-web zr10-web z1mini-web rpi_libcam_caddx-web hisi-web zt30-web zt30-dev-web $(HOST_TEST) $(A8_HOST_CHECK) $(RPI_HOST_CHECK)

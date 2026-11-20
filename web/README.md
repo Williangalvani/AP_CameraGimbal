@@ -119,7 +119,8 @@ Each fragment carries a `tfdt` decode timestamp and uses moof-relative
 addressing, matching Chromium's fragmented-MP4 requirements. Stream geometry
 changes close the private feed so the page reconnects with a new MP4
 initialization segment. A viewer waits for an IDR before decoding, so initial
-display can take up to the configured one-second GOP.
+display can take up to the stream's keyframe interval (`keyframe_interval_ms`,
+1 s by default).
 
 This path supports H.264 only. H.265 remains supported by RTSP but is rejected
 with an explicit HTTP error because browser support is not sufficiently

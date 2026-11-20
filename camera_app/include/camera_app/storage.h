@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -15,7 +16,8 @@
  * (packaging/hisi/sdcard.sh). CAMERA_APP_STORAGE_STATE names the file holding
  * its state as the first word, CAMERA_APP_STORAGE_TOOL the helper, run as
  * "TOOL format". Without CAMERA_APP_STORAGE_STATE the output directories are
- * used as they are. */
+ * used as they are. CAMERA_APP_STORAGE_BENCH_LOCK names the lock the card's
+ * benchmark (packaging/hisi/sdbench.sh) holds while it runs. */
 enum ca_storage_state {
     CA_STORAGE_UNMANAGED,
     CA_STORAGE_ABSENT,
@@ -52,14 +54,31 @@ static inline enum ca_storage_state ca_storage_state(void)
     return CA_STORAGE_ABSENT;
 }
 
+/* Whether the card's benchmark is running. The probe holds a shared lock
+ * for a moment; the benchmark tries its own again to outlast it. */
+static inline int ca_storage_benchmarking(void)
+{
+    const char *path = getenv("CAMERA_APP_STORAGE_BENCH_LOCK");
+    if (path == NULL || path[0] == '\0') return 0;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    int held = flock(fd, LOCK_SH | LOCK_NB) < 0 && errno == EWOULDBLOCK;
+    (void)close(fd);
+    return held;
+}
+
 /* 0 if recordings and stills can be written now; otherwise -1 with errno
- * ENOMEDIUM (no card), EMEDIUMTYPE (unformatted) or EBUSY (formatting). */
+ * ENOMEDIUM (no card), EMEDIUMTYPE (unformatted) or EBUSY (formatting or
+ * benchmarking). */
 static inline int ca_storage_writable(void)
 {
     switch (ca_storage_state()) {
     case CA_STORAGE_UNMANAGED:
-    case CA_STORAGE_READY:
         return 0;
+    case CA_STORAGE_READY:
+        if (!ca_storage_benchmarking()) return 0;
+        errno = EBUSY;
+        return -1;
     case CA_STORAGE_ABSENT:
         errno = ENOMEDIUM;
         return -1;

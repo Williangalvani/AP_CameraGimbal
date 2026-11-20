@@ -7,6 +7,7 @@
 #include "camera_app/config.h"
 #include "camera_app/backend.h"
 #include "camera_app/log.h"
+#include "camera_app/storage.h"
 #include "apcam/target.h"
 #include "binlog_version.h"
 #include <dirent.h>
@@ -242,6 +243,8 @@ static int write_all(int fd,const void *data,size_t size)
 }
 static int open_log(void)
 {
+    // A format or benchmark holds the card; the logging policy retries.
+    if (ca_storage_writable()<0 && errno==EBUSY) return -1;
     if (mkdir(logger.root,0755)<0 && errno!=EEXIST) return -1;
     DIR *dir=opendir(logger.root);
     if (!dir) return -1;

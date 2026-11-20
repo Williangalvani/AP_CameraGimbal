@@ -216,10 +216,17 @@ while :; do sleep 1; done
     # its refusal; it records how the web started it.
     (app / 'sdbench.sh').write_text('''#!/bin/sh
 echo "$*" >"$TEST_ROOT/sdbench.args"
+echo "${SDBENCH_LOCK_INHERITED-unset}" >"$TEST_ROOT/sdbench.inherited"
 ls -l /proc/$$/fd >"$TEST_ROOT/sdbench.fds"
 cut -d' ' -f6 /proc/$$/stat >"$TEST_ROOT/sdbench.sid"
 if [ -e "$TEST_ROOT/sdbench.refuse" ]; then
-    echo "sdbench: recording in progress; stop it first" >&2
+    echo "sdbench: a file on the card is open (recording, logging or a download): camera-app, pid 1" >&2
+    exit 5
+fi
+if [ -e "$TEST_ROOT/sdbench.fail" ]; then
+    echo "sdbench: cannot drop the page cache; the read speed may be cached" >&2
+    echo "1+0 records in"
+    echo "sdbench: read failed: dd: /mnt/.sdbench.tmp: I/O error" >&2
     exit 1
 fi
 echo "card: SB64G (SDXC, 59.5 GiB, manfid 0x000003, oemid 0x5344)"
@@ -293,8 +300,10 @@ echo ok
             generation = int(request_file.read_text()) if request_file.exists() else 0
             request_file.write_text(f'{generation + 1}\n')
 
-    def web_response(path, body=None, auth=True):
+    def web_response(path, body=None, auth=True, language=None):
         headers = {}
+        if language:
+            headers['Accept-Language'] = language
         if auth:
             headers['Authorization'] = 'Basic ' + base64.b64encode(b'admin:test-password').decode()
         if body is not None:
@@ -324,10 +333,11 @@ echo ok
             crc = (crc >> 8) ^ (byte << 8) ^ (byte << 3) ^ (byte >> 4)
         return crc
 
-    def format_card():
+    def format_card(result=5):
         # camera-app's answer to MAV_CMD_STORAGE_FORMAT (526): a MAVLink 1
-        # COMMAND_ACK (77, CRC extra 143) with MAV_RESULT_IN_PROGRESS (5).
-        frame = bytes((3, 0, 1, 100, 77)) + struct.pack('<HB', 526, 5)
+        # COMMAND_ACK (77, CRC extra 143), by default MAV_RESULT_IN_PROGRESS
+        # (5). The web answers with a redirect to the Status page.
+        frame = bytes((3, 0, 1, 100, 77)) + struct.pack('<HB', 526, result)
         frame = b'\xfe' + frame + struct.pack('<H', x25(frame + bytes((143,))))
         token = csrf()
         with socket.socket() as camera:
@@ -343,9 +353,15 @@ echo ok
                     connection.sendall(frame)
             thread = threading.Thread(target=answer)
             thread.start()
-            result = web_request('/storage/format', f'csrf={token}&confirm=yes')
+            status, headers, _ = web_response('/storage/format', f'csrf={token}&confirm=yes')
             thread.join(30)
-        return result
+        return status, headers.get('Location')
+
+    def redirected(response):
+        # A form's 303 and the Status page it leads to.
+        status, headers, _ = response
+        assert status == 303, (status, headers)
+        return headers['Location'], web_request(headers['Location'])
 
     def action(name, fields):
         # 4K Cam Manager's /action requests: no login, no Origin.
@@ -433,7 +449,9 @@ echo ok
         assert b'<th>microSD</th><td id=sdcard-state>no card inserted</td>' in status_page
         assert b'/storage/format' not in status_page and b'/storage/bench' not in status_page
         assert b'<tr id=sdcard-bench-row hidden>' in status_page
-        assert b'http-equiv=refresh' not in status_page and b'/storage.js' not in status_page
+        # The script only disables the buttons on submit here.
+        assert b'http-equiv=refresh' not in status_page
+        assert b'<script src=/storage.js defer></script>' in status_page
         # The card's state for the Status page's script, behind the login
         # without a Basic challenge (a dialog over a polling page).
         status, headers, _ = web_response('/storage/state', auth=False)
@@ -461,31 +479,71 @@ echo ok
         assert card['state'] == 'ready' and ('size' in card) == ('free' in card), card
         status_page = web_request('/')[1].decode()
         assert f'<td id=sdcard-state>{card["text"]}</td>' in status_page, status_page
-        assert 'http-equiv=refresh' not in status_page and '/storage.js' not in status_page
-        # The page answering the button watches the format before sdcard.sh
-        # reports it, and reloads itself without JavaScript.
-        status, page = format_card()
+        assert 'http-equiv=refresh' not in status_page
+        assert '<script src=/storage.js defer></script>' in status_page
+        assert '<form id=sdcard-format method=post action=/storage/format ><input' in status_page
+        # The button is answered with a redirect, so reloading the page does
+        # not format again. The page it leads to watches the format before
+        # sdcard.sh reports it, until a result replaces the one before (none
+        # here), and reloads itself without JavaScript.
+        status, location = format_card()
+        assert (status, location) == (303, '/?sdcard=format&since=0'), (status, location)
+        status, page = web_request(location)
         page = page.decode()
         assert status == 200, page
         assert '<noscript><meta http-equiv=refresh content="3;url=/"></noscript>' in page, page
-        assert '<script src=/storage.js data-started defer></script>' in page, page
+        assert '<script src=/storage.js data-started data-format="0" defer></script>' in page, page
         assert '<form id=sdcard-format method=post action=/storage/format hidden>' in page, page
         assert 'This page updates automatically and shows when the card is ready.' in page, page
         assert 'Refresh this page' not in page
+        # The link it leaves only names a whitelisted notice and a number.
+        page = web_request('/?sdcard=format&since=1;alert(1)&notice=99')[1].decode()
+        assert 'data-format="0"' in page and 'alert' not in page, page
+        # A second format while camera-app still runs the first, or waits for
+        # sdcard.sh, is refused (TEMPORARILY_REJECTED); its page follows the first.
+        status, location = format_card(result=1)
+        assert (status, location) == (303, '/?sdcard=format&since=0&notice=3'), (status, location)
+        status, page = web_request(location)
+        page = page.decode()
+        assert status == 200 and 'The microSD card is being formatted' in page, page
+        assert 'data-started data-format="0"' in page, page
         status, headers, script = web_response('/storage.js')
         assert status == 200 and headers['Content-Type'] == 'application/javascript; charset=utf-8'
         assert script.startswith(b"const L = {") and b"readySize:'microSD card ready (%s, %s free)'" in script
         assert b"'/storage/state?t='" in script
+        assert b"timeout:'The format has not finished after 10 minutes. Open the Status page" in script
+        assert b"benchTimeout:'The benchmark has not finished after 10 minutes." in script
+        assert b"failed:'Format failed: %s. microSD card: %s'" in script
+        assert b"history.replaceState(null, '', '/')" in script
+        for language, words in (('zh', '请打开状态页面'.encode()), ('ja', 'ステータスページを開いて'.encode())):
+            assert words in web_response('/storage.js', language=language)[2], language
+        # sdcard.sh's format result, as the Status page's script compares it.
+        format_result = runtime / 'sdcard.state.format'
+        format_result.write_text('failed mkfs 4321.50\n')
+        assert storage_state()['format'] == {'result': 'failed', 'at': 4321.5, 'reason': 'mkfs',
+                                             'text': 'the filesystem could not be created'}
+        status, headers, body = web_response('/storage/state', language='ja')
+        assert json.loads(body)['format']['text'] == 'ファイルシステムを作成できませんでした', body
+        format_result.write_text('failed newreason 4322.00\n')
+        assert storage_state()['format']['text'] == 'newreason'
+        for corrupt in ('ok\n', 'ok 12a\n', 'done 12\n', 'failed 12\n', ''):
+            format_result.write_text(corrupt)
+            assert 'format' not in storage_state(), corrupt
+        format_result.write_text('ok 4323.25\n')
+        assert storage_state()['format'] == {'result': 'ok', 'at': 4323.25}
+        assert format_card() == (303, '/?sdcard=format&since=4323.25')
         # While sdcard.sh formats (holding its lock), the Status page polls,
         # or reloads itself, and hides the form.
         with open(runtime / 'sdcard.lock', 'w') as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             sdcard_state.write_text('formatting\n')
-            assert storage_state() == {'state': 'formatting', 'text': 'formatting…'}
+            assert storage_state() == {'state': 'formatting', 'text': 'formatting…',
+                                       'format': {'result': 'ok', 'at': 4323.25}}
             status_page = web_request('/')[1].decode()
             assert '<td id=sdcard-state>formatting…</td>' in status_page, status_page
             assert '<noscript><meta http-equiv=refresh content="3;url=/"></noscript>' in status_page
-            assert '<script src=/storage.js defer></script>' in status_page
+            # A page opened during the format follows it from the current result.
+            assert '<script src=/storage.js data-started data-format="4323.25" defer></script>' in status_page
             assert 'action=/storage/format hidden>' in status_page
             assert 'action=/storage/bench hidden>' in status_page
             assert 'This page updates automatically' in status_page
@@ -494,19 +552,23 @@ echo ok
                 sdcard_state.write_text(state + '\n')
                 status_page = web_request('/')[1].decode()
                 assert '/storage/bench' not in status_page, (state, status_page)
-            status, page = web_request('/storage/bench', f'csrf={csrf()}')
-            assert status == 400 and b'The microSD card does not respond; reinsert it' in page, page
+            location, (status, page) = redirected(web_response('/storage/bench', f'csrf={csrf()}'))
+            assert location == '/?notice=4', location
+            assert status == 200 and b'The microSD card does not respond; reinsert it' in page, page
             assert not (runtime / 'sdbench.result').exists()
             sdcard_state.write_text('formatting\n')
         wait_for(lambda: sdcard_state.read_text() == 'ready\n', 'card not ready after the format')
         assert storage_state()['state'] == 'ready'
+        format_result.unlink()
 
         # The microSD benchmark: behind the login and the form token, like Format.
         bench_result = runtime / 'sdbench.result'
         status_page = web_request('/')[1].decode()
-        assert '<form id=sdcard-bench method=post action=/storage/bench><input type=hidden name=csrf' \
+        assert '<form id=sdcard-bench-form method=post action=/storage/bench ><input type=hidden name=csrf' \
             in status_page, status_page
         assert 'Writes a temporary 128 MiB file to the card' in status_page
+        assert '向卡写入一个 128 MiB 的临时文件' in web_response('/', language='zh')[2].decode()
+        assert 'カードに 128 MiB の一時ファイルを書き込んで' in web_response('/', language='ja')[2].decode()
         assert 'Stop recording first.' in status_page
         assert '<tr id=sdcard-bench-row hidden>' in status_page
         assert 'bench' not in storage_state()
@@ -516,36 +578,55 @@ echo ok
         assert status == 401, (status, headers)
         assert not bench_result.exists() and not (root / 'sdbench.args').exists()
 
-        def bench_state():
-            return storage_state().get('bench')
+        def bench_state(details=False):
+            # the tool's card and bus lines arrive as it runs
+            bench = storage_state().get('bench')
+            if bench and not details:
+                bench.pop('card', None)
+                bench.pop('bus', None)
+            return bench
 
         def post_bench():
+            # The page, which the POST's redirect leads to.
             began = time.monotonic()
-            status, page = web_request('/storage/bench', f'csrf={csrf()}')
-            return status, page.decode(), time.monotonic() - began
+            status, headers, _ = web_response('/storage/bench', f'csrf={csrf()}')
+            elapsed = time.monotonic() - began
+            assert status == 303, (status, headers)
+            page = web_request(headers['Location'])[1].decode()
+            return headers['Location'], page, elapsed
 
         # The page answers at once while the tool runs detached, and watches it.
-        status, page, elapsed = post_bench()
-        assert status == 200 and elapsed < 5, (status, elapsed, page)
+        location, page, elapsed = post_bench()
+        assert location == '/?sdcard=bench' and elapsed < 5, (location, elapsed, page)
         assert '<noscript><meta http-equiv=refresh content="3;url=/"></noscript>' in page, page
         assert '<script src=/storage.js data-bench defer></script>' in page, page
         assert 'action=/storage/format hidden>' in page and 'action=/storage/bench hidden>' in page
         assert 'This page updates automatically and shows the speeds when it finishes.' in page
-        assert '<tr id=sdcard-bench-row><th>microSD speed</th><td id=sdcard-bench>' \
-            'Benchmarking the microSD card…</td></tr>' in page, page
+        assert '<tr id=sdcard-bench-row><th>microSD speed</th><td><span id=sdcard-bench>' \
+            'Benchmarking the microSD card…</span>' in page, page
         assert bench_state() == {'status': 'running', 'text': 'Benchmarking the microSD card…'}
         wait_for(lambda: (root / 'sdbench.sid').exists(), 'benchmark tool not started')
         assert (root / 'sdbench.args').read_text() == '128\n'
+        # It holds the lock the web took for it, which camera-app checks.
+        wait_for(lambda: (root / 'sdbench.inherited').exists(), 'benchmark environment not recorded')
+        assert (root / 'sdbench.inherited').read_text() == '1\n'
+        with open(runtime / 'sdbench.lock') as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                raise AssertionError('benchmark lock not held while it runs')
+            except BlockingIOError:
+                pass
         fds = (root / 'sdbench.fds').read_text()
         assert re.search(r' 0 -> /dev/null$', fds, re.M) and 'socket:' not in fds, fds
         web_pid = pids('hisi-web')[0]
         web_sid = Path(f'/proc/{web_pid}/stat').read_text().split(') ')[1].split()[3]
         assert (root / 'sdbench.sid').read_text().strip() != web_sid, 'benchmark not in its own session'
         # One at a time, and no format meanwhile.
-        status, page, _ = post_bench()
-        assert status == 400 and 'A microSD card benchmark is running; wait for it to finish' in page, page
-        status, page = web_request('/storage/format', f'csrf={csrf()}&confirm=yes')
-        assert status == 400 and b'A microSD card benchmark is running' in page, page
+        location, page, _ = post_bench()
+        assert location == '/?notice=0', location
+        assert 'A microSD card benchmark is running; wait for it to finish' in page, page
+        location, (status, page) = redirected(web_response('/storage/format', f'csrf={csrf()}&confirm=yes'))
+        assert location == '/?notice=0' and b'A microSD card benchmark is running' in page, page
         # The Status page loaded meanwhile polls, or reloads itself.
         status_page = web_request('/')[1].decode()
         assert '<script src=/storage.js data-bench defer></script>' in status_page
@@ -566,33 +647,58 @@ echo ok
         done = {'status': 'done', 'write': '14.9', 'read': '22.2',
                 'text': 'Benchmark: write 14.9 MB/s, read 22.2 MB/s'}
         assert bench_state() == done, bench_state()
+        assert bench_state(details=True) == dict(
+            done, card='SB64G (SDXC, 59.5 GiB, manfid 0x000003, oemid 0x5344)',
+            bus='sd high-speed, 4 bits, 25.0 MHz'), bench_state(details=True)
         assert bench_result.read_text().splitlines()[0] == 'done', bench_result.read_text()
         # The last result stays on the Status page, which no longer polls.
         status_page = web_request('/')[1].decode()
-        assert '<tr id=sdcard-bench-row><th>microSD speed</th><td id=sdcard-bench>' \
-            'Benchmark: write 14.9 MB/s, read 22.2 MB/s</td></tr>' in status_page, status_page
-        assert '/storage.js' not in status_page and 'http-equiv=refresh' not in status_page
-        assert 'action=/storage/bench>' in status_page and 'action=/storage/format>' in status_page
+        assert '<tr id=sdcard-bench-row><th>microSD speed</th><td><span id=sdcard-bench>' \
+            'Benchmark: write 14.9 MB/s, read 22.2 MB/s</span>' \
+            '<div class=help id=sdcard-bench-card>Card: SB64G (SDXC, 59.5 GiB, manfid 0x000003, oemid 0x5344)</div>' \
+            '<div class=help id=sdcard-bench-bus>Bus: sd high-speed, 4 bits, 25.0 MHz</div></td></tr>' \
+            in status_page, status_page
+        assert '<script src=/storage.js defer></script>' in status_page and 'http-equiv=refresh' not in status_page
+        assert 'action=/storage/bench >' in status_page and 'action=/storage/format >' in status_page
+        zh_page = web_response('/', language='zh')[2].decode()
+        assert '卡：SB64G' in zh_page and '总线：sd high-speed' in zh_page
+        # Reloading the page the benchmark's POST led to shows its result
+        # once, without starting another.
+        page = web_request('/?sdcard=bench')[1].decode()
+        assert '<script src=/storage.js data-bench defer></script>' in page and 'http-equiv=refresh' not in page
+        assert bench_state() == done
 
-        # The tool's refusal is the failure's reason.
+        # The tool's refusals have their own exit status and message.
         (root / 'sdbench.refuse').touch()
-        status, page, _ = post_bench()
-        assert status == 200, page
+        location, page, _ = post_bench()
+        assert location == '/?sdcard=bench', page
         wait_for(lambda: bench_state()['status'] != 'running', 'refused benchmark still running')
-        assert bench_state() == {'status': 'failed',
-                                 'text': 'Benchmark failed: recording in progress; stop it first'}, bench_state()
-        assert bench_result.read_text().splitlines()[0] == 'failed 1', bench_result.read_text()
-        assert 'Benchmark failed: recording in progress; stop it first</td>' in web_request('/')[1].decode()
+        opened = ('Benchmark failed: a file on the microSD card is open (recording, logging or a download); '
+                  'close it first')
+        assert bench_state() == {'status': 'failed', 'text': opened}, bench_state()
+        assert bench_result.read_text().splitlines()[0] == 'failed 5', bench_result.read_text()
+        assert opened + '</span>' in web_request('/')[1].decode()
+        for language, words in (('zh', 'microSD 卡上有文件处于打开状态'), ('ja', 'microSD カード上のファイルが開かれています')):
+            assert words in web_response('/storage/state', language=language)[2].decode(), language
         (root / 'sdbench.refuse').unlink()
+        # Otherwise its last "sdbench: " line, not a warning before it or dd's output.
+        (root / 'sdbench.fail').touch()
+        post_bench()
+        wait_for(lambda: bench_state()['status'] != 'running', 'failed benchmark still running')
+        assert bench_state() == {
+            'status': 'failed', 'text': 'Benchmark failed: read failed: dd: /mnt/.sdbench.tmp: I/O error'}, \
+            bench_state()
+        (root / 'sdbench.fail').unlink()
 
         # One left running by a wrapper that died is failed, not running for
         # ever, and the next one replaces it.
         bench_result.write_text('running\ncard: SB64G (SDXC, 59.5 GiB)\nwrite: 14.9 MB/s (128 MiB in 8.6 s)\n')
-        assert bench_state() == {'status': 'failed', 'write': '14.9',
-                                 'text': 'Benchmark failed: it stopped before reporting the speeds'}, bench_state()
-        assert '/storage.js' not in web_request('/')[1].decode()
-        status, page, _ = post_bench()
-        assert status == 200, page
+        assert bench_state(details=True) == {
+            'status': 'failed', 'write': '14.9', 'card': 'SB64G (SDXC, 59.5 GiB)',
+            'text': 'Benchmark failed: it stopped before reporting the speeds'}, bench_state(details=True)
+        assert 'data-bench' not in web_request('/')[1].decode()
+        location, page, _ = post_bench()
+        assert location == '/?sdcard=bench', page
         wait_for(lambda: bench_state()['status'] == 'done', 'benchmark after a stale one did not finish')
         assert bench_state() == done
         (root / 'mmcblk0').unlink()
