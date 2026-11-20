@@ -59,3 +59,10 @@ __pycache__/
 /web/zt30-web
 
 /web/tests/test_zt30_process
+
+# MCM trial run output (logs, measurements, profiler samples); kept locally only
+tools/mcm_trial/out/build.log
+tools/mcm_trial/out/t678/*.log
+tools/mcm_trial/out/t678/*.txt
+!tools/mcm_trial/out/t678/keep.txt
+tools/mcm_trial/profile/samples-*.txt
