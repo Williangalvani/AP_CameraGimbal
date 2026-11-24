@@ -81,8 +81,9 @@ size_t ca_video_metadata_json(const struct ca_metadata *m,
     return used;
 }
 
-size_t ca_video_metadata_sei(enum ca_video_codec codec, const char *json,
-                              size_t length, uint8_t *output, size_t capacity)
+size_t ca_video_metadata_sei(enum ca_video_codec codec, unsigned temporal_id_plus1,
+                              const char *json, size_t length,
+                              uint8_t *output, size_t capacity)
 {
     uint8_t rbsp[CA_VIDEO_METADATA_JSON_MAX + 32U];
     size_t used = 0U, written = 0U;
@@ -103,7 +104,9 @@ size_t ca_video_metadata_sei(enum ca_video_codec codec, const char *json,
     output[written++] = 0U; output[written++] = 0U;
     output[written++] = 0U; output[written++] = 1U;
     output[written++] = codec == CA_VIDEO_H264 ? 6U : 39U << 1U;
-    if (codec == CA_VIDEO_H265) output[written++] = 1U; /* temporal_id_plus1 */
+    if (codec == CA_VIDEO_H265)
+        output[written++] = (uint8_t)(temporal_id_plus1 >= 1U && temporal_id_plus1 <= 7U
+                                      ? temporal_id_plus1 : 1U);
     for (size_t i = 0U; i < used; i++) {
         if (zeros == 2U && rbsp[i] <= 3U) {
             if (written == capacity) return 0U;
@@ -165,7 +168,10 @@ int ca_video_metadata_insert(enum ca_video_codec codec,
         if (clock_gettime(CLOCK_REALTIME, &utc) < 0) return -1;
         size_t json_length = ca_video_metadata_json(&metadata, &utc, pts90k,
                                                     json, sizeof(json));
-        size_t sei_length = ca_video_metadata_sei(codec, json, json_length, sei, sizeof(sei));
+        unsigned temporal_id_plus1 = codec == CA_VIDEO_H265 && nal_length >= 2U
+                                         ? data[nal + 1U] & 7U : 1U;
+        size_t sei_length = ca_video_metadata_sei(codec, temporal_id_plus1, json, json_length,
+                                                  sei, sizeof(sei));
         if (sei_length == 0U || length > SIZE_MAX - sei_length) { errno = EOVERFLOW; return -1; }
         uint8_t *annotated = (uint8_t*)(malloc(length + sei_length));
         if (annotated == NULL) return -1;

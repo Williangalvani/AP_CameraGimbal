@@ -448,7 +448,10 @@ Recordings use the configured recording resolution and, on MT11, 1280x720 therma
 A separate H.264 encoder is enabled when the RGB stream resolution or codec
 differs from recording. H.265 fixtures and H.265 RGB streams can be recorded
 through this encoder as H.264, with the same current image adjustments.
-Hardware continues to use its dedicated H.264 recording channels.
+Hardware continues to use its dedicated H.264 recording channels, except
+HiSilicon, where the main codec also picks the recording codec: H.265
+recordings use the main stream's bitrate, frame rate and GOP. Browsers may not
+preview those `hvc1` files; use Download.
 
 `make recording-recovery-test` runs the real MP4 writer and Files HTTP endpoint
 in an isolated runtime. It downloads before close, checks growing immutable

@@ -21,7 +21,10 @@ size_t ca_video_metadata_json(const struct ca_metadata *metadata,
 /* Annex-B user_data_unregistered SEI, including start code and escaping:
  *   00 00 00 01, then the NAL header:
  *     H.264: 06 (SEI, nal_ref_idc 0)
- *     H.265: 4E 01 (prefix SEI type 39, nuh_layer_id 0, temporal_id_plus1 1)
+ *     H.265: 4E 0t (prefix SEI type 39, nuh_layer_id 0, nuh_temporal_id_plus1
+ *            t: temporal_id_plus1 if 1 to 7, else 1). A prefix SEI's
+ *            TemporalId must be its access unit's, so pass the first VCL
+ *            NAL's; H.264 ignores it.
  *   then the same RBSP for both:
  *     05                        payloadType user_data_unregistered
  *     FF.. nn                   payloadSize: 16 + JSON length, in 255 steps
@@ -31,8 +34,9 @@ size_t ca_video_metadata_json(const struct ca_metadata *metadata,
  *   with an emulation prevention 03 inserted after any 00 00 that precedes
  *   a byte up to 03. A reader skips one header byte (H.264) or two (H.265),
  *   removes the 03s and parses the payload identically. */
-size_t ca_video_metadata_sei(enum ca_video_codec codec, const char *json,
-                              size_t length, uint8_t *output, size_t capacity);
+size_t ca_video_metadata_sei(enum ca_video_codec codec, unsigned temporal_id_plus1,
+                              const char *json, size_t length,
+                              uint8_t *output, size_t capacity);
 /* Locate the next Annex-B NAL, excluding start code/trailing_zero_8bits. */
 bool ca_annexb_next(const uint8_t *data, size_t length, size_t *offset,
                     size_t *nal, size_t *nal_length);

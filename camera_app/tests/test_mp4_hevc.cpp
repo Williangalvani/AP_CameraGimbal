@@ -23,16 +23,27 @@
 
 /* H.265 recording: an hvc1 sample entry whose hvcC carries the VPS, SPS and
  * PPS and the SPS's profile, tier and level; samples with only VCL and SEI;
- * the telemetry as an HEVC prefix SEI; continuations that keep the
- * parameter sets; drops that resume on any IRAP; and a full card. The
- * access units are synthetic: real parameter sets around slice data no
- * decoder needs to read. Given an Annex-B H.265 file and an output path, it
- * muxes that file instead, for a decoder to check. */
+ * the telemetry as an HEVC prefix SEI with the picture's TemporalId;
+ * continuations that keep the latest parameter set of each ID; sync samples, splits and
+ * resumption after drops only on a BLA or IDR, never a CRA; a new part for
+ * a changed SPS, in H.264 too; and a full card. The access units are
+ * synthetic: real parameter sets around slice data no decoder needs to
+ * read. Given an Annex-B H.265 file and an output path, it muxes that file
+ * instead, for a decoder to check. */
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
-static bool hold_writes, fat, card_full, card_filled;
+static bool hold_writes, hold_syncs, fat, card_full, card_filled;
 static unsigned writes_entered;
+
+extern "C" int __real_fdatasync(int fd);
+extern "C" int __wrap_fdatasync(int fd)
+{
+    pthread_mutex_lock(&lock);
+    while (hold_syncs) pthread_cond_wait(&changed, &lock);
+    pthread_mutex_unlock(&lock);
+    return __real_fdatasync(fd);
+}
 
 extern "C" ssize_t __real_pwrite64(int fd, const void *data, size_t size, off64_t offset);
 extern "C" ssize_t __wrap_pwrite64(int fd, const void *data, size_t size, off64_t offset)
@@ -89,6 +100,16 @@ static const uint8_t PPS[] = {0x44, 0x01, 0xc1, 0x72, 0xb4, 0x62, 0x40};
 /* pps_pic_parameter_set_id 1; only the muxer reads it */
 static const uint8_t PPS1[] = {0x44, 0x01, 0x58, 0x72, 0xb4, 0x62, 0x40};
 static const uint8_t PTL[12] = {0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x3c};
+/* The SPS at level 3 (general_level_idc 90), with the same ID */
+static const uint8_t SPS_L3[] = {
+    0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00,
+    0x00, 0x03, 0x00, 0x5a, 0xa0, 0x0a, 0x08, 0x0f, 0x16, 0x59, 0x59, 0xa4, 0x93, 0x2b,
+    0xc0, 0x5a, 0x02, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x14, 0x10,
+};
+/* H.264 Baseline SPS 0 at levels 3 and 3.1, and PPS 0; only the muxer reads them */
+static const uint8_t AVC_SPS[] = {0x67, 0x42, 0xc0, 0x1e, 0xda, 0x05, 0x07, 0xc4};
+static const uint8_t AVC_SPS_L31[] = {0x67, 0x42, 0xc0, 0x1f, 0xda, 0x05, 0x07, 0xc4};
+static const uint8_t AVC_PPS[] = {0x68, 0xce, 0x3c, 0x80};
 
 enum {
     TRAIL_R = 1, BLA_W_LP = 16, BLA_W_RADL = 17, BLA_N_LP = 18, IDR_W_RADL = 19,
@@ -107,36 +128,59 @@ static void put_nal(bytes &au, const uint8_t *nal, size_t length)
     au.insert(au.end(), nal, nal + length);
 }
 
+/* the SPS access units carry */
+static bytes sps(SPS, SPS + sizeof(SPS));
+
 static void put_parameter_sets(bytes &au)
 {
     put_nal(au, VPS, sizeof(VPS));
-    put_nal(au, SPS, sizeof(SPS));
+    put_nal(au, sps.data(), sps.size());
     put_nal(au, PPS, sizeof(PPS));
 }
 
 /* Slice data is never zero, so it holds no start code. */
-static void put_slice(bytes &au, unsigned type, unsigned frame, size_t length, bool first)
+static void put_slice(bytes &au, unsigned type, unsigned frame, size_t length, bool first,
+                      uint8_t temporal_id_plus1)
 {
-    bytes nal = {(uint8_t)(type << 1), 1, (uint8_t)(first ? 0x80 : 0x40)};
+    bytes nal = {(uint8_t)(type << 1), temporal_id_plus1, (uint8_t)(first ? 0x80 : 0x40)};
     for (size_t i = 0; i < length; i++) nal.push_back((uint8_t)(((frame + i) % 251) + 1));
     put_nal(au, nal.data(), nal.size());
 }
 
 /* An encoder's access unit: AUD, the parameter sets before an IRAP when
- * asked, an encoder SEI, two slices and a suffix SEI. irap 0 is TRAIL_R. */
-static bytes access_unit(unsigned frame, unsigned irap, bool headers, size_t slice_bytes)
+ * asked, an encoder SEI, two slices and a suffix SEI, all with one
+ * TemporalId. irap 0 is TRAIL_R. */
+static bytes access_unit(unsigned frame, unsigned irap, bool headers, size_t slice_bytes,
+                         uint8_t temporal_id_plus1 = 1)
 {
-    static const uint8_t aud[] = {AUD << 1, 1, 0x50};
-    static const uint8_t prefix[] = {PREFIX_SEI << 1, 1, 0x81, 0x01, 0x11, 0x80};
-    static const uint8_t suffix[] = {SUFFIX_SEI << 1, 1, 0x84, 0x01, 0x22, 0x80};
+    const uint8_t t = temporal_id_plus1;
+    const uint8_t aud[] = {AUD << 1, t, 0x50};
+    const uint8_t prefix[] = {PREFIX_SEI << 1, t, 0x81, 0x01, 0x11, 0x80};
+    const uint8_t suffix[] = {SUFFIX_SEI << 1, t, 0x84, 0x01, 0x22, 0x80};
     bytes au;
     put_nal(au, aud, sizeof(aud));
     if (headers) put_parameter_sets(au);
     put_nal(au, prefix, sizeof(prefix));
     const unsigned type = irap ? irap : (unsigned)TRAIL_R;
-    put_slice(au, type, frame, slice_bytes / 2, true);
-    put_slice(au, type, frame, slice_bytes - slice_bytes / 2, false);
+    put_slice(au, type, frame, slice_bytes / 2, true, t);
+    put_slice(au, type, frame, slice_bytes - slice_bytes / 2, false, t);
     put_nal(au, suffix, sizeof(suffix));
+    return au;
+}
+
+/* H.264: AUD, the SPS and PPS before an IDR when asked, one slice. */
+static bytes avc_access_unit(unsigned frame, bool idr, const uint8_t *avc_sps, size_t sps_length)
+{
+    static const uint8_t aud[] = {0x09, 0xf0};
+    bytes au;
+    put_nal(au, aud, sizeof(aud));
+    if (avc_sps != NULL) {
+        put_nal(au, avc_sps, sps_length);
+        put_nal(au, AVC_PPS, sizeof(AVC_PPS));
+    }
+    bytes nal = {(uint8_t)(idr ? 0x65 : 0x41), 0x88};
+    for (size_t i = 0; i < 600; i++) nal.push_back((uint8_t)(((frame + i) % 251) + 1));
+    put_nal(au, nal.data(), nal.size());
     return au;
 }
 
@@ -196,7 +240,10 @@ static size_t child(const bytes &data, size_t at, size_t end, const char *type)
 
 static size_t box_end(const bytes &data, size_t at) { return at + get32(&data[at]); }
 
+/* An hvcC, or an avcC: its profile, compatibility and level in ptl[0..2],
+ * then arrays of type 7 (SPS) and 8 (PPS). */
 struct hvcc {
+    bool avc;
     unsigned width, height;
     uint8_t ptl[12];
     uint8_t chroma, luma_depth, chroma_depth, layers;
@@ -209,7 +256,21 @@ struct layout {
     uint32_t sidx_sap;
     uint32_t timescale, duration; /* from the mvhd */
     hvcc config;
+    std::vector<bool> sync; /* each fragment's sample is a sync sample */
 };
+
+/* An avcC's length-prefixed parameter sets */
+static std::vector<bytes> avcc_sets(const uint8_t *p, size_t *q, size_t limit, unsigned count)
+{
+    std::vector<bytes> sets;
+    for (unsigned j = 0; j < count; j++) {
+        unsigned length = get16(p + *q);
+        assert(*q + 2 + length <= limit);
+        sets.push_back(bytes(p + *q + 2, p + *q + 2 + length));
+        *q += 2 + length;
+    }
+    return sets;
+}
 
 static layout parse_file(const char *path)
 {
@@ -234,10 +295,25 @@ static layout parse_file(const char *path)
             size_t stsd = child(data, stbl + 8, box_end(data, stbl), "stsd");
             assert(trak && mdia && minf && stbl && stsd && get32(&data[stsd + 12]) == 1);
             size_t entry = stsd + 16;
-            assert(!memcmp(&data[entry + 4], "hvc1", 4));
             hvcc &c = file.config;
+            c.avc = !memcmp(&data[entry + 4], "avc1", 4);
+            assert(c.avc || !memcmp(&data[entry + 4], "hvc1", 4));
             c.width = get16(&data[entry + 32]);
             c.height = get16(&data[entry + 34]);
+            if (c.avc) {
+                size_t box = child(data, entry + 86, box_end(data, entry), "avcC");
+                assert(box);
+                const uint8_t *p = &data[box + 8];
+                size_t q = 6, limit = get32(&data[box]) - 8;
+                assert(p[0] == 1 && p[4] == 0xff && (p[5] & 0xe0) == 0xe0);
+                memcpy(c.ptl, p + 1, 3);
+                c.arrays.push_back({7, avcc_sets(p, &q, limit, p[5] & 31)});
+                unsigned pps_count = p[q++];
+                c.arrays.push_back({8, avcc_sets(p, &q, limit, pps_count)});
+                assert(q == limit);
+                at += size;
+                continue;
+            }
             size_t box = child(data, entry + 86, box_end(data, entry), "hvcC");
             assert(box);
             const uint8_t *p = &data[box + 8];
@@ -268,7 +344,15 @@ static layout parse_file(const char *path)
             file.sidx_refs = get16(&data[at + 38]);
             file.sidx_sap = get32(&data[at + 40 + 8]);
         }
-        if (!memcmp(&data[at + 4], "moof", 4)) file.moofs++;
+        if (!memcmp(&data[at + 4], "moof", 4)) {
+            file.moofs++;
+            size_t traf = child(data, at + 8, at + size, "traf");
+            assert(traf);
+            size_t trun = child(data, traf + 8, box_end(data, traf), "trun");
+            assert(trun);
+            /* first-sample-flags-present, as minimp4 marks a random access sample */
+            file.sync.push_back((get32(&data[trun + 8]) & 0x004U) != 0);
+        }
         at += size;
     }
     file.tiled = true;
@@ -277,17 +361,20 @@ static layout parse_file(const char *path)
 
 /* The decoder configuration must be the fixture's: each parameter set once,
  * and the SPS's profile_tier_level without its emulation prevention. With
- * second_pps, the PPS array also holds PPS1. */
-static void check_config(const hvcc &c, bool second_pps = false)
+ * second_pps, the PPS array also holds PPS1. With level_idc, the SPS is
+ * SPS_L3 instead, whose level that is. */
+static void check_config(const hvcc &c, bool second_pps = false, uint8_t level_idc = 0x3c)
 {
-    assert(c.width == 320 && c.height == 240);
-    assert(!memcmp(c.ptl, PTL, sizeof(PTL)));
+    assert(!c.avc && c.width == 320 && c.height == 240);
+    assert(!memcmp(c.ptl, PTL, sizeof(PTL) - 1) && c.ptl[11] == level_idc);
     assert(c.chroma == 0xfd && c.luma_depth == 0xf8 && c.chroma_depth == 0xf8);
     /* one temporal layer, temporal ID nested, four-byte lengths */
     assert(c.layers == 0x0f);
     assert(c.arrays.size() == 3);
     const unsigned types[] = {VPS_NUT, SPS_NUT, PPS_NUT};
-    const bytes sets[] = {bytes(VPS, VPS + sizeof(VPS)), bytes(SPS, SPS + sizeof(SPS)),
+    const bytes sets[] = {bytes(VPS, VPS + sizeof(VPS)),
+                          level_idc == 0x3c ? bytes(SPS, SPS + sizeof(SPS))
+                                            : bytes(SPS_L3, SPS_L3 + sizeof(SPS_L3)),
                           bytes(PPS, PPS + sizeof(PPS))};
     for (unsigned i = 0; i < 3; i++) {
         const size_t count = i == 2 && second_pps ? 2 : 1;
@@ -328,10 +415,12 @@ static long json_number(const std::string &json, const char *key)
     return strtol(json.c_str() + found + strlen(key), NULL, 10);
 }
 
-/* The fixture frame in each sample's telemetry and the sample's NAL types. */
-struct sample { long frame; unsigned vcl; std::vector<unsigned> types; };
+/* The fixture frame in each sample's telemetry, the sample's NAL types and,
+ * in H.265, the first slice's nuh_temporal_id_plus1, which the telemetry
+ * SEI must share. */
+struct sample { long frame; unsigned vcl; std::vector<unsigned> types; uint8_t temporal_id_plus1; };
 
-static std::vector<sample> samples(const char *path)
+static std::vector<sample> samples(const char *path, bool avc = false)
 {
     bytes data = read_file(path);
     std::vector<sample> result;
@@ -339,29 +428,36 @@ static std::vector<sample> samples(const char *path)
         uint32_t size = get32(&data[at]);
         assert(size >= 8 && size <= data.size() - at);
         if (memcmp(&data[at + 4], "mdat", 4)) continue;
-        sample s = {LONG_MIN, 64, {}};
+        sample s = {LONG_MIN, 64, {}, 0};
         unsigned telemetry_count = 0;
+        uint8_t sei_temporal_id_plus1 = 0;
         for (size_t nal = at + 8; nal < at + size;) {
             assert(nal + 4 <= at + size);
             uint32_t length = get32(&data[nal]);
             assert(length >= 2 && length <= at + size - nal - 4);
             const uint8_t *p = &data[nal + 4];
-            unsigned type = (p[0] >> 1) & 63;
-            assert((p[0] & 0x81) == 0 && (p[1] >> 3) == 0); /* layer 0 */
+            unsigned type = avc ? p[0] & 31 : (p[0] >> 1) & 63;
+            if (!avc) assert((p[0] & 0x81) == 0 && (p[1] >> 3) == 0); /* layer 0 */
             s.types.push_back(type);
             std::string json;
-            if (type == PREFIX_SEI && telemetry(p, length, 2, &json)) {
-                /* before any slice, and with the HEVC SEI header */
-                assert(s.vcl == 64 && p[0] == 0x4e && p[1] == 0x01);
+            if (type == (avc ? 6U : (unsigned)PREFIX_SEI) &&
+                telemetry(p, length, avc ? 1 : 2, &json)) {
+                /* before any slice, and with the codec's SEI header */
+                assert(s.vcl == 64 && p[0] == (avc ? 0x06 : 0x4e));
+                if (!avc) sei_temporal_id_plus1 = p[1];
                 assert(json.find("\"schema\":\"apcg.telemetry.v1\"") != std::string::npos);
                 assert(json_number(json, "\"utc_us\":") > 1600000000000000L);
                 s.frame = json_number(json, "\"lat_e7\":") - LAT_BASE;
                 telemetry_count++;
             }
-            if (type <= 31 && s.vcl == 64) s.vcl = type;
+            if ((avc ? type >= 1 && type <= 5 : type <= 31) && s.vcl == 64) {
+                s.vcl = type;
+                if (!avc) s.temporal_id_plus1 = p[1] & 7;
+            }
             nal += 4 + length;
         }
         assert(telemetry_count == 1 && s.vcl < 64);
+        if (!avc) assert(s.temporal_id_plus1 != 0 && sei_temporal_id_plus1 == s.temporal_id_plus1);
         result.push_back(s);
     }
     return result;
@@ -381,6 +477,15 @@ static unsigned irap_type(unsigned frame)
     return frame % 10 ? 0 : types[(frame / 10) % 6];
 }
 
+/* a BLA or IDR */
+static bool key_type(unsigned type) { return type >= BLA_W_LP && type <= IDR_N_LP; }
+
+/* pictures between IRAPs in temporal layers 0 to 2 */
+static uint8_t temporal_id_plus1(unsigned frame)
+{
+    return irap_type(frame) == 0 ? (uint8_t)(1 + frame % 3) : 1;
+}
+
 static void test_track(void)
 {
     char path[256];
@@ -398,7 +503,7 @@ static void test_track(void)
     const unsigned frames = 60;
     for (unsigned n = 0; n < frames; n++) {
         unsigned irap = irap_type(n);
-        assert(write_au(writer, n, access_unit(n, irap, irap != 0, 600)) == 0);
+        assert(write_au(writer, n, access_unit(n, irap, irap != 0, 600, temporal_id_plus1(n))) == 0);
     }
     drain(writer);
     struct ca_mp4_stats stats;
@@ -409,19 +514,25 @@ static void test_track(void)
     layout file = parse_file(path);
     assert(file.tiled && file.moov && file.sidx == 1 && file.moofs == frames);
     check_config(file.config, true);
-    /* every IRAP type starts an indexed fragment */
-    assert(file.sidx_refs == frames / 10 && file.sidx_sap == 0x90000000U);
+    /* every BLA and IDR type, but not the CRA, starts an indexed fragment
+     * with a sync sample */
+    assert(file.sidx_refs == frames / 10 - 1 && file.sidx_sap == 0x90000000U);
     assert(file.timescale == 1000 && file.duration == frames * 100);
     std::vector<sample> written = samples(path);
-    assert(written.size() == frames);
+    assert(written.size() == frames && file.sync.size() == frames);
+    /* samples() checks each telemetry SEI header (4E 0t) against its slice */
+    assert(written[5].temporal_id_plus1 == 3);
     for (unsigned n = 0; n < frames; n++) {
         assert(written[n].frame == (long)n);
         assert(written[n].vcl == (irap_type(n) ? irap_type(n) : (unsigned)TRAIL_R));
+        assert(file.sync[n] == key_type(irap_type(n)));
+        assert(written[n].temporal_id_plus1 == temporal_id_plus1(n));
         check_sample(written[n]);
     }
     unlink(path);
     puts("PASS H.265 track: hvc1, hvcC with VPS/SPS/PPS and the SPS profile/level, "
-         "60 samples of VCL and SEI, telemetry in an HEVC prefix SEI, IRAPs indexed");
+         "60 samples of VCL and SEI, telemetry in an HEVC prefix SEI with the picture's "
+         "TemporalId, BLAs and IDRs (not CRAs) indexed as sync samples");
 }
 
 /* The same telemetry parse reads both codecs' SEI. */
@@ -435,8 +546,8 @@ static void test_sei(void)
     size_t json_length = ca_video_metadata_json(&metadata, &utc, 9000, json, sizeof(json));
     assert(json_length > 0);
     uint8_t h264[CA_VIDEO_METADATA_SEI_MAX], h265[CA_VIDEO_METADATA_SEI_MAX];
-    size_t h264_length = ca_video_metadata_sei(CA_VIDEO_H264, json, json_length, h264, sizeof(h264));
-    size_t h265_length = ca_video_metadata_sei(CA_VIDEO_H265, json, json_length, h265, sizeof(h265));
+    size_t h264_length = ca_video_metadata_sei(CA_VIDEO_H264, 1, json, json_length, h264, sizeof(h264));
+    size_t h265_length = ca_video_metadata_sei(CA_VIDEO_H265, 1, json, json_length, h265, sizeof(h265));
     assert(h264_length + 1 == h265_length);
     assert(!memcmp(h265, "\0\0\0\1\x4e\x01", 6) && !memcmp(h264, "\0\0\0\1\x06", 5));
     assert(!memcmp(h264 + 5, h265 + 6, h264_length - 5));
@@ -448,8 +559,9 @@ static void test_sei(void)
     puts("PASS telemetry SEI: H.265 prefix SEI (4E 01) with the H.264 payload");
 }
 
-/* A FAT split continues on an IRAP, and the continuation carries the VPS,
- * SPS and PPS that only the first access unit sent. */
+/* A FAT split continues on a BLA or IDR, never the CRA, and the
+ * continuation carries the VPS, SPS and PPS that only the first access unit
+ * sent. */
 static void test_rollover(void)
 {
     char path[256];
@@ -481,7 +593,61 @@ static void test_rollover(void)
         std::vector<sample> written = samples(part);
         assert(written.size() == file.moofs && !written.empty());
         assert(irap_type((unsigned)written[0].frame) == written[0].vcl);
+        assert(key_type(written[0].vcl) && file.sync[0]);
         if (i + 1 < parts.gl_pathc) assert(written.size() % 10 == 0);
+        for (size_t j = 0; j < written.size(); j++) {
+            const sample &s = written[j];
+            assert(s.frame == next++);
+            assert(file.sync[j] == key_type(irap_type((unsigned)s.frame)));
+            check_sample(s);
+        }
+        unlink(part);
+    }
+    assert(next == frames);
+    printf("PASS H.265 split: %zu parts, each from a BLA or IDR with the VPS/SPS/PPS\n",
+           parts.gl_pathc);
+    globfree(&parts);
+}
+
+/* SPS_L3 replaces SPS 0 and PPS1 adds PPS 1, sent alone at frame 15 of a FAT
+ * recording that splits at every IDR. Every part from frame 20 lists SPS_L3
+ * alone, never beside the stale SPS, and both PPS. */
+static void test_rollover_latest_sets(void)
+{
+    char path[256];
+    snprintf(path, sizeof(path), "%s/latest.mp4", directory);
+    fat = true;
+    assert(setenv("CAMERA_APP_RECORD_SEGMENT_BYTES", "65536", 1) == 0);
+    struct ca_mp4 *writer = NULL;
+    assert(ca_mp4_open_codec(&writer, path, CA_VIDEO_H265, 320, 240, 10) == 0);
+    const unsigned frames = 120;
+    for (unsigned n = 0; n < frames; n++) {
+        if (n == 15) {
+            bytes headers;
+            put_nal(headers, SPS_L3, sizeof(SPS_L3));
+            put_nal(headers, PPS1, sizeof(PPS1));
+            assert(write_au(writer, n, headers) == 0);
+        }
+        assert(write_au(writer, n, access_unit(n, n % 10 ? 0 : IDR_W_RADL, n == 0, 2000)) == 0);
+    }
+    assert(ca_mp4_close(writer) == 0);
+    fat = false;
+    unsetenv("CAMERA_APP_RECORD_SEGMENT_BYTES");
+
+    glob_t parts;
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "%s/latest*.mp4", directory);
+    assert(glob(pattern, 0, NULL, &parts) == 0 && parts.gl_pathc >= 3);
+    long next = 0;
+    for (size_t i = 0; i < parts.gl_pathc; i++) {
+        const char *part = parts.gl_pathv[i];
+        layout file = parse_file(part);
+        assert(file.tiled && file.moov && file.sidx == 1);
+        std::vector<sample> written = samples(part);
+        assert(!written.empty() && written[0].vcl == IDR_W_RADL && file.sync[0]);
+        assert(written[0].frame == next);
+        if (next < 20) check_config(file.config);
+        else check_config(file.config, true, 0x5a);
         for (const sample &s : written) {
             assert(s.frame == next++);
             check_sample(s);
@@ -489,9 +655,34 @@ static void test_rollover(void)
         unlink(part);
     }
     assert(next == frames);
-    printf("PASS H.265 split: %zu parts, each from an IRAP with the VPS/SPS/PPS\n",
-           parts.gl_pathc);
+    printf("PASS H.265 split after a replaced SPS: %zu parts, each from frame 20 with "
+           "only the latest SPS and both PPS\n", parts.gl_pathc);
     globfree(&parts);
+}
+
+/* SPS_L3 replaces SPS 0 before the first sample: the one part lists only it. */
+static void test_replaced_before_first_sample(void)
+{
+    char path[256];
+    snprintf(path, sizeof(path), "%s/replaced.mp4", directory);
+    struct ca_mp4 *writer = NULL;
+    assert(ca_mp4_open_codec(&writer, path, CA_VIDEO_H265, 320, 240, 10) == 0);
+    bytes headers;
+    put_parameter_sets(headers);
+    assert(write_au(writer, 0, headers) == 0);
+    sps = bytes(SPS_L3, SPS_L3 + sizeof(SPS_L3));
+    for (unsigned n = 0; n < 10; n++)
+        assert(write_au(writer, n, access_unit(n, n ? 0 : IDR_W_RADL, n == 0, 600)) == 0);
+    sps = bytes(SPS, SPS + sizeof(SPS));
+    assert(ca_mp4_close(writer) == 0);
+    char second[256];
+    snprintf(second, sizeof(second), "%s/replaced_part0002.mp4", directory);
+    assert(access(second, F_OK) < 0);
+    layout file = parse_file(path);
+    assert(file.moofs == 10);
+    check_config(file.config, false, 0x5a);
+    unlink(path);
+    puts("PASS H.265 SPS replaced before the first sample: one SPS in the hvcC");
 }
 
 static void set_hold(bool hold)
@@ -521,8 +712,9 @@ static uint64_t dropped(struct ca_mp4 *writer)
     return stats.frames_dropped;
 }
 
-/* A full buffer drops pictures until an IRAP; parameter sets sent on their
- * own meanwhile are kept, and a CRA resumes the recording. */
+/* A full buffer drops pictures until a BLA or IDR; parameter sets sent on
+ * their own meanwhile are kept. A CRA does not resume the recording: the
+ * BLA after it does. */
 static void test_drops(void)
 {
     char path[256];
@@ -554,7 +746,7 @@ static void test_drops(void)
     assert(write_au(writer, n, vps) == 0 && write_au(writer, n, sps_pps) == 0);
     drain(writer);
     assert(dropped(writer) == before);
-    /* an IRAP that is not an IDR resumes */
+    /* the CRA at 50 is dropped, and the BLA at 60 resumes */
     for (; n < 80; n++, pictures++) {
         unsigned irap = n == 50 ? CRA : n == 60 ? BLA_W_LP : n == 70 ? IDR_N_LP : 0;
         assert(write_au(writer, n, access_unit(n, irap, false, 3000)) == 0);
@@ -577,12 +769,115 @@ static void test_drops(void)
         gap = i;
     }
     assert(gap != 0 && written[0].frame == 0 && written[0].vcl == IDR_W_RADL);
-    assert(written[gap].frame == 50 && written[gap].vcl == CRA);
+    assert(written[gap].frame == 60 && written[gap].vcl == BLA_W_LP && file.sync[gap]);
     assert(written.back().frame == 79);
     for (const sample &s : written) check_sample(s);
-    printf("PASS H.265 drops: %llu dropped, parameter sets kept, resumed on a CRA\n",
-           (unsigned long long)stats.frames_dropped);
+    printf("PASS H.265 drops: %llu dropped, parameter sets kept, a CRA skipped, resumed "
+           "on a BLA\n", (unsigned long long)stats.frames_dropped);
     unlink(path);
+}
+
+static void set_sync_hold(bool hold)
+{
+    pthread_mutex_lock(&lock);
+    hold_syncs = hold;
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&lock);
+}
+
+static std::string part_path(const char *stem, unsigned part)
+{
+    char path[256];
+    if (part == 1) snprintf(path, sizeof(path), "%s/%s.mp4", directory, stem);
+    else snprintf(path, sizeof(path), "%s/%s_part%04u.mp4", directory, stem, part);
+    return path;
+}
+
+/* The SPS changes after the moov, on a filesystem that never splits for
+ * size. Sent alone at frame 15, it starts a new part at the IDR at 20, whose
+ * access unit has no parameter sets. The original SPS, back on the IDR at
+ * 30, starts a third part at once, though it must wait for the first part's
+ * final sync. Each part's sample entry has the one SPS its samples use, and
+ * its profile and level. */
+static void test_parameter_change(enum ca_video_codec codec)
+{
+    const bool avc = codec == CA_VIDEO_H264;
+    const std::string path = part_path("change", 1);
+    struct ca_mp4 *writer = NULL;
+    assert(ca_mp4_open_codec(&writer, path.c_str(), codec, 320, 240, 10) == 0);
+    auto frame = [&](unsigned n, bool headers) {
+        const bool key = n % 10 == 0;
+        return avc ? avc_access_unit(n, key, headers ? sps.data() : NULL, sps.size())
+                   : access_unit(n, key ? IDR_W_RADL : 0, headers, 600);
+    };
+    const bytes first = avc ? bytes(AVC_SPS, AVC_SPS + sizeof(AVC_SPS))
+                            : bytes(SPS, SPS + sizeof(SPS));
+    const bytes second = avc ? bytes(AVC_SPS_L31, AVC_SPS_L31 + sizeof(AVC_SPS_L31))
+                             : bytes(SPS_L3, SPS_L3 + sizeof(SPS_L3));
+    sps = first;
+    unsigned n = 0;
+    for (; n < 20; n++) {
+        if (n == 15) {
+            bytes alone;
+            put_nal(alone, second.data(), second.size());
+            assert(write_au(writer, n, alone) == 0);
+            sps = second;
+        }
+        assert(write_au(writer, n, frame(n, n == 0 || n == 10)) == 0);
+        drain(writer);
+    }
+    /* the first part's close waits for its final sync */
+    set_sync_hold(true);
+    for (; n < 30; n++) {
+        assert(write_au(writer, n, frame(n, false)) == 0);
+        drain(writer);
+    }
+    assert(access(part_path("change", 2).c_str(), F_OK) == 0);
+    sps = first;
+    for (; n < 40; n++) assert(write_au(writer, n, frame(n, n == 30)) == 0);
+    usleep(300000);
+    struct ca_mp4_stats stats;
+    ca_mp4_get_stats(writer, &stats);
+    assert(stats.buffer_bytes != 0 && access(part_path("change", 3).c_str(), F_OK) < 0);
+    set_sync_hold(false);
+    drain(writer);
+    ca_mp4_get_stats(writer, &stats);
+    assert(stats.frames_written == 40 && stats.frames_dropped == 0);
+    assert(ca_mp4_close(writer) == 0);
+    sps = bytes(SPS, SPS + sizeof(SPS));
+
+    const unsigned starts[] = {0, 20, 30, 40};
+    for (unsigned part = 1; part <= 3; part++) {
+        const std::string name = part_path("change", part);
+        layout file = parse_file(name.c_str());
+        assert(file.tiled && file.moov && file.sidx == 1 && file.config.avc == avc);
+        const bool changed = part == 2;
+        if (avc) {
+            const hvcc &c = file.config;
+            assert(c.width == 320 && c.height == 240 && c.arrays.size() == 2);
+            assert(c.ptl[0] == 0x42 && c.ptl[1] == 0xc0 && c.ptl[2] == (changed ? 0x1f : 0x1e));
+            assert(c.arrays[0].second.size() == 1 && c.arrays[0].second[0] == (changed ? second : first));
+            assert(c.arrays[1].second.size() == 1 &&
+                   c.arrays[1].second[0] == bytes(AVC_PPS, AVC_PPS + sizeof(AVC_PPS)));
+        } else {
+            check_config(file.config, false, changed ? 0x5a : 0x3c);
+        }
+        std::vector<sample> written = samples(name.c_str(), avc);
+        assert(written.size() == starts[part] - starts[part - 1] && file.sync[0]);
+        for (size_t i = 0; i < written.size(); i++) {
+            assert(written[i].frame == (long)(starts[part - 1] + i));
+            if (avc) {
+                const std::vector<unsigned> expected = {6, i % 10 ? 1U : 5U};
+                assert(written[i].types == expected);
+            } else {
+                check_sample(written[i]);
+            }
+        }
+        unlink(name.c_str());
+    }
+    assert(access(part_path("change", 4).c_str(), F_OK) < 0);
+    printf("PASS %s parameter change: a new part at the next key frame with the new SPS, "
+           "and back, after the previous part closed\n", avc ? "H.264" : "H.265");
 }
 
 /* The card fills: the file is cut back to whole fragments, with its index,
@@ -673,7 +968,11 @@ int main(int argc, char **argv)
     test_sei();
     test_track();
     test_rollover();
+    test_rollover_latest_sets();
+    test_replaced_before_first_sample();
     test_drops();
+    test_parameter_change(CA_VIDEO_H265);
+    test_parameter_change(CA_VIDEO_H264);
     test_card_full();
     assert(rmdir(directory) == 0);
     return 0;

@@ -82,7 +82,8 @@ Current milestone:
   gap reported only once per process;
 - independent 720p, 1080p or 4K RGB sizes for the main/sub RTSP outputs,
   independently selected H.264/H.265 codecs, and independent H.264 recording
-  encoders at the selected recording resolution; thermal output remains 720p;
+  encoders at the selected recording resolution (unlike HiSilicon, which
+  records in the main codec); thermal output remains 720p;
 - automatic/upright/inverted mounting configuration. Automatic mode follows
   the MCU mounting notification, retries if the startup reply is missed, and
   detects the A8's inverted-mount attitude representation as a fallback. It
@@ -227,12 +228,18 @@ timer covers automatic and web-triggered recording as well as MAVLink commands.
 Stream and recording resolutions are target-specific: MT11 and A8 offer
 `1280x720`, `1920x1080` and `3840x2160`; ZR10 offers `1280x720`, `1920x1080`
 and `2560x1440`; Z1-Mini streams at `1920x1080` and records at `1920x1080`
-or `3840x2160`. Each RTSP codec accepts `h264` or `h265`. Recording uses separate
-H.264 encoders, so its resolution does not silently follow either RTSP stream.
+or `3840x2160`. Each RTSP codec accepts `h264` or `h265`. Elsewhere than on
+HiSilicon, recording uses separate H.264 encoders, so its resolution does not
+silently follow either RTSP stream. On HiSilicon the main codec also picks the
+recording codec. A recording at the main stream's size is that stream, so an
+H.265 recording (`hvc1`) has the main stream's bitrate, frame rate and GOP
+(keyframe interval); another size uses a dedicated encoder in the main codec.
+Browsers may not preview `hvc1` files on the Files page; use Download.
 Fresh installations and SITL use the vendor recording resolution defaults:
 MT11 and A8 use `3840x2160`, ZR10 uses `2560x1440`, and Z1-Mini uses
 `1920x1080`. Existing saved settings are preserved on upgrade. These defaults
-match resolution; the recording codec remains H.264 with our encoder bitrates.
+match resolution; except on HiSilicon, the recording codec remains H.264 with
+our encoder bitrates.
 These resolution settings apply to RGB imagery. The MT11 module's 640x512
 thermal image has a proven one-stage VPSS ceiling of 1280x720, so thermal RTSP
 and thermal MP4 output remain 1280x720 whichever stream slot thermal occupies.
@@ -370,14 +377,15 @@ when the persistent file is absent. Both paths preserve camera-local changes.
 
 Every H.264/H.265 RTSP video frame carries an unregistered user-data SEI NAL
 with telemetry, immediately before its first video slice. Both streams use
-this path on MT11 and A8. H.264 MP4 recordings and the browser's fragmented
-MP4 video also carry one telemetry SEI per frame. Original encoder SEI is
+this path on MT11 and A8. MP4 recordings, H.264 or (on HiSilicon) H.265, and
+the browser's fragmented MP4 video also carry one telemetry SEI per frame.
+Original encoder SEI is
 retained; all slices and SEI belonging to a picture remain one MP4 sample.
 RTP NALs belonging to a frame share a timestamp, and only the last packet of
 the frame has the marker bit set.
 
 The SEI payload type is 5; the NAL type is 6 for H.264 and prefix SEI type 39
-for H.265. Its 16-byte UUID is `8d646b4e-556f-4a90-8b7c-35e629510321`, followed
+for H.265, with the TemporalId of the frame's first slice. Its 16-byte UUID is `8d646b4e-556f-4a90-8b7c-35e629510321`, followed
 by UTF-8 JSON without a trailing NUL. The schema is `apcg.telemetry.v1`:
 
 | Field | Meaning |
@@ -431,16 +439,24 @@ plays after that scan.
 The Files endpoint snapshots the file length between fragment writes and
 downloads that immutable prefix while recording continues.
 
-All four hardware backends (MT11, A8, ZR10 and Z1-Mini) share filesystem-aware
-recording rollover. FAT/vfat files roll at the next H.264 IDR after **4 GiB minus
+All hardware backends (MT11, A8, ZR10, Z1-Mini and HiSilicon) share
+filesystem-aware recording rollover. FAT/vfat files roll at the next key frame
+(an H.264 IDR, or an H.265 BLA or IDR, never a CRA) after **4 GiB minus
 64 MiB**. The spare space accommodates the next GOP; a hard limit of **4 GiB
 minus one byte** prevents overflow if an encoder stops delivering IDRs.
-**exFAT and other filesystems remain a single file**, using 64-bit file offsets.
-The filesystem is detected from the opened recording file, not its pathname.
+**exFAT and other filesystems remain a single file**, using 64-bit file offsets,
+unless the parameter sets change. The filesystem is detected from the opened
+recording file, not its pathname.
+
+MP4 samples carry no parameter sets, so on any filesystem an SPS, PPS or H.265
+VPS that differs from the part's sample entry after its first frame (new
+content for an ID, or a new ID) is logged, and the next key frame starts a new
+part whose sample entry has it.
 
 The original filename is retained for the first part; subsequent files use
 `<stem>_part0002.mp4`, `_part0003.mp4`, etc. Each part is independently playable,
-with cached SPS/PPS decoder headers and per-frame telemetry. Its MP4/telemetry
+with the latest cached parameter set of each ID as decoder headers and
+per-frame telemetry. Its MP4/telemetry
 sample timeline starts at zero; UTC and pose metadata continue to be sampled
 normally. MT11 visible and thermal files roll independently at their respective
 sizes. Recording status and live streams continue through rollover. Existing
@@ -449,7 +465,8 @@ reported through the normal backend error path.
 
 The previous part's final sync runs in the background, with at most one retired
 file pending. If it is still flushing at the next rollover, splitting is deferred;
-the hard FAT limit still applies. For short FAT bench tests only,
+the hard FAT limit still applies. A split for changed parameter sets waits for
+that flush instead. For short FAT bench tests only,
 `CAMERA_APP_RECORD_SEGMENT_BYTES` can lower the rollover threshold (minimum
 65536 bytes). It cannot raise the limit or enable splitting on exFAT. Run
 `make -C camera_app recording-test` for decoded segment/telemetry tests and sparse
@@ -463,8 +480,8 @@ in 2 MiB pieces at frame boundaries, or after one second at low bitrates,
 under the lock the Files endpoint takes for its size snapshot. A new file's
 headers and first IDR are written at once. It splits parts and finishes the
 old part itself. If the card falls further behind than the buffer holds, the
-frame that does not fit and every following picture are dropped until an IDR
-that fits while a quarter of the buffer is free; units holding only parameter
+frame that does not fit and every following picture are dropped until a key
+frame that fits while a quarter of the buffer is free; units holding only parameter
 sets are kept whenever they fit. Recording continues, and drops are logged at
 most every 5 s. Dropped frames take no time in the file, so playback runs
 through a gap and the MP4 is shorter than the wall-clock recording; each
@@ -497,7 +514,8 @@ Telemetry remains in every frame's SEI, including FOV, position and attitude.
 New recordings omit the duplicate `mett` JSON track: VLC 3's fragmented MP4
 reader mishandles unknown metadata tracks and disrupts playback timing.
 The extractor still supports timed metadata in older recordings. Recordings
-remain H.264; H.265 is supported by the RTSP telemetry path.
+are H.264, except on HiSilicon, where an H.265 main codec records H.265; the
+RTSP telemetry path supports both.
 
 With libVLC installed, test the timeline and forward/backward seeking on
 downloads taken during recording and after killing the recorder:

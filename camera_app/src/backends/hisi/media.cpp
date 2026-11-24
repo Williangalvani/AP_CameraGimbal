@@ -164,9 +164,10 @@ static bool video_key_frame(enum ca_video_codec codec, const uint8_t *data,
             unsigned type = codec == CA_VIDEO_H265
                                 ? (data[start] >> 1U) & 0x3fU
                                 : data[start] & 0x1fU;
-            // H.265 IRAP: BLA, IDR or CRA
+            // H.265 BLA or IDR; RASL pictures after a CRA may reference
+            // pictures before it
             if ((codec == CA_VIDEO_H264 && type == 5U) ||
-                (codec == CA_VIDEO_H265 && type >= 16U && type <= 21U)) {
+                (codec == CA_VIDEO_H265 && type >= 16U && type <= 20U)) {
                 return true;
             }
         }
@@ -174,8 +175,8 @@ static bool video_key_frame(enum ca_video_codec codec, const uint8_t *data,
     return false;
 }
 
-// An H.265 recording starts on an IRAP whose access unit has the VPS, SPS
-// and PPS before it, as the encoder sends them with each IDR.
+// An H.265 recording starts on a BLA or IDR whose access unit has the VPS,
+// SPS and PPS before it, as the encoder sends them with each IDR.
 static bool recording_start(enum ca_video_codec codec, const uint8_t *data,
                             size_t length, bool key_frame)
 {
@@ -187,7 +188,7 @@ static bool recording_start(enum ca_video_codec codec, const uint8_t *data,
         const unsigned type = (data[nal] >> 1U) & 0x3fU;
         if (type >= 32U && type <= 34U) parameter_sets |= 1U << (type - 32U);
         if (ca_video_nal_is_vcl(codec, data[nal]))
-            return type >= 16U && type <= 21U && parameter_sets == 7U;
+            return type >= 16U && type <= 20U && parameter_sets == 7U;
     }
     return false;
 }

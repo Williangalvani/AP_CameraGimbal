@@ -117,8 +117,11 @@ struct ca_mp4 {
     enum ca_video_codec codec;
     unsigned width, height, frame_rate, part;
     uint64_t roll_bytes;
+    /* the latest parameter set of each type and ID */
     uint8_t *headers;
     size_t headers_length;
+    /* the current part's sample entry lacks one of them */
+    bool headers_changed;
     /* Frames pass from the callers to the writer thread, which owns the
      * files and every other field here except error. */
     struct ca_mp4_queue queue;
@@ -366,12 +369,14 @@ static unsigned nal_type(enum ca_video_codec codec, uint8_t header)
     return codec == CA_VIDEO_H265 ? (header >> 1U) & 63U : header & 31U;
 }
 
-/* A picture decoding can start at: an H.264 IDR, or an H.265 IRAP (BLA,
- * IDR or CRA). The queue, the index and rollover call it an IDR. */
+/* A picture decoding can start at: an H.264 IDR, or an H.265 BLA or IDR.
+ * Not a CRA: a decoder that reaches one after a gap decodes the RASL
+ * pictures after it from pictures the file lacks. The queue, the index and
+ * rollover call it an IDR. */
 static bool nal_is_key(enum ca_video_codec codec, uint8_t header)
 {
     unsigned type = nal_type(codec, header);
-    return codec == CA_VIDEO_H265 ? type >= 16U && type <= 21U : type == 5U;
+    return codec == CA_VIDEO_H265 ? type >= 16U && type <= 20U : type == 5U;
 }
 
 /* SPS and PPS, and the H.265 VPS */
@@ -379,6 +384,25 @@ static bool nal_is_parameter_set(enum ca_video_codec codec, uint8_t header)
 {
     unsigned type = nal_type(codec, header);
     return codec == CA_VIDEO_H265 ? type >= 32U && type <= 34U : type == 7U || type == 8U;
+}
+
+/* The ID a later parameter set of the same type replaces, or -1 if it
+ * cannot be read: the H.265 VPS's 4 bits, otherwise an Exp-Golomb value,
+ * after the H.264 SPS's profile and level or the H.265 SPS's
+ * profile_tier_level, first in a PPS. */
+static int parameter_set_id(enum ca_video_codec codec, const uint8_t *nal, size_t length)
+{
+    const bool hevc = codec == CA_VIDEO_H265;
+    unsigned char rbsp[256];
+    int n = nal_rbsp(nal, length > INT_MAX ? INT_MAX : (int)length, hevc ? 2 : 1,
+                     rbsp, (int)sizeof(rbsp));
+    int pos = 0;
+    if (n <= 0) return -1;
+    unsigned type = nal_type(codec, nal[0]);
+    if (hevc && type == 32U) return rbsp[0] >> 4;
+    if (hevc && type == 33U) return hevc_sps_id(rbsp, n * 8, &pos);
+    if (!hevc && type == 7U) pos = 24;
+    return hevc_read_ue(rbsp, n * 8, &pos);
 }
 
 static bool nal_is_sei(enum ca_video_codec codec, uint8_t header)
@@ -782,6 +806,7 @@ static int write_access_unit(mp4_h26x_writer_t *video, enum ca_video_codec codec
 {
     size_t offset = 0U, nal, nal_length, used = 0U;
     bool picture = false, key = false;
+    unsigned temporal_id_plus1 = 1U;
     uint8_t sei[CA_VIDEO_METADATA_SEI_MAX];
     if (annex_b == NULL || length == 0U || length > INT_MAX - sizeof(sei)) {
         errno = EINVAL;
@@ -802,6 +827,7 @@ static int write_access_unit(mp4_h26x_writer_t *video, enum ca_video_codec codec
             result = MP4E_set_pps(video->mux, video->mux_track_id, annex_b + nal, (int)nal_length);
             video->need_pps = 0;
         } else if (ca_video_nal_is_vcl(codec, annex_b[nal])) {
+            if (!picture && hevc && nal_length >= 2U) temporal_id_plus1 = annex_b[nal + 1U] & 7U;
             picture = true;
             if (nal_is_key(codec, annex_b[nal])) key = true;
         }
@@ -812,7 +838,7 @@ static int write_access_unit(mp4_h26x_writer_t *video, enum ca_video_codec codec
         (video->need_idr && !key)) return 0;
     *json_length = ca_video_metadata_json(metadata, utc, pts90k,
                                          json, CA_VIDEO_METADATA_JSON_MAX);
-    size_t sei_length = ca_video_metadata_sei(codec, json, *json_length,
+    size_t sei_length = ca_video_metadata_sei(codec, temporal_id_plus1, json, *json_length,
                                               sei, sizeof(sei));
     if (sei_length == 0U) { errno = EOVERFLOW; return -1; }
     /* Three-byte Annex-B start codes expand by one byte in MP4. */
@@ -1018,38 +1044,76 @@ static int file_close(struct ca_mp4_file *writer)
     return 0;
 }
 
-/* Retain all distinct parameter sets, including headers sent separately from
- * IDRs. A continuation must decode even when the encoder never repeats them. */
+static const char *parameter_set_name(enum ca_video_codec codec, uint8_t header)
+{
+    unsigned type = nal_type(codec, header);
+    if (codec == CA_VIDEO_H265 && type == 32U) return "VPS";
+    return type == (codec == CA_VIDEO_H265 ? 33U : 7U) ? "SPS" : "PPS";
+}
+
+/* Keep the latest parameter set of each type and ID, including headers sent
+ * separately from IDRs: a continuation must decode even when the encoder
+ * never repeats them, and its sample entry must not list two sets with one
+ * ID. A set whose ID cannot be read replaces only an identical one, so two
+ * such sets never displace each other on every access unit. A replaced set
+ * keeps its place and a new one goes last, so a sample entry seeded from
+ * here lists the sets as they arrived and takes the profile and level from
+ * the current version of the first SPS. The sets precede the access unit's
+ * first picture NAL, which decides whether it is a key frame. *changed is
+ * the header of the first set the cache did not hold, or 0, and *changed_id
+ * its ID. */
 static int cache_headers(struct ca_mp4 *writer, const uint8_t *data, size_t length,
-                         bool *idr)
+                         bool *idr, uint8_t *changed, int *changed_id)
 {
     size_t offset = 0, nal, n;
     *idr = false;
+    *changed = 0U;
+    *changed_id = -1;
     while (ca_annexb_next(data, length, &offset, &nal, &n)) {
         if (!n) continue;
-        if (nal_is_key(writer->codec, data[nal])) *idr = true;
+        if (ca_video_nal_is_vcl(writer->codec, data[nal])) {
+            *idr = nal_is_key(writer->codec, data[nal]);
+            break;
+        }
         if (!nal_is_parameter_set(writer->codec, data[nal])) continue;
-        size_t scan = 0, old, old_length;
+        unsigned type = nal_type(writer->codec, data[nal]);
+        int id = parameter_set_id(writer->codec, data + nal, n);
+        size_t scan = 0, old = 0, old_length = 0;
         bool found = false;
         while (ca_annexb_next(writer->headers, writer->headers_length,
                              &scan, &old, &old_length)) {
-            if (old_length == n && !memcmp(writer->headers + old, data + nal, n)) {
+            if (nal_type(writer->codec, writer->headers[old]) != type) continue;
+            if (id < 0 ? old_length == n && !memcmp(writer->headers + old, data + nal, n)
+                       : parameter_set_id(writer->codec, writer->headers + old, old_length) == id) {
                 found = true;
                 break;
             }
         }
-        if (found) continue;
-        if (writer->headers_length > CA_MP4_HEADERS_MAX - 4U ||
-            n > CA_MP4_HEADERS_MAX - 4U - writer->headers_length) {
+        if (found && old_length == n && !memcmp(writer->headers + old, data + nal, n)) continue;
+        /* the replaced set with its start code, or nothing at the end */
+        size_t at = found ? old - 4U : writer->headers_length;
+        size_t removed = found ? 4U + old_length : 0U;
+        size_t kept = writer->headers_length - removed;
+        if (kept > CA_MP4_HEADERS_MAX - 4U || n > CA_MP4_HEADERS_MAX - 4U - kept) {
             errno = EOVERFLOW;
             return -1;
         }
-        uint8_t *headers = (uint8_t*)(realloc(writer->headers, writer->headers_length + 4U + n));
-        if (!headers) return -1;
-        writer->headers = headers;
-        memcpy(headers + writer->headers_length, "\0\0\0\1", 4);
-        memcpy(headers + writer->headers_length + 4, data + nal, n);
-        writer->headers_length += 4U + n;
+        size_t total = kept + 4U + n;
+        uint8_t *headers = writer->headers;
+        if (total > writer->headers_length) {
+            headers = (uint8_t*)(realloc(writer->headers, total));
+            if (!headers) return -1;
+            writer->headers = headers;
+        }
+        memmove(headers + at + 4U + n, headers + at + removed,
+                writer->headers_length - at - removed);
+        memcpy(headers + at, "\0\0\0\1", 4);
+        memcpy(headers + at + 4U, data + nal, n);
+        writer->headers_length = total;
+        if (*changed == 0U) {
+            *changed = data[nal];
+            *changed_id = id;
+        }
     }
     return 0;
 }
@@ -1134,18 +1198,47 @@ fail:;
     return -1;
 }
 
+/* Before the part's first sample, replace the muxer's parameter sets, which
+ * keep every distinct one, with the cached latest of each ID. */
+static int reseed_headers(struct ca_mp4 *writer, const struct ca_mp4_frame *frame)
+{
+    struct ca_mp4_file *file = writer->file;
+    track_t *tr = (track_t*)(file->mux->tracks.data) + file->video.mux_track_id;
+    minimp4_vector_reset(&tr->vvps);
+    minimp4_vector_reset(&tr->vsps);
+    minimp4_vector_reset(&tr->vpps);
+    return file_write(file, writer->headers, writer->headers_length,
+                      &frame->metadata, &frame->utc) < 0 ? -1 : 0;
+}
+
 static int record_frame(struct ca_mp4 *writer, const struct ca_mp4_frame *frame)
 {
     int retired = reap_file(writer, false);
     if (retired < 0) return -1;
+    bool idr;
+    uint8_t changed;
+    int changed_id;
+    if (cache_headers(writer, frame->data, frame->length, &idr, &changed, &changed_id) < 0)
+        return -1;
+    if (changed && writer->file->frames == 0U && reseed_headers(writer, frame) < 0) return -1;
+    /* The sample entry went out with the part's first frame, and samples
+     * carry no parameter sets: only a new part can hold a changed one. */
+    if (changed && writer->file->frames != 0U && !writer->headers_changed) {
+        writer->headers_changed = true;
+        fprintf(stderr, "recording %s: %s %d changed; continuing in a new part at the "
+                "next key frame\n", writer->file->path,
+                parameter_set_name(writer->codec, changed), changed_id);
+    }
     /* The writer has muxed every earlier frame, so the size includes all of
      * them, written or not. */
-    if (writer->roll_bytes) {
-        bool idr;
-        if (cache_headers(writer, frame->data, frame->length, &idr) < 0) return -1;
-        if (idr && writer->file->bytes >= writer->roll_bytes && retired == 0) {
-            if (roll_file(writer, frame) < 0) return -1;
-        }
+    if (idr && writer->headers_changed) {
+        /* unlike a size roll, this one cannot wait for another key frame */
+        if (retired > 0 && reap_file(writer, true) < 0) return -1;
+        if (roll_file(writer, frame) < 0) return -1;
+        writer->headers_changed = false;
+    } else if (idr && writer->roll_bytes && writer->file->bytes >= writer->roll_bytes &&
+               retired == 0) {
+        if (roll_file(writer, frame) < 0) return -1;
     }
     /* Refuse an access unit before writing any of it if even the conservative
      * size bound reaches the filesystem limit. Broken encoders without IDRs

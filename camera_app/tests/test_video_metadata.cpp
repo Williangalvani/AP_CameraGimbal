@@ -12,13 +12,25 @@ static void test_sei(enum ca_video_codec codec)
     char payload[CA_VIDEO_METADATA_JSON_MAX - 1U] = {};
     uint8_t sei[CA_VIDEO_METADATA_SEI_MAX];
     uint8_t rbsp[sizeof(sei)];
-    size_t size = ca_video_metadata_sei(codec, payload, sizeof(payload), sei, sizeof(sei));
+    size_t size = ca_video_metadata_sei(codec, 1U, payload, sizeof(payload), sei, sizeof(sei));
     assert(size != 0U);
-    assert(ca_video_metadata_sei(codec, payload, sizeof(payload), sei, size - 1U) == 0U);
-    assert(ca_video_metadata_sei(codec, payload, sizeof(payload), sei, sizeof(sei)) == size);
+    assert(ca_video_metadata_sei(codec, 1U, payload, sizeof(payload), sei, size - 1U) == 0U);
+    assert(ca_video_metadata_sei(codec, 1U, payload, sizeof(payload), sei, sizeof(sei)) == size);
     assert(memcmp(sei, "\0\0\0\1", 4U) == 0);
     assert(sei[4] == (codec == CA_VIDEO_H264 ? 6U : 78U));
     if (codec == CA_VIDEO_H265) assert(sei[5] == 1U);
+    /* H.265 takes the access unit's TemporalId, 1 when out of range; H.264
+     * ignores it */
+    uint8_t other[sizeof(sei)];
+    const unsigned temporal_ids[] = {0U, 3U, 7U, 8U};
+    for (unsigned t : temporal_ids) {
+        assert(ca_video_metadata_sei(codec, t, payload, sizeof(payload), other, sizeof(other)) == size);
+        if (codec == CA_VIDEO_H265) {
+            assert(other[5] == (t >= 1U && t <= 7U ? t : 1U));
+            other[5] = 1U;
+        }
+        assert(memcmp(other, sei, size) == 0);
+    }
     size_t count = 0U;
     unsigned zeros = 0U;
     for (size_t i = codec == CA_VIDEO_H264 ? 5U : 6U; i < size; i++) {
@@ -122,6 +134,12 @@ int main(void)
         assert(ca_video_metadata_insert(codec, au, 7U, 1234, 88.0f,
                                          &annotated, &length) == 0);
         assert(annotated == NULL);
+        /* the SEI takes the H.265 slice's TemporalId */
+        au[11] = 3U;
+        assert(ca_video_metadata_insert(codec, au, sizeof(au), 1234, 88.0f,
+                                         &annotated, &length) == 1);
+        assert(annotated[11] == (hevc ? 78U : 6U) && annotated[12] == (hevc ? 3U : 5U));
+        free(annotated);
     }
     // Transport age must survive insertion into frame metadata.
     struct timespec sampled;

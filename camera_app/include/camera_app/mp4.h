@@ -17,8 +17,12 @@ typedef int (*ca_fmp4_write_fn)(void *opaque, const void *data,
  * before close; background data syncs limit buffered loss on a crash.
  * FAT/vfat recordings roll on a key frame after 4 GiB minus 64 MiB, with a hard
  * ceiling of 4 GiB minus one byte. Other filesystems (including exFAT) do not
- * roll. Continuations use <stem>_part0002.<extension>, preserve decoder headers,
- * and restart the sample/telemetry timeline at zero.
+ * roll for size. On any filesystem, a parameter set that differs from the
+ * part's sample entry (a new ID, or new content for an ID) rolls at the next
+ * key frame, waiting for the previous part's close if need be, since samples
+ * do not carry parameter sets; the change is logged. Continuations use
+ * <stem>_part0002.<extension>, carry the latest parameter set of each ID, and
+ * restart the sample/telemetry timeline at zero.
  * A writer thread does all file I/O after open, from a bounded RAM buffer.
  * Its errors fail a later write and close; the file is complete by then.
  * Close drains the buffer, waits for the last sync of every part and reports
@@ -26,7 +30,9 @@ typedef int (*ca_fmp4_write_fn)(void *opaque, const void *data,
  * at a time writes, then closes.
  * H.264 tracks are avc1/avcC; H.265 tracks are hvc1/hvcC with the VPS, SPS
  * and PPS. In both, samples carry only VCL and SEI NAL units, and a "key
- * frame" below is an H.264 IDR or an H.265 IRAP (NAL types 16 to 21). */
+ * frame" below is an H.264 IDR or an H.265 BLA or IDR (NAL types 16 to 20).
+ * An H.265 CRA is not one: after a gap or at a part's start, the RASL
+ * pictures that follow it would reference pictures the file lacks. */
 int ca_mp4_open_codec(struct ca_mp4 **writer, const char *path,
                       enum ca_video_codec codec, unsigned width,
                       unsigned height, unsigned frame_rate);

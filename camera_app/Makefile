@@ -835,7 +835,7 @@ $(MP4_HEVC_TEST_TARGET): tests/test_mp4_hevc.cpp src/recording/mp4_minimp4.cpp \
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(CPPFLAGS) -Ibuild $(APP_CXXFLAGS) -Wno-error \
 		-o $@ $(filter %.cpp,$^) -Wl,--wrap=pwrite64 -Wl,--wrap=fallocate64 \
-		-Wl,--wrap=fstatfs64 -lpthread -lm
+		-Wl,--wrap=fstatfs64 -Wl,--wrap=fdatasync -lpthread -lm
 
 .PHONY: recording-test
 recording-test: $(MP4_TEST_TARGET) $(MP4_SYNC_TEST_TARGET) $(MP4_ROLLOVER_TEST_TARGET) \

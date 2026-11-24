@@ -29,7 +29,7 @@
 enum ca_mp4_unit {
     CA_MP4_UNIT_HEADERS, /* parameter sets or SEI, no picture */
     CA_MP4_UNIT_PICTURE, /* a picture that may reference earlier ones */
-    CA_MP4_UNIT_IDR,     /* an H.264 IDR or H.265 IRAP picture */
+    CA_MP4_UNIT_IDR,     /* an H.264 IDR or H.265 BLA or IDR picture */
 };
 
 /* One access unit and the telemetry captured when it was queued. */

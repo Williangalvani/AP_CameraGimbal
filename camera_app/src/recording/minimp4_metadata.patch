@@ -54,7 +54,7 @@
                  return MP4E_STATUS_NO_MEMORY; // write continuation, but there are no samples in the index
              // Accumulate size of the continuation in the sample descriptor
              smpl_desc = (sample_t*)(tr->smpl.data + tr->smpl.bytes) - 1;
-@@ -1205,6 +1196,105 @@
+@@ -1205,6 +1196,123 @@
      return MP4E_STATUS_OK;
  }
 
@@ -97,12 +97,12 @@
 +    return suffix < 0 ? -1 : (1 << zeros) - 1 + suffix;
 +}
 +
-+/* Returns 0, leaving the defaults, for an SPS it cannot read. */
-+static int hevc_sps_config(const unsigned char *nal, int bytes, hevc_sps_config_t *c)
++/* The RBSP of a NAL unit after its header_bytes-byte header, without
++ * emulation prevention; returns its length, at most capacity. */
++static int nal_rbsp(const unsigned char *nal, int bytes, int header_bytes, unsigned char *rbsp, int capacity)
 +{
-+    unsigned char rbsp[256], present[8];
-+    int n = 0, zeros = 0, i, pos, bits, sub_layers_minus1, chroma, luma_depth, chroma_depth;
-+    for (i = 2; i < bytes && n < (int)sizeof(rbsp); i++)
++    int n = 0, zeros = 0, i;
++    for (i = header_bytes; i < bytes && n < capacity; i++)
 +    {
 +        if (zeros >= 2 && nal[i] == 3)
 +        {
@@ -112,24 +112,42 @@
 +        zeros = nal[i] ? 0 : zeros + 1;
 +        rbsp[n++] = nal[i];
 +    }
-+    if (n < 13)
-+        return 0;
-+    bits = n*8;
++    return n;
++}
++
++/* Reads an H.265 SPS RBSP of bits through sps_seq_parameter_set_id, past
++ * the profile_tier_level, leaving pos after it. Returns the ID, or -1. */
++static int hevc_sps_id(const unsigned char *rbsp, int bits, int *pos)
++{
++    unsigned char present[8];
++    int i, sub_layers_minus1;
++    if (bits < 13*8)
++        return -1;
 +    sub_layers_minus1 = (rbsp[0] >> 1) & 7;
-+    pos = 8 + 96;
++    *pos = 8 + 96;
 +    for (i = 0; i < sub_layers_minus1; i++)
 +    {
-+        int flags = hevc_read_bits(rbsp, bits, &pos, 2);
++        int flags = hevc_read_bits(rbsp, bits, pos, 2);
 +        if (flags < 0)
-+            return 0;
++            return -1;
 +        present[i] = (unsigned char)flags;
 +    }
 +    if (sub_layers_minus1 > 0)
-+        pos += 2*(8 - sub_layers_minus1);
++        *pos += 2*(8 - sub_layers_minus1);
 +    for (i = 0; i < sub_layers_minus1; i++)
-+        pos += ((present[i] & 2) ? 88 : 0) + ((present[i] & 1) ? 8 : 0);
-+    if (hevc_read_ue(rbsp, bits, &pos) < 0)    // sps_seq_parameter_set_id
++        *pos += ((present[i] & 2) ? 88 : 0) + ((present[i] & 1) ? 8 : 0);
++    return hevc_read_ue(rbsp, bits, pos);
++}
++
++/* Returns 0, leaving the defaults, for an SPS it cannot read. */
++static int hevc_sps_config(const unsigned char *nal, int bytes, hevc_sps_config_t *c)
++{
++    unsigned char rbsp[256];
++    int n = nal_rbsp(nal, bytes, 2, rbsp, (int)sizeof(rbsp));
++    int i, pos, bits = n*8, sub_layers_minus1, chroma, luma_depth, chroma_depth;
++    if (hevc_sps_id(rbsp, bits, &pos) < 0)
 +        return 0;
++    sub_layers_minus1 = (rbsp[0] >> 1) & 7;
 +    chroma = hevc_read_ue(rbsp, bits, &pos);
 +    if (chroma < 0 || chroma > 3 || (chroma == 3 && hevc_read_bits(rbsp, bits, &pos, 1) < 0))
 +        return 0;
@@ -160,7 +178,7 @@
  /**
  *   Write file index 'moov' box with all its boxes and indexes
  */
-@@ -1235,6 +1325,8 @@
+@@ -1235,6 +1343,8 @@
          index_bytes += tr->smpl.bytes * (sizeof(sample_t) + 4 + 4) / sizeof(sample_t);
          index_bytes += tr->vsps.bytes;
          index_bytes += tr->vpps.bytes;
@@ -169,7 +187,7 @@
 
          ERR(write_pending_data(mux, tr));
      }
-@@ -1331,6 +1423,10 @@
+@@ -1331,6 +1441,10 @@
                  handler_type = MP4E_HANDLER_TYPE_VIDE;
                  handler_ascii = "VideoHandler";
                  break;
@@ -180,7 +198,7 @@
              case e_private:
                  handler_type = MP4E_HANDLER_TYPE_GESM;
                  break;
-@@ -1418,6 +1514,11 @@
+@@ -1418,6 +1532,11 @@
                          END_ATOM;
                      }
 
@@ -192,7 +210,7 @@
                      ATOM(BOX_dinf);
                          ATOM_FULL(BOX_dref, 0);
                          WRITE_4(1); // entry_count
-@@ -1435,6 +1536,16 @@
+@@ -1435,6 +1554,16 @@
                          ATOM_FULL(BOX_stsd, 0);
                          WRITE_4(1); // entry_count;
 
@@ -209,7 +227,7 @@
                          if (tr->info.track_media_kind == e_audio || tr->info.track_media_kind == e_private)
                          {
                              // AudioSampleEntry() assume MP4E_HANDLER_TYPE_SOUN
-@@ -1559,22 +1670,26 @@
+@@ -1559,22 +1688,26 @@
                                  }
                              } else
                              {
@@ -247,7 +265,7 @@
 
                                  WRITE_1(3);    // Num Of Arrays
                                  WRITE_1((1 << 7) | (HEVC_NAL_VPS & 0x3f)); // Array Completeness + NAL Unit Type
-@@ -1732,13 +1847,9 @@
+@@ -1732,13 +1865,9 @@
 
      if (mux->enable_fragmentation)
      {
@@ -263,7 +281,7 @@
          for (ntr = 0; ntr < ntracks; ntr++)
          {
              ATOM_FULL(BOX_trex, 0);
-@@ -1777,6 +1888,7 @@
+@@ -1777,6 +1906,7 @@
          track_t *tr = ((track_t*)mux->tracks.data) + ntr;
          minimp4_vector_reset(&tr->vsps);
          minimp4_vector_reset(&tr->vpps);
@@ -271,7 +289,7 @@
          minimp4_vector_reset(&tr->smpl);
          minimp4_vector_reset(&tr->pending_sample);
      }
-@@ -2404,7 +2516,7 @@
+@@ -2404,7 +2534,7 @@
              if (h->need_sps)
                  goto exit_with_free;
              h->need_idr = 0;
@@ -280,7 +298,7 @@
          default:
              if (h->need_sps)
                  goto exit_with_free;
-@@ -2445,7 +2557,7 @@
+@@ -2445,7 +2575,7 @@
                  if (h->need_sps)
                      return MP4E_STATUS_BAD_ARGUMENTS;
                  h->need_idr = 0;
@@ -289,7 +307,7 @@
              default:
                  if (h->need_sps)
                      return MP4E_STATUS_BAD_ARGUMENTS;
-@@ -2505,9 +2617,9 @@
+@@ -2505,9 +2635,9 @@
      uint32_t v = 0; int last_byte;
      switch (nb)
      {
@@ -302,7 +320,7 @@
      default:
      case 1: v = (v << 8) | (last_byte = minimp4_fgets(mp4));
      }
-@@ -2618,7 +2730,7 @@
+@@ -2618,7 +2748,7 @@
      unsigned i;
      MP4D_track_t *tr = NULL;
 
@@ -311,7 +329,7 @@
      {
          TRACE(("\nERROR: invlaid arguments!"));
          return 0;
-@@ -3344,7 +3456,7 @@
+@@ -3344,7 +3474,7 @@
          // if box is not envelope, just skip it
          if (i == NELEM(g_envelope_box))
          {
