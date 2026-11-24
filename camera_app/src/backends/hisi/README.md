@@ -58,10 +58,13 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   the defaults. Every pool is logged at startup.
 - **VPSS group 0**: channel 0 main (user queue depth 2 for photos), channel 1
   sub (depth 1 for one-push white balance), and channel 2 record (only when needed, enabled only while recording).
-- **VENC**: 0 = main (`/video1`), 1 = sub (`/video2`), 2 = dedicated H.264
-  recorder, 3 = on-demand JPEG still. With the defaults (4K H.264 main, 4K
-  recording) recording reuses the main encoder and VENC 2 is not created.
-  Recordings then carry the main stream's overlay regardless of `osd_recording`.
+- **VENC**: 0 = main (`/video1`), 1 = sub (`/video2`), 2 = dedicated
+  recorder, 3 = on-demand JPEG still. Recordings are MP4 in the main stream's
+  codec: H.264 (`avc1`) or H.265 (`hvc1`). When the recording resolution is
+  the main resolution (the defaults: 4K main, 4K recording) recording reuses
+  the main encoder, in either codec, and VENC 2 is not created. Recordings
+  then carry the main stream's overlay regardless of `osd_recording`. Only a
+  different recording resolution creates VENC 2, in the main codec.
 - **Rate control**: CBR. The sensor runs at 30 fps; `stream.main` `frame_rate`
   (5-30) sets the main encoder's output rate, and the sub stream and a
   dedicated recorder stay at 30. The frame rate applies when camera-app

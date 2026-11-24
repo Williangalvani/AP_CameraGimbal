@@ -86,7 +86,8 @@ struct ca_mp4_file {
     size_t high_water, capacity;
     unsigned max_write_ms;
     MP4E_mux_t *mux;
-    mp4_h26x_writer_t h264;
+    enum ca_video_codec codec;
+    mp4_h26x_writer_t video;
     unsigned frame_duration;
     uint64_t next_pts90k;
     uint64_t bytes;
@@ -113,6 +114,7 @@ struct ca_mp4_file {
 struct ca_mp4 {
     struct ca_mp4_file *file;
     char *path;
+    enum ca_video_codec codec;
     unsigned width, height, frame_rate, part;
     uint64_t roll_bytes;
     uint8_t *headers;
@@ -136,7 +138,7 @@ struct ca_mp4 {
 
 struct ca_fmp4 {
     MP4E_mux_t *mux;
-    mp4_h26x_writer_t h264;
+    mp4_h26x_writer_t video;
     unsigned frame_duration;
     uint64_t next_pts90k;
     int64_t next_offset;
@@ -359,15 +361,41 @@ void ca_mp4_queue_stats(struct ca_mp4_queue *queue, struct ca_mp4_stats *stats,
     pthread_mutex_unlock(&queue->lock);
 }
 
+static unsigned nal_type(enum ca_video_codec codec, uint8_t header)
+{
+    return codec == CA_VIDEO_H265 ? (header >> 1U) & 63U : header & 31U;
+}
+
+/* A picture decoding can start at: an H.264 IDR, or an H.265 IRAP (BLA,
+ * IDR or CRA). The queue, the index and rollover call it an IDR. */
+static bool nal_is_key(enum ca_video_codec codec, uint8_t header)
+{
+    unsigned type = nal_type(codec, header);
+    return codec == CA_VIDEO_H265 ? type >= 16U && type <= 21U : type == 5U;
+}
+
+/* SPS and PPS, and the H.265 VPS */
+static bool nal_is_parameter_set(enum ca_video_codec codec, uint8_t header)
+{
+    unsigned type = nal_type(codec, header);
+    return codec == CA_VIDEO_H265 ? type >= 32U && type <= 34U : type == 7U || type == 8U;
+}
+
+static bool nal_is_sei(enum ca_video_codec codec, uint8_t header)
+{
+    unsigned type = nal_type(codec, header);
+    return codec == CA_VIDEO_H265 ? type == 39U || type == 40U : type == 6U;
+}
+
 /* Classified by the first picture NAL. Stops there rather than scan the
  * slice data of every frame on the caller's thread. */
-static enum ca_mp4_unit access_unit_kind(const uint8_t *data, size_t length)
+static enum ca_mp4_unit access_unit_kind(enum ca_video_codec codec,
+                                         const uint8_t *data, size_t length)
 {
     for (size_t i = 0; i + 3U < length; i++) {
         if (data[i] != 0U || data[i + 1U] != 0U || data[i + 2U] != 1U) continue;
-        unsigned type = data[i + 3U] & 31U;
-        if (type >= 1U && type <= 5U)
-            return type == 5U ? CA_MP4_UNIT_IDR : CA_MP4_UNIT_PICTURE;
+        if (ca_video_nal_is_vcl(codec, data[i + 3U]))
+            return nal_is_key(codec, data[i + 3U]) ? CA_MP4_UNIT_IDR : CA_MP4_UNIT_PICTURE;
         i += 2U;
     }
     return CA_MP4_UNIT_HEADERS;
@@ -673,12 +701,13 @@ fail_mutex:
 }
 
 static int file_open(struct ca_mp4_file **result, const char *path,
-                     unsigned width, unsigned height, unsigned frame_rate)
+                     enum ca_video_codec codec, unsigned width, unsigned height,
+                     unsigned frame_rate)
 {
     struct ca_mp4_file *writer;
 
     if (result == NULL || path == NULL || width == 0U || height == 0U ||
-        frame_rate == 0U) {
+        frame_rate == 0U || (codec != CA_VIDEO_H264 && codec != CA_VIDEO_H265)) {
         errno = EINVAL;
         return -1;
     }
@@ -717,13 +746,14 @@ static int file_open(struct ca_mp4_file **result, const char *path,
 #else
     writer->hard_limit = fs.f_type == CA_MSDOS_SUPER_MAGIC ? CA_FAT_MAX_BYTES : INT64_MAX;
 #endif
+    writer->codec = codec;
     writer->frame_duration = 90000U / frame_rate;
     /* Append-only fragments keep completed frames playable before close and
      * after a crash; the movie header is emitted with the first video frame. */
     writer->mux = MP4E_open(1, 1, writer, write_at);
     if (writer->mux == NULL ||
-        mp4_h26x_write_init(&writer->h264, writer->mux,
-                            (int)width, (int)height, 0) != MP4E_STATUS_OK ||
+        mp4_h26x_write_init(&writer->video, writer->mux, (int)width, (int)height,
+                            codec == CA_VIDEO_H265) != MP4E_STATUS_OK ||
         start_recording_sync(writer) < 0) {
         int saved_errno = errno != 0 ? errno : EIO;
         if (writer->mux != NULL) (void)MP4E_close(writer->mux);
@@ -741,11 +771,14 @@ static int file_open(struct ca_mp4_file **result, const char *path,
 
 /* Each call is one complete encoder access unit, including all slices and
  * SEI. Use MP4E_put_sample once: treating each NAL as a picture breaks SEI
- * association and fragmented MP4 with multi-slice encoders. */
-static int write_h264(mp4_h26x_writer_t *h264, unsigned frame_duration,
-                      const uint8_t *annex_b, size_t length, uint64_t pts90k,
-                      char *json, size_t *json_length,
-                      const struct ca_metadata *metadata, const struct timespec *utc)
+ * association and fragmented MP4 with multi-slice encoders. Parameter sets
+ * go to the sample entry (avcC, or hvcC with the VPS); the sample keeps the
+ * VCL and SEI NAL units, with the telemetry SEI before the first VCL. */
+static int write_access_unit(mp4_h26x_writer_t *video, enum ca_video_codec codec,
+                             unsigned frame_duration,
+                             const uint8_t *annex_b, size_t length, uint64_t pts90k,
+                             char *json, size_t *json_length,
+                             const struct ca_metadata *metadata, const struct timespec *utc)
 {
     size_t offset = 0U, nal, nal_length, used = 0U;
     bool picture = false, key = false;
@@ -754,27 +787,32 @@ static int write_h264(mp4_h26x_writer_t *h264, unsigned frame_duration,
         errno = EINVAL;
         return -1;
     }
+    const bool hevc = codec == CA_VIDEO_H265;
     while (ca_annexb_next(annex_b, length, &offset, &nal, &nal_length)) {
         if (nal_length == 0U) continue;
-        unsigned type = annex_b[nal] & 31U;
+        unsigned type = nal_type(codec, annex_b[nal]);
         int result = MP4E_STATUS_OK;
-        if (type == 7U) {
-            result = MP4E_set_sps(h264->mux, h264->mux_track_id, annex_b + nal, (int)nal_length);
-            h264->need_sps = 0;
-        } else if (type == 8U) {
-            result = MP4E_set_pps(h264->mux, h264->mux_track_id, annex_b + nal, (int)nal_length);
-            h264->need_pps = 0;
-        } else if (ca_video_nal_is_vcl(CA_VIDEO_H264, annex_b[nal])) {
+        if (hevc && type == 32U) {
+            result = MP4E_set_vps(video->mux, video->mux_track_id, annex_b + nal, (int)nal_length);
+            video->need_vps = 0;
+        } else if (type == (hevc ? 33U : 7U)) {
+            result = MP4E_set_sps(video->mux, video->mux_track_id, annex_b + nal, (int)nal_length);
+            video->need_sps = 0;
+        } else if (type == (hevc ? 34U : 8U)) {
+            result = MP4E_set_pps(video->mux, video->mux_track_id, annex_b + nal, (int)nal_length);
+            video->need_pps = 0;
+        } else if (ca_video_nal_is_vcl(codec, annex_b[nal])) {
             picture = true;
-            if (type == 5U) key = true;
+            if (nal_is_key(codec, annex_b[nal])) key = true;
         }
         if (result != MP4E_STATUS_OK) { errno = EIO; return -1; }
     }
     if (!picture) return 0;
-    if (h264->need_sps || h264->need_pps || (h264->need_idr && !key)) return 0;
+    if (video->need_vps || video->need_sps || video->need_pps ||
+        (video->need_idr && !key)) return 0;
     *json_length = ca_video_metadata_json(metadata, utc, pts90k,
                                          json, CA_VIDEO_METADATA_JSON_MAX);
-    size_t sei_length = ca_video_metadata_sei(CA_VIDEO_H264, json, *json_length,
+    size_t sei_length = ca_video_metadata_sei(codec, json, *json_length,
                                               sei, sizeof(sei));
     if (sei_length == 0U) { errno = EOVERFLOW; return -1; }
     /* Three-byte Annex-B start codes expand by one byte in MP4. */
@@ -791,21 +829,20 @@ static int write_h264(mp4_h26x_writer_t *h264, unsigned frame_duration,
     offset = 0U;
     while (ca_annexb_next(annex_b, length, &offset, &nal, &nal_length)) {
         if (nal_length == 0U) continue;
-        unsigned type = annex_b[nal] & 31U;
-        bool vcl = ca_video_nal_is_vcl(CA_VIDEO_H264, annex_b[nal]);
+        bool vcl = ca_video_nal_is_vcl(codec, annex_b[nal]);
         if (vcl && !inserted) {
             APPEND_NAL(sei + 4U, sei_length - 4U);
             inserted = true;
         }
-        if (vcl || type == 6U) APPEND_NAL(annex_b + nal, nal_length);
+        if (vcl || nal_is_sei(codec, annex_b[nal])) APPEND_NAL(annex_b + nal, nal_length);
     }
 #undef APPEND_NAL
-    int result = MP4E_put_sample(h264->mux, h264->mux_track_id,
+    int result = MP4E_put_sample(video->mux, video->mux_track_id,
                                  sample, (int)used, (int)frame_duration,
                                  key ? MP4E_SAMPLE_RANDOM_ACCESS : MP4E_SAMPLE_DEFAULT);
     free(sample);
     if (result != MP4E_STATUS_OK) { errno = EIO; return -1; }
-    h264->need_idr = 0;
+    video->need_idr = 0;
     return 1;
 }
 
@@ -822,12 +859,13 @@ static int write_recording_frame(struct ca_mp4_file *writer, const uint8_t *anne
     size_t offset = 0U, nal, nal_length;
     writer->pending_key = false;
     while (ca_annexb_next(annex_b, length, &offset, &nal, &nal_length)) {
-        if (nal_length != 0U && (annex_b[nal] & 31U) == 5U) writer->pending_key = true;
+        if (nal_length != 0U && nal_is_key(writer->codec, annex_b[nal])) writer->pending_key = true;
     }
     uint64_t frame_at = writer->bytes;
     writer->write_error = 0;
-    int result = write_h264(&writer->h264, writer->frame_duration, annex_b, length,
-                            writer->next_pts90k, json, &json_length, metadata, utc);
+    int result = write_access_unit(&writer->video, writer->codec, writer->frame_duration,
+                                   annex_b, length, writer->next_pts90k, json, &json_length,
+                                   metadata, utc);
     if (result < 0) {
         int error = writer->write_error ? writer->write_error : errno;
         discard_from(writer, frame_at, writer->next_pts90k);
@@ -841,9 +879,9 @@ static int write_recording_frame(struct ca_mp4_file *writer, const uint8_t *anne
 
 /* Returns 1 for a video sample, 0 for headers alone or a frame the muxer
  * skips before the first IDR. */
-static int file_write_h264(struct ca_mp4_file *writer, const uint8_t *annex_b,
-                           size_t length, const struct ca_metadata *metadata,
-                           const struct timespec *utc)
+static int file_write(struct ca_mp4_file *writer, const uint8_t *annex_b,
+                      size_t length, const struct ca_metadata *metadata,
+                      const struct timespec *utc)
 {
     if (writer == NULL) { errno = EINVAL; return -1; }
     int sync_error = atomic_load(&writer->sync_error);
@@ -923,7 +961,7 @@ static int file_finish(struct ca_mp4_file *writer)
     if (writer->finished) return 0;
     writer->finished = true;
     int error = 0;
-    mp4_h26x_write_close(&writer->h264);
+    mp4_h26x_write_close(&writer->video);
     if (MP4E_close(writer->mux) != MP4E_STATUS_OK) error = EIO;
     if (flush_stage(writer) < 0) {
         if (!error) error = errno ? errno : EIO;
@@ -989,9 +1027,8 @@ static int cache_headers(struct ca_mp4 *writer, const uint8_t *data, size_t leng
     *idr = false;
     while (ca_annexb_next(data, length, &offset, &nal, &n)) {
         if (!n) continue;
-        unsigned type = data[nal] & 31U;
-        if (type == 5U) *idr = true;
-        if (type != 7U && type != 8U) continue;
+        if (nal_is_key(writer->codec, data[nal])) *idr = true;
+        if (!nal_is_parameter_set(writer->codec, data[nal])) continue;
         size_t scan = 0, old, old_length;
         bool found = false;
         while (ca_annexb_next(writer->headers, writer->headers_length,
@@ -1060,15 +1097,16 @@ static int roll_file(struct ca_mp4 *writer, const struct ca_mp4_frame *frame)
     if (asprintf(&path, "%.*s_part%04u%s", (int)stem, writer->path,
                  writer->part + 1U, extension) < 0) return -1;
     struct ca_mp4_file *next = NULL;
-    if (file_open(&next, path, writer->width, writer->height, writer->frame_rate) < 0) {
+    if (file_open(&next, path, writer->codec, writer->width, writer->height,
+                  writer->frame_rate) < 0) {
         free(path);
         return -1;
     }
     {
     /* Seed the decoder configuration without adding a video sample or SEI. */
     if (writer->headers_length &&
-        file_write_h264(next, writer->headers, writer->headers_length,
-                        &frame->metadata, &frame->utc) < 0)
+        file_write(next, writer->headers, writer->headers_length,
+                   &frame->metadata, &frame->utc) < 0)
         goto fail;
     /* Complete the old part here; only its final sync is left to wait. */
     note_file_stats(writer);
@@ -1119,8 +1157,8 @@ static int record_frame(struct ca_mp4 *writer, const struct ca_mp4_frame *frame)
         errno = EFBIG;
         return -1;
     }
-    return file_write_h264(writer->file, frame->data, frame->length,
-                           &frame->metadata, &frame->utc);
+    return file_write(writer->file, frame->data, frame->length,
+                      &frame->metadata, &frame->utc);
 }
 
 /* Close every file before publishing the error, so the caller's close after
@@ -1142,7 +1180,7 @@ static void log_drops(struct ca_mp4 *writer)
     uint64_t now = monotonic_ms();
     if (writer->drop_logged_ms != 0U && now - writer->drop_logged_ms < CA_MP4_DROP_LOG_MS) return;
     fprintf(stderr, "recording buffer full: %" PRIu64 " frames dropped in %" PRIu64
-            " events (%zu of %zu bytes queued); recording resumes at an IDR\n",
+            " events (%zu of %zu bytes queued); recording resumes at a key frame\n",
             stats.frames_dropped, stats.drop_events, stats.buffer_bytes,
             stats.buffer_capacity);
     writer->dropped_logged = stats.frames_dropped;
@@ -1216,21 +1254,23 @@ static size_t queue_capacity(void)
     return capacity;
 }
 
-int ca_mp4_open(struct ca_mp4 **result, const char *path,
-                unsigned width, unsigned height, unsigned frame_rate)
+int ca_mp4_open_codec(struct ca_mp4 **result, const char *path,
+                      enum ca_video_codec codec, unsigned width,
+                      unsigned height, unsigned frame_rate)
 {
     if (!result || !path || !width || !height || !frame_rate) { errno = EINVAL; return -1; }
     struct ca_mp4 *writer = new (std::nothrow) ca_mp4{};
     if (!writer) return -1;
     writer->path = strdup(path);
     if (!writer->path) { delete writer; return -1; }
-    if (file_open(&writer->file, path, width, height, frame_rate) < 0) {
+    if (file_open(&writer->file, path, codec, width, height, frame_rate) < 0) {
         int saved_errno = errno;
         free(writer->path);
         delete writer;
         errno = saved_errno;
         return -1;
     }
+    writer->codec = codec;
     writer->width = width;
     writer->height = height;
     writer->frame_rate = frame_rate;
@@ -1268,8 +1308,14 @@ int ca_mp4_open(struct ca_mp4 **result, const char *path,
     return 0;
 }
 
-int ca_mp4_write_h264(struct ca_mp4 *writer, const uint8_t *annex_b,
-                      size_t length, uint64_t pts, bool key_frame, float hfov_deg)
+int ca_mp4_open(struct ca_mp4 **result, const char *path,
+                unsigned width, unsigned height, unsigned frame_rate)
+{
+    return ca_mp4_open_codec(result, path, CA_VIDEO_H264, width, height, frame_rate);
+}
+
+int ca_mp4_write_video(struct ca_mp4 *writer, const uint8_t *annex_b,
+                       size_t length, uint64_t pts, bool key_frame, float hfov_deg)
 {
     (void)pts;
     (void)key_frame;
@@ -1291,10 +1337,17 @@ int ca_mp4_write_h264(struct ca_mp4 *writer, const uint8_t *annex_b,
         ca_mp4_queue_drop(&writer->queue);
         return 0;
     }
-    /* Real IDRs, not the caller's flag, end a run of dropped frames. */
-    if (ca_mp4_queue_push(&writer->queue, annex_b, length, access_unit_kind(annex_b, length),
+    /* Real key frames, not the caller's flag, end a run of dropped frames. */
+    if (ca_mp4_queue_push(&writer->queue, annex_b, length,
+                          access_unit_kind(writer->codec, annex_b, length),
                           &metadata, &utc) < 0) return -1;
     return 0;
+}
+
+int ca_mp4_write_h264(struct ca_mp4 *writer, const uint8_t *annex_b,
+                      size_t length, uint64_t pts, bool key_frame, float hfov_deg)
+{
+    return ca_mp4_write_video(writer, annex_b, length, pts, key_frame, hfov_deg);
 }
 
 int ca_mp4_close(struct ca_mp4 *writer)
@@ -1354,7 +1407,7 @@ int ca_fmp4_open(struct ca_fmp4 **result, unsigned width, unsigned height,
     writer->opaque = opaque;
     writer->mux = MP4E_open(1, 1, writer, stream_write_at);
     if (writer->mux == NULL || writer->failed ||
-        mp4_h26x_write_init(&writer->h264, writer->mux,
+        mp4_h26x_write_init(&writer->video, writer->mux,
                             (int)width, (int)height, 0) != MP4E_STATUS_OK) {
         int saved_errno = errno != 0 ? errno : EIO;
         if (writer->mux != NULL) (void)MP4E_close(writer->mux);
@@ -1382,8 +1435,9 @@ int ca_fmp4_write_h264(struct ca_fmp4 *writer, const uint8_t *annex_b,
     ca_metadata_snapshot(&metadata);
     metadata.hfov_deg = hfov_deg;
     if (clock_gettime(CLOCK_REALTIME, &utc) < 0) return -1;
-    int result = write_h264(&writer->h264, writer->frame_duration, annex_b, length,
-                            writer->next_pts90k, json, &json_length, &metadata, &utc);
+    int result = write_access_unit(&writer->video, CA_VIDEO_H264, writer->frame_duration,
+                                   annex_b, length, writer->next_pts90k, json, &json_length,
+                                   &metadata, &utc);
     if (result > 0) writer->next_pts90k += writer->frame_duration;
     return result < 0 ? -1 : 0;
 }
@@ -1393,7 +1447,7 @@ int ca_fmp4_close(struct ca_fmp4 *writer)
     int result = 0;
 
     if (writer == NULL) return 0;
-    mp4_h26x_write_close(&writer->h264);
+    mp4_h26x_write_close(&writer->video);
     if (MP4E_close(writer->mux) != MP4E_STATUS_OK || writer->failed) {
         result = -1;
         errno = EIO;

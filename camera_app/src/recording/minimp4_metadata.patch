@@ -54,18 +54,133 @@
                  return MP4E_STATUS_NO_MEMORY; // write continuation, but there are no samples in the index
              // Accumulate size of the continuation in the sample descriptor
              smpl_desc = (sample_t*)(tr->smpl.data + tr->smpl.bytes) - 1;
-@@ -1330,6 +1321,10 @@
-             case e_video:
+@@ -1205,6 +1196,105 @@
+     return MP4E_STATUS_OK;
+ }
+
++/* The HEVCDecoderConfigurationRecord fields a player reads before it decodes
++ * any parameter set: general profile_tier_level, chroma format, bit depths
++ * and temporal layers, all from the first SPS. */
++typedef struct
++{
++    unsigned char ptl[12];
++    int chroma_format_idc, bit_depth_luma_minus8, bit_depth_chroma_minus8;
++    int max_sub_layers, temporal_id_nested;
++} hevc_sps_config_t;
++
++static int hevc_read_bits(const unsigned char *rbsp, int bits, int *pos, int count)
++{
++    int value = 0;
++    if (count > 24 || *pos + count > bits)
++        return -1;
++    while (count--)
++    {
++        value = (value << 1) | ((rbsp[*pos >> 3] >> (7 - (*pos & 7))) & 1);
++        (*pos)++;
++    }
++    return value;
++}
++
++static int hevc_read_ue(const unsigned char *rbsp, int bits, int *pos)
++{
++    int zeros = 0, suffix;
++    for (;;)
++    {
++        int bit = hevc_read_bits(rbsp, bits, pos, 1);
++        if (bit < 0 || zeros > 16)
++            return -1;
++        if (bit)
++            break;
++        zeros++;
++    }
++    suffix = hevc_read_bits(rbsp, bits, pos, zeros);
++    return suffix < 0 ? -1 : (1 << zeros) - 1 + suffix;
++}
++
++/* Returns 0, leaving the defaults, for an SPS it cannot read. */
++static int hevc_sps_config(const unsigned char *nal, int bytes, hevc_sps_config_t *c)
++{
++    unsigned char rbsp[256], present[8];
++    int n = 0, zeros = 0, i, pos, bits, sub_layers_minus1, chroma, luma_depth, chroma_depth;
++    for (i = 2; i < bytes && n < (int)sizeof(rbsp); i++)
++    {
++        if (zeros >= 2 && nal[i] == 3)
++        {
++            zeros = 0;
++            continue;
++        }
++        zeros = nal[i] ? 0 : zeros + 1;
++        rbsp[n++] = nal[i];
++    }
++    if (n < 13)
++        return 0;
++    bits = n*8;
++    sub_layers_minus1 = (rbsp[0] >> 1) & 7;
++    pos = 8 + 96;
++    for (i = 0; i < sub_layers_minus1; i++)
++    {
++        int flags = hevc_read_bits(rbsp, bits, &pos, 2);
++        if (flags < 0)
++            return 0;
++        present[i] = (unsigned char)flags;
++    }
++    if (sub_layers_minus1 > 0)
++        pos += 2*(8 - sub_layers_minus1);
++    for (i = 0; i < sub_layers_minus1; i++)
++        pos += ((present[i] & 2) ? 88 : 0) + ((present[i] & 1) ? 8 : 0);
++    if (hevc_read_ue(rbsp, bits, &pos) < 0)    // sps_seq_parameter_set_id
++        return 0;
++    chroma = hevc_read_ue(rbsp, bits, &pos);
++    if (chroma < 0 || chroma > 3 || (chroma == 3 && hevc_read_bits(rbsp, bits, &pos, 1) < 0))
++        return 0;
++    if (hevc_read_ue(rbsp, bits, &pos) < 0 || hevc_read_ue(rbsp, bits, &pos) < 0)
++        return 0;
++    i = hevc_read_bits(rbsp, bits, &pos, 1);   // conformance_window_flag
++    if (i < 0)
++        return 0;
++    if (i)
++    {
++        for (i = 0; i < 4; i++)
++            if (hevc_read_ue(rbsp, bits, &pos) < 0)
++                return 0;
++    }
++    luma_depth = hevc_read_ue(rbsp, bits, &pos);
++    chroma_depth = hevc_read_ue(rbsp, bits, &pos);
++    if (luma_depth < 0 || luma_depth > 7 || chroma_depth < 0 || chroma_depth > 7)
++        return 0;
++    memcpy(c->ptl, rbsp + 1, sizeof(c->ptl));
++    c->chroma_format_idc = chroma;
++    c->bit_depth_luma_minus8 = luma_depth;
++    c->bit_depth_chroma_minus8 = chroma_depth;
++    c->max_sub_layers = sub_layers_minus1 + 1;
++    c->temporal_id_nested = rbsp[0] & 1;
++    return 1;
++}
++
+ /**
+ *   Write file index 'moov' box with all its boxes and indexes
+ */
+@@ -1235,6 +1325,8 @@
+         index_bytes += tr->smpl.bytes * (sizeof(sample_t) + 4 + 4) / sizeof(sample_t);
+         index_bytes += tr->vsps.bytes;
+         index_bytes += tr->vpps.bytes;
++        // hvcC: the VPS and the fields avcC does not have
++        index_bytes += tr->vvps.bytes + 64;
+
+         ERR(write_pending_data(mux, tr));
+     }
+@@ -1331,6 +1423,10 @@
                  handler_type = MP4E_HANDLER_TYPE_VIDE;
                  handler_ascii = "VideoHandler";
-+                break;
+                 break;
 +            case e_metadata:
 +                handler_type = FOUR_CHAR_INT('m', 'e', 't', 'a');
 +                handler_ascii = "CameraTelemetry";
-                 break;
++                break;
              case e_private:
                  handler_type = MP4E_HANDLER_TYPE_GESM;
-@@ -1418,6 +1413,11 @@
+                 break;
+@@ -1418,6 +1514,11 @@
                          END_ATOM;
                      }
 
@@ -77,7 +192,7 @@
                      ATOM(BOX_dinf);
                          ATOM_FULL(BOX_dref, 0);
                          WRITE_4(1); // entry_count
-@@ -1435,6 +1435,16 @@
+@@ -1435,6 +1536,16 @@
                          ATOM_FULL(BOX_stsd, 0);
                          WRITE_4(1); // entry_count;
 
@@ -94,7 +209,45 @@
                          if (tr->info.track_media_kind == e_audio || tr->info.track_media_kind == e_private)
                          {
                              // AudioSampleEntry() assume MP4E_HANDLER_TYPE_SOUN
-@@ -1732,13 +1742,9 @@
+@@ -1559,22 +1670,26 @@
+                                 }
+                             } else
+                             {
+-                                int numOfVPS  = items_count(&tr->vpps);
++                                int numOfVPS  = items_count(&tr->vvps);
++                                // Main, 4:2:0, 8-bit unless the SPS says otherwise
++                                hevc_sps_config_t config = {{1, 0x60}, 1, 0, 0, 0, 0};
++                                if (tr->vsps.bytes > 2)
++                                    (void)hevc_sps_config(tr->vsps.data + 2, tr->vsps.data[0]*256 + tr->vsps.data[1], &config);
+                                 ATOM(BOX_hvcC);
+-                                // TODO: read actual params from stream
+                                 WRITE_1(1);    // configurationVersion
+-                                WRITE_1(1);    // Profile Space (2), Tier (1), Profile (5)
+-                                WRITE_4(0x60000000); // Profile Compatibility
+-                                WRITE_2(0);    // progressive, interlaced, non packed constraint, frame only constraint flags
+-                                WRITE_4(0);    // constraint indicator flags
+-                                WRITE_1(0);    // level_idc
++                                // general profile space, tier, profile, compatibility and constraint flags, level
++                                for (i = 0; i < (int)sizeof(config.ptl); i++)
++                                {
++                                    WRITE_1(config.ptl[i]);
++                                }
+                                 WRITE_2(0xf000); // Min Spatial Segmentation
+                                 WRITE_1(0xfc); // Parallelism Type
+-                                WRITE_1(0xfc); // Chroma Format
+-                                WRITE_1(0xf8); // Luma Depth
+-                                WRITE_1(0xf8); // Chroma Depth
++                                WRITE_1(0xfc | config.chroma_format_idc); // Chroma Format
++                                WRITE_1(0xf8 | config.bit_depth_luma_minus8); // Luma Depth
++                                WRITE_1(0xf8 | config.bit_depth_chroma_minus8); // Chroma Depth
+                                 WRITE_2(0);    // Avg Frame Rate
+-                                WRITE_1(3);    // ConstantFrameRate (2), NumTemporalLayers (3), TemporalIdNested (1), LengthSizeMinusOne (2)
++                                // ConstantFrameRate (2), NumTemporalLayers (3), TemporalIdNested (1), LengthSizeMinusOne (2)
++                                WRITE_1((config.max_sub_layers << 3) | (config.temporal_id_nested << 2) | 3);
+
+                                 WRITE_1(3);    // Num Of Arrays
+                                 WRITE_1((1 << 7) | (HEVC_NAL_VPS & 0x3f)); // Array Completeness + NAL Unit Type
+@@ -1732,13 +1847,9 @@
 
      if (mux->enable_fragmentation)
      {
@@ -110,7 +263,15 @@
          for (ntr = 0; ntr < ntracks; ntr++)
          {
              ATOM_FULL(BOX_trex, 0);
-@@ -2404,7 +2410,7 @@
+@@ -1777,6 +1888,7 @@
+         track_t *tr = ((track_t*)mux->tracks.data) + ntr;
+         minimp4_vector_reset(&tr->vsps);
+         minimp4_vector_reset(&tr->vpps);
++        minimp4_vector_reset(&tr->vvps);
+         minimp4_vector_reset(&tr->smpl);
+         minimp4_vector_reset(&tr->pending_sample);
+     }
+@@ -2404,7 +2516,7 @@
              if (h->need_sps)
                  goto exit_with_free;
              h->need_idr = 0;
@@ -119,7 +280,7 @@
          default:
              if (h->need_sps)
                  goto exit_with_free;
-@@ -2445,7 +2451,7 @@
+@@ -2445,7 +2557,7 @@
                  if (h->need_sps)
                      return MP4E_STATUS_BAD_ARGUMENTS;
                  h->need_idr = 0;
@@ -128,7 +289,7 @@
              default:
                  if (h->need_sps)
                      return MP4E_STATUS_BAD_ARGUMENTS;
-@@ -2505,9 +2511,9 @@
+@@ -2505,9 +2617,9 @@
      uint32_t v = 0; int last_byte;
      switch (nb)
      {
@@ -141,7 +302,7 @@
      default:
      case 1: v = (v << 8) | (last_byte = minimp4_fgets(mp4));
      }
-@@ -2618,7 +2624,7 @@
+@@ -2618,7 +2730,7 @@
      unsigned i;
      MP4D_track_t *tr = NULL;
 
@@ -150,7 +311,7 @@
      {
          TRACE(("\nERROR: invlaid arguments!"));
          return 0;
-@@ -3344,7 +3350,7 @@
+@@ -3344,7 +3456,7 @@
          // if box is not envelope, just skip it
          if (i == NELEM(g_envelope_box))
          {

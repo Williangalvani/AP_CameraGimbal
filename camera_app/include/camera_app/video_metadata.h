@@ -18,7 +18,19 @@ extern const uint8_t ca_video_metadata_uuid[16];
 size_t ca_video_metadata_json(const struct ca_metadata *metadata,
                                const struct timespec *utc, uint64_t pts90k,
                                char *output, size_t capacity);
-/* Annex-B user_data_unregistered SEI, including start code and escaping. */
+/* Annex-B user_data_unregistered SEI, including start code and escaping:
+ *   00 00 00 01, then the NAL header:
+ *     H.264: 06 (SEI, nal_ref_idc 0)
+ *     H.265: 4E 01 (prefix SEI type 39, nuh_layer_id 0, temporal_id_plus1 1)
+ *   then the same RBSP for both:
+ *     05                        payloadType user_data_unregistered
+ *     FF.. nn                   payloadSize: 16 + JSON length, in 255 steps
+ *     ca_video_metadata_uuid    16 bytes
+ *     JSON                      apcg.telemetry.v1, no terminating NUL
+ *     80                        rbsp_trailing_bits
+ *   with an emulation prevention 03 inserted after any 00 00 that precedes
+ *   a byte up to 03. A reader skips one header byte (H.264) or two (H.265),
+ *   removes the 03s and parses the payload identically. */
 size_t ca_video_metadata_sei(enum ca_video_codec codec, const char *json,
                               size_t length, uint8_t *output, size_t capacity);
 /* Locate the next Annex-B NAL, excluding start code/trailing_zero_8bits. */

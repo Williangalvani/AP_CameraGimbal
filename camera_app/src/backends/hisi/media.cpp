@@ -3,9 +3,10 @@
  * One IMX678 through MIPI-RX -> VI/ISP -> VPSS -> VENC on the Hi3519DV500 MPP
  * SDK (same "ot" ss_mpi family as src/backends/mt11, which this is ported
  * from). VPSS channel 0 feeds the main RTSP stream, channel 1 the sub stream.
- * Recording reuses the main encoder when it already produces H.264 at the
- * recording size; otherwise channel 2 feeds a dedicated H.264 encoder that
- * runs only while recording, so two 4K encodes never run unnecessarily.
+ * Recordings are in the main stream's codec, H.264 or H.265. They reuse the
+ * main encoder when the recording size is the main size; otherwise channel 2
+ * feeds a dedicated encoder that runs only while recording, so two 4K
+ * encodes never run unnecessarily.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -24,6 +25,7 @@
 #include "camera_app/overlay.h"
 #include "camera_app/rtsp.h"
 #include "camera_app/still.h"
+#include "camera_app/video_metadata.h"
 
 #include "ss_mpi_sys.h"
 #include "ss_mpi_sys_mem.h"
@@ -162,11 +164,30 @@ static bool video_key_frame(enum ca_video_codec codec, const uint8_t *data,
             unsigned type = codec == CA_VIDEO_H265
                                 ? (data[start] >> 1U) & 0x3fU
                                 : data[start] & 0x1fU;
+            // H.265 IRAP: BLA, IDR or CRA
             if ((codec == CA_VIDEO_H264 && type == 5U) ||
-                (codec == CA_VIDEO_H265 && type >= 19U && type <= 21U)) {
+                (codec == CA_VIDEO_H265 && type >= 16U && type <= 21U)) {
                 return true;
             }
         }
+    }
+    return false;
+}
+
+// An H.265 recording starts on an IRAP whose access unit has the VPS, SPS
+// and PPS before it, as the encoder sends them with each IDR.
+static bool recording_start(enum ca_video_codec codec, const uint8_t *data,
+                            size_t length, bool key_frame)
+{
+    if (codec != CA_VIDEO_H265) return key_frame;
+    unsigned parameter_sets = 0;
+    size_t offset = 0, nal, nal_length;
+    while (ca_annexb_next(data, length, &offset, &nal, &nal_length)) {
+        if (nal_length == 0U) continue;
+        const unsigned type = (data[nal] >> 1U) & 0x3fU;
+        if (type >= 32U && type <= 34U) parameter_sets |= 1U << (type - 32U);
+        if (ca_video_nal_is_vcl(codec, data[nal]))
+            return type >= 16U && type <= 21U && parameter_sets == 7U;
     }
     return false;
 }
@@ -203,16 +224,18 @@ static td_s32 set_record_path_locked(struct APC_Media_HiSi_State *media,
     return result;
 }
 
-static void write_recording(struct APC_Media_HiSi_State *media, const uint8_t *data,
-                            size_t length, uint64_t pts, bool key_frame)
+static void write_recording(struct APC_Media_HiSi_State *media, enum ca_video_codec codec,
+                            const uint8_t *data, size_t length, uint64_t pts,
+                            bool key_frame)
 {
     pthread_mutex_lock(&media->lock);
-    if (atomic_load(&media->recording) && media->recording_wait_keyframe && key_frame) {
+    if (atomic_load(&media->recording) && media->recording_wait_keyframe &&
+        recording_start(codec, data, length, key_frame)) {
         media->recording_wait_keyframe = false;
     }
     if (atomic_load(&media->recording) && !media->recording_wait_keyframe &&
-        ca_mp4_write_h264(media->mp4, data, length, pts, key_frame,
-                          (float)APCAM_LENS1_FOV_H) < 0) {
+        ca_mp4_write_video(media->mp4, data, length, pts, key_frame,
+                           (float)APCAM_LENS1_FOV_H) < 0) {
         ca_log("recording stopped after MP4 write failure: %s", strerror(errno));
         (void)ca_mp4_close(media->mp4);
         media->mp4 = NULL;
@@ -233,9 +256,9 @@ static void consume_frame(struct APC_Media_HiSi_State *media, unsigned channel,
                           uint8_t *data, size_t length, uint64_t pts)
 {
     const struct ca_config *settings = &media->config.settings;
-    enum ca_video_codec codec = channel == CA_HISI_MAIN_VENC ? settings->main_codec
-                              : channel == CA_HISI_SUB_VENC ? settings->sub_codec
-                              : CA_VIDEO_H264;
+    // a dedicated recorder encodes in the main stream's codec
+    enum ca_video_codec codec = channel == CA_HISI_SUB_VENC ? settings->sub_codec
+                                                            : settings->main_codec;
     bool key_frame = video_key_frame(codec, data, length);
     const float hfov_deg = (float)APCAM_LENS1_FOV_H;
     if (!atomic_exchange(&media->encoded_frame_logged[channel], true)) {
@@ -252,7 +275,7 @@ static void consume_frame(struct APC_Media_HiSi_State *media, unsigned channel,
                                             length, pts, key_frame, hfov_deg);
     }
     if (channel == record_venc(media) && atomic_load(&media->recording)) {
-        write_recording(media, data, length, pts, key_frame);
+        write_recording(media, codec, data, length, pts, key_frame);
     }
 }
 
@@ -456,8 +479,8 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
                              &sizes->width[CA_HISI_SUB_CHN], &sizes->height[CA_HISI_SUB_CHN]);
     ca_video_resolution_size(settings->recording_resolution,
                              &sizes->width[CA_HISI_RECORD_CHN], &sizes->height[CA_HISI_RECORD_CHN]);
-    // the MP4 writer only muxes H.264
-    sizes->record_channel = settings->main_codec != CA_VIDEO_H264 ||
+    // the MP4 writer muxes either codec, so only another size needs an encoder
+    sizes->record_channel =
         sizes->width[CA_HISI_RECORD_CHN] != sizes->width[CA_HISI_MAIN_CHN] ||
         sizes->height[CA_HISI_RECORD_CHN] != sizes->height[CA_HISI_MAIN_CHN];
     media->venc_count = sizes->record_channel ? 3U : 2U;
@@ -504,7 +527,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
                                                           sizes->height[CA_HISI_SUB_CHN]),
                              sub_gop(settings));
     // recordings keep one keyframe a second
-    ca_hisi_video_attributes(&media->venc_attr[CA_HISI_RECORD_VENC], CA_VIDEO_H264,
+    ca_hisi_video_attributes(&media->venc_attr[CA_HISI_RECORD_VENC], settings->main_codec,
                              sizes->width[CA_HISI_RECORD_CHN], sizes->height[CA_HISI_RECORD_CHN],
                              APCAM_FRAME_RATE,
                              apcam_hisi_auto_bitrate_kbps(sizes->width[CA_HISI_RECORD_CHN],
@@ -580,13 +603,14 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     (void)ss_mpi_venc_request_idr(CA_HISI_MAIN_VENC, TD_TRUE);
     (void)ss_mpi_venc_request_idr(CA_HISI_SUB_VENC, TD_TRUE);
     ca_log("media ready: /video1 %ux%u/%u %s %u kbps gop %u; /video2 %ux%u/%u %s gop %u; "
-           "recording %ux%u H.264 (%s encoder); RTSP port %u",
+           "recording %ux%u %s (%s encoder); RTSP port %u",
            sizes->width[CA_HISI_MAIN_CHN], sizes->height[CA_HISI_MAIN_CHN],
            config->frame_rate, ca_video_codec_name(settings->main_codec),
            main_bitrate(media, settings), main_gop(media, settings),
            sizes->width[CA_HISI_SUB_CHN], sizes->height[CA_HISI_SUB_CHN],
            APCAM_FRAME_RATE, ca_video_codec_name(settings->sub_codec), sub_gop(settings),
            sizes->width[CA_HISI_RECORD_CHN], sizes->height[CA_HISI_RECORD_CHN],
+           settings->main_codec == CA_VIDEO_H265 ? "H.265" : "H.264",
            sizes->record_channel ? "dedicated" : "main", config->rtsp_port);
     return 0;
 fail:
@@ -626,9 +650,10 @@ int APC_Media_HiSi::set_recording(bool active)
         const unsigned frame_rate = record_venc(media) == CA_HISI_MAIN_VENC
                                         ? media->config.frame_rate : APCAM_FRAME_RATE;
         if (make_recording_path(media) < 0 ||
-            ca_mp4_open(&media->mp4, media->recording_path,
-                        sizes->width[CA_HISI_RECORD_CHN],
-                        sizes->height[CA_HISI_RECORD_CHN], frame_rate) < 0) {
+            ca_mp4_open_codec(&media->mp4, media->recording_path,
+                              media->config.settings.main_codec,
+                              sizes->width[CA_HISI_RECORD_CHN],
+                              sizes->height[CA_HISI_RECORD_CHN], frame_rate) < 0) {
             pthread_mutex_unlock(&media->lock);
             return -1;
         }
