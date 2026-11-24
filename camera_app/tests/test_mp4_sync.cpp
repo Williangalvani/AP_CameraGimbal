@@ -66,20 +66,40 @@ static void wait_for_sync(void)
     pthread_mutex_unlock(&lock);
 }
 
-/* The writer thread writes staged data within about a second. */
+/* The writer thread writes staged data within about a second. Like the
+ * Files endpoint, wait for any write in progress before taking the size. */
 static off_t wait_for_size(const char *path, off_t size)
 {
     struct stat st = {};
     for (unsigned i = 0; i < 300; i++) {
         int fd = open(path, O_RDONLY);
         if (fd >= 0) {
-            assert(flock(fd, LOCK_SH | LOCK_NB) == 0 && fstat(fd, &st) == 0);
+            assert(flock(fd, LOCK_SH) == 0 && fstat(fd, &st) == 0);
             close(fd);
             if (st.st_size > size) return st.st_size;
         }
         usleep(10000);
     }
     return st.st_size;
+}
+
+static uint64_t monotonic_ms(void)
+{
+    struct timespec now;
+    assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+    return (uint64_t)now.tv_sec * 1000U + (uint64_t)now.tv_nsec / 1000000U;
+}
+
+/* Fails rather than hangs if the writer stops. */
+static void drain(struct ca_mp4 *writer, struct ca_mp4_stats *stats)
+{
+    uint64_t deadline = monotonic_ms() + 10000U;
+    for (;;) {
+        ca_mp4_get_stats(writer, stats);
+        if (stats->buffer_bytes == 0) return;
+        assert(monotonic_ms() < deadline);
+        usleep(1000);
+    }
 }
 
 static void *close_writer(void *opaque)
@@ -142,7 +162,8 @@ int main(int argc, char **argv)
     release_sync();
     assert(pthread_join(closer, NULL) == 0);
     assert(close_result == 0 && atomic_load(&closed));
-    assert(sync_calls == 2); /* in-flight flush, then one final flush; no backlog */
+    /* in-flight flush, one final flush, then one for the exposed index; no backlog */
+    assert(sync_calls == 3);
     unlink(path);
 
     /* Rollover must keep video moving even when the old file's final sync is
@@ -163,10 +184,7 @@ int main(int argc, char **argv)
     snprintf(part3, sizeof(part3), "%s/video_part0003.mp4", directory);
     assert(wait_for_size(part2, 65536) > 65536);
     struct ca_mp4_stats stats;
-    do {
-        usleep(1000);
-        ca_mp4_get_stats(writer, &stats);
-    } while (stats.buffer_bytes != 0);
+    drain(writer, &stats);
     assert(stats.frames_written == 121 && stats.frames_dropped == 0);
     assert(access(part3, F_OK) < 0 && errno == ENOENT);
     release_sync();

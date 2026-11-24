@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
+#include <time.h>
 #include <unistd.h>
 
 static long filesystem;
@@ -44,15 +45,24 @@ extern "C" int __wrap_fallocate64(int fd, int mode, off64_t offset, off64_t leng
     return __real_fallocate64(fd, mode, offset, length);
 }
 
+static uint64_t monotonic_ms(void)
+{
+    struct timespec now;
+    assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+    return (uint64_t)now.tv_sec * 1000U + (uint64_t)now.tv_nsec / 1000000U;
+}
+
 /* Writes complete on the writer thread; wait so none is dropped and an
- * error fails the next write. */
+ * error fails the next write. Fails rather than hangs if the writer stops. */
 static void drain(struct ca_mp4 *writer)
 {
     struct ca_mp4_stats stats;
+    uint64_t deadline = monotonic_ms() + 10000U;
     for (;;) {
         ca_mp4_get_stats(writer, &stats);
         assert(stats.frames_dropped == 0);
         if (stats.buffer_bytes == 0) return;
+        assert(monotonic_ms() < deadline);
         usleep(1000);
     }
 }

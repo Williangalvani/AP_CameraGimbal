@@ -165,9 +165,11 @@ static void *receiver(void *opaque)
         ca_log("Z1 native AX capture stopped result=%d", result);
         atomic_store(&m->ready, false);
         pthread_mutex_lock(&m->lock);
-        if (m->mp4) { (void)ca_mp4_close(m->mp4); m->mp4 = NULL; }
+        struct ca_mp4 *mp4 = m->mp4;
+        m->mp4 = NULL;
         atomic_store(&m->recording, false);
         pthread_mutex_unlock(&m->lock);
+        (void)ca_mp4_close(mp4);
         return NULL;
     }
     while (!atomic_load(&m->stop)) {
@@ -235,6 +237,7 @@ int APC_Media_Z1Mini::set_recording(bool active)
     if (!m) { errno = EINVAL; return -1; }
     pthread_mutex_lock(&m->lock);
     int result = 0;
+    struct ca_mp4 *closing = NULL;
     if (active == atomic_load(&m->recording)) goto done;
     if (active) {
         if (!atomic_load(&m->ready)) { errno = EAGAIN; result = -1; goto done; }
@@ -266,11 +269,14 @@ int APC_Media_Z1Mini::set_recording(bool active)
         m->wait_key = true;
         atomic_store(&m->recording, true);
     } else {
-        result = ca_mp4_close(m->mp4); m->mp4 = NULL;
+        closing = m->mp4; m->mp4 = NULL;
         atomic_store(&m->recording, false);
     }
 done:
-    pthread_mutex_unlock(&m->lock); return result;
+    pthread_mutex_unlock(&m->lock);
+    /* Closing drains the buffer and syncs; the receiver must not wait for the lock. */
+    if (closing) result = ca_mp4_close(closing);
+    return result;
 }
 bool APC_Media_Z1Mini::ready() const
 {

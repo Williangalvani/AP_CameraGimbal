@@ -460,25 +460,34 @@ with the telemetry sampled on arrival, into a bounded RAM buffer (48 MiB,
 `CA_MP4_QUEUE_BYTES` at build time; about 7.7 s at 50 Mbit/s), and a writer
 thread does all file I/O after open. It muxes into a staging buffer written
 in 2 MiB pieces at frame boundaries, or after one second at low bitrates,
-under the lock the Files endpoint takes for its size snapshot. It splits
-parts and finishes the old part itself. If the card falls further behind than
-the buffer holds, the frame that does not fit and every following frame until
-an IDR that fits are dropped; recording continues, and drops are logged at
-most every 5 s. Each closed part logs its frames written and dropped, the
-buffer high-water mark, size and the longest single write and sync.
-`CAMERA_APP_RECORD_BUFFER_BYTES` can lower the buffer for tests (minimum
-65536 bytes).
+under the lock the Files endpoint takes for its size snapshot. A new file's
+headers and first IDR are written at once. It splits parts and finishes the
+old part itself. If the card falls further behind than the buffer holds, the
+frame that does not fit and every following picture are dropped until an IDR
+that fits while a quarter of the buffer is free; units holding only parameter
+sets are kept whenever they fit. Recording continues, and drops are logged at
+most every 5 s. Dropped frames take no time in the file, so playback runs
+through a gap and the MP4 is shorter than the wall-clock recording; each
+frame's SEI keeps its arrival time. Each closed part logs its frames written
+and dropped, the buffer high-water mark, size and the longest single write
+and sync. `CAMERA_APP_RECORD_BUFFER_BYTES` can lower the buffer for tests
+(minimum 65536 bytes).
 
-A background sync worker runs `fdatasync` when the writer asks: after the
-first write, then every 32 MiB or 5 s. Requests coalesce into a single dirty
-flag, so slow syncs do not create a backlog. The worker never holds the
-download-snapshot lock while syncing. It also syncs the parent directory
-once to persist the new filename. The writer allocates 64 MiB ahead with
-`FALLOC_FL_KEEP_SIZE` where the filesystem supports it, so the file size only
-ever covers data, and releases the rest at close. A writer error closes the
-file and then fails the next frame write, so the backend's close after a
-failed write does not wait for the card. Normal close drains the buffer,
-waits for the worker's final flush and reports any asynchronous I/O error.
+A background sync worker runs `fdatasync` when the writer asks: right after
+the first IDR's write, then every 16 MiB or 2 s, whichever comes first.
+Requests coalesce into a single dirty flag, so slow syncs do not create a
+backlog. The worker never holds the download-snapshot lock while syncing. It
+also syncs the parent directory once to persist the new filename. The writer
+allocates 16 MiB ahead with `FALLOC_FL_KEEP_SIZE` where the filesystem
+supports it, so the file size only ever covers data, and releases the rest at
+close, including after an error. If the card fills or fails during a write,
+the file is cut back to the last whole fragment and still gets its index and
+duration. A writer error closes the file and then fails the next frame write,
+so the backend's close after a failed write does not wait for the card.
+Normal close drains the buffer, waits for the worker's final flush and
+reports any asynchronous I/O error; backends close outside the lock their
+frame thread takes, and a frame thread that must drop a healthy writer uses
+`ca_mp4_close_async`.
 
 Neither interval is a maximum loss window: buffered frames, slow flushes,
 SD-card hardware caches and filesystem damage from a physical power cut can

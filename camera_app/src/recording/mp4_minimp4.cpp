@@ -40,9 +40,10 @@
  * CA_MP4_WRITE_MS, is written at the next frame boundary. */
 #define CA_MP4_STAGE_BYTES (2U * CA_MP4_WRITE_BYTES)
 #define CA_MP4_WRITE_MS 1000U
-#define CA_MP4_SYNC_BYTES (32U * 1024U * 1024U)
-#define CA_MP4_SYNC_MS 5000U
-#define CA_MP4_PREALLOC_BYTES (64U * 1024U * 1024U)
+#define CA_MP4_SYNC_BYTES (16U * 1024U * 1024U)
+#define CA_MP4_SYNC_MS 2000U
+/* After a power cut, vfat keeps the preallocated clusters until repaired. */
+#define CA_MP4_PREALLOC_BYTES (16U * 1024U * 1024U)
 #define CA_MP4_TICK_MS 250U
 #define CA_MP4_DROP_LOG_MS 5000U
 
@@ -69,9 +70,11 @@ struct ca_mp4_file {
      * touches the fields below. */
     uint8_t *stage;
     size_t stage_length, stage_capacity;
-    uint64_t stage_at;   /* file offset of stage[0] */
+    uint64_t stage_at;   /* file offset of stage[0], always a fragment boundary */
+    uint64_t stage_pts;  /* sample time of the fragment at stage_at */
     uint64_t staged_ms;  /* when the oldest staged byte arrived */
     uint64_t end;        /* bytes written to the file itself */
+    int write_error;     /* errno of the muxer's failed output */
     uint64_t unsynced;
     uint64_t sync_requested_ms;
     bool sync_requested;
@@ -99,6 +102,9 @@ struct ca_mp4_file {
     size_t keyframe_count, keyframe_capacity;
     bool pending_key;
     bool index_failed;
+    /* The reserved box shrinks to expose the sidx only once the sidx is on
+     * the card; until then it still covers it. Zero when nothing waits. */
+    uint32_t index_padding;
 };
 #define CA_MP4_INDEX_RESERVE (64U * 1024U)
 #define CA_MP4_SIDX_HEADER 40U
@@ -118,6 +124,8 @@ struct ca_mp4 {
     /* set by the writer thread once its files are closed */
     atomic_int error;
     int close_error;
+    /* set before the queue closes: the writer thread frees everything */
+    bool detached;
     uint64_t dropped_at_open, dropped_logged, drop_logged_ms;
     /* At most one completed file can await its final background flush. */
     struct ca_mp4_file *retired;
@@ -211,15 +219,23 @@ size_t ca_mp4_queue_cost(size_t length)
     return sizeof(struct ca_mp4_frame) + length;
 }
 
-static void drop_locked(struct ca_mp4_queue *queue)
+static void drop_locked(struct ca_mp4_queue *queue, enum ca_mp4_unit unit)
 {
+    queue->frames_dropped++;
+    if (unit == CA_MP4_UNIT_HEADERS) return;
     if (!queue->dropping) queue->drop_events++;
     queue->dropping = true;
-    queue->frames_dropped++;
+}
+
+void ca_mp4_queue_drop(struct ca_mp4_queue *queue)
+{
+    pthread_mutex_lock(&queue->lock);
+    drop_locked(queue, CA_MP4_UNIT_PICTURE);
+    pthread_mutex_unlock(&queue->lock);
 }
 
 int ca_mp4_queue_push(struct ca_mp4_queue *queue, const uint8_t *data, size_t length,
-                      bool idr, const struct ca_metadata *metadata,
+                      enum ca_mp4_unit unit, const struct ca_metadata *metadata,
                       const struct timespec *utc)
 {
     if (length > SIZE_MAX - sizeof(struct ca_mp4_frame)) { errno = EINVAL; return -1; }
@@ -230,13 +246,18 @@ int ca_mp4_queue_push(struct ca_mp4_queue *queue, const uint8_t *data, size_t le
         errno = EPIPE;
         return -1;
     }
-    /* Later frames reference a dropped one until the next IDR. */
-    if ((queue->dropping && !idr) || cost > queue->capacity - queue->bytes) {
-        drop_locked(queue);
+    /* Later pictures reference a dropped one until the next IDR. Resuming
+     * on any IDR that just fits would lose the GOP after it again. */
+    size_t space = queue->capacity - queue->bytes;
+    bool keep = cost <= space;
+    if (queue->dropping && unit != CA_MP4_UNIT_HEADERS)
+        keep = keep && unit == CA_MP4_UNIT_IDR && space >= queue->capacity / 4U;
+    if (!keep) {
+        drop_locked(queue, unit);
         pthread_mutex_unlock(&queue->lock);
         return 0;
     }
-    queue->dropping = false;
+    if (unit != CA_MP4_UNIT_HEADERS) queue->dropping = false;
     queue->bytes += cost;
     if (queue->bytes > queue->high_water) queue->high_water = queue->bytes;
     if (queue->bytes > queue->file_high_water) queue->file_high_water = queue->bytes;
@@ -247,7 +268,7 @@ int ca_mp4_queue_push(struct ca_mp4_queue *queue, const uint8_t *data, size_t le
     pthread_mutex_lock(&queue->lock);
     if (frame == NULL) {
         queue->bytes -= cost;
-        drop_locked(queue);
+        drop_locked(queue, unit);
         pthread_mutex_unlock(&queue->lock);
         return 0;
     }
@@ -255,7 +276,7 @@ int ca_mp4_queue_push(struct ca_mp4_queue *queue, const uint8_t *data, size_t le
     frame->next = NULL;
     frame->data = (uint8_t*)(frame + 1);
     frame->length = length;
-    frame->idr = idr;
+    frame->idr = unit == CA_MP4_UNIT_IDR;
     frame->metadata = *metadata;
     frame->utc = *utc;
     memcpy(frame->data, data, length);
@@ -338,17 +359,18 @@ void ca_mp4_queue_stats(struct ca_mp4_queue *queue, struct ca_mp4_stats *stats,
     pthread_mutex_unlock(&queue->lock);
 }
 
-/* Whether the first picture NAL is an IDR. Stops there rather than scan the
+/* Classified by the first picture NAL. Stops there rather than scan the
  * slice data of every frame on the caller's thread. */
-static bool access_unit_idr(const uint8_t *data, size_t length)
+static enum ca_mp4_unit access_unit_kind(const uint8_t *data, size_t length)
 {
     for (size_t i = 0; i + 3U < length; i++) {
         if (data[i] != 0U || data[i + 1U] != 0U || data[i + 2U] != 1U) continue;
         unsigned type = data[i + 3U] & 31U;
-        if (type >= 1U && type <= 5U) return type == 5U;
+        if (type >= 1U && type <= 5U)
+            return type == 5U ? CA_MP4_UNIT_IDR : CA_MP4_UNIT_PICTURE;
         i += 2U;
     }
-    return false;
+    return CA_MP4_UNIT_HEADERS;
 }
 
 /* The Files endpoint shares this lock only while taking its size snapshot,
@@ -368,38 +390,60 @@ static int write_file(struct ca_mp4_file *writer, const void *data, size_t size,
     return 0;
 }
 
+/* Called only between frames, so every write ends on a whole fragment. */
 static int flush_stage(struct ca_mp4_file *writer)
 {
     if (writer->stage_length == 0U) return 0;
     if (write_file(writer, writer->stage, writer->stage_length, writer->stage_at) < 0) return -1;
     writer->stage_at += writer->stage_length;
     writer->stage_length = 0U;
+    writer->stage_pts = writer->next_pts90k;
     return 0;
 }
 
-/* The muxer appends; only the reserved index leaves a gap, which is zero as
- * a hole would read. Anything else, or no memory, is written directly. */
+/* Forget the output from file offset at, where the fragment for sample time
+ * pts starts: a frame the muxer could not finish, or a stage the card
+ * refused, perhaps after taking part of it. The file then ends on a whole
+ * box, and the index and durations cover only what it holds. */
+static void discard_from(struct ca_mp4_file *writer, uint64_t at, uint64_t pts)
+{
+    if (at <= writer->stage_at) {
+        writer->stage_length = 0U;
+        writer->stage_at = at;
+        if (flock(writer->fd, LOCK_EX) == 0) {
+            (void)ftruncate(writer->fd, (off_t)at);
+            (void)flock(writer->fd, LOCK_UN);
+        }
+        writer->end = at;
+    } else if (at - writer->stage_at < writer->stage_length) {
+        writer->stage_length = (size_t)(at - writer->stage_at);
+    }
+    writer->bytes = at;
+    writer->next_pts90k = pts;
+    while (writer->keyframe_count != 0U &&
+           writer->keyframes[writer->keyframe_count - 1U].offset >= at)
+        writer->keyframe_count--;
+}
+
+/* The muxer only appends; the reserved index leaves a gap, which is zero as
+ * a hole would read. Output is never split across writes mid-fragment, so a
+ * stage that cannot grow fails the recording. */
 static int stage_write(struct ca_mp4_file *writer, const uint8_t *data, size_t size, uint64_t at)
 {
     uint64_t end = writer->stage_at + writer->stage_length;
-    bool staged = at >= writer->stage_at && (at <= end || at - end <= CA_MP4_INDEX_RESERVE);
-    size_t offset = staged ? (size_t)(at - writer->stage_at) : 0U;
-    if (staged && offset + size > writer->stage_capacity) {
+    if (at < writer->stage_at || (at > end && at - end > CA_MP4_INDEX_RESERVE)) {
+        errno = EIO;
+        return -1;
+    }
+    size_t offset = (size_t)(at - writer->stage_at);
+    if (offset + size > writer->stage_capacity) {
         size_t capacity = writer->stage_capacity ? writer->stage_capacity : CA_MP4_STAGE_BYTES;
         while (capacity < offset + size && capacity <= SIZE_MAX / 2U) capacity *= 2U;
         uint8_t *grown = capacity >= offset + size
             ? (uint8_t*)(realloc(writer->stage, capacity)) : NULL;
-        if (grown != NULL) {
-            writer->stage = grown;
-            writer->stage_capacity = capacity;
-        } else {
-            staged = false;
-        }
-    }
-    if (!staged) {
-        if (flush_stage(writer) < 0 || write_file(writer, data, size, at) < 0) return -1;
-        if (at + size > writer->stage_at) writer->stage_at = at + size;
-        return 0;
+        if (grown == NULL) { errno = ENOMEM; return -1; }
+        writer->stage = grown;
+        writer->stage_capacity = capacity;
     }
     if (writer->stage_length == 0U) writer->staged_ms = monotonic_ms();
     if (offset > writer->stage_length)
@@ -464,14 +508,14 @@ static int write_at(int64_t offset, const void *buffer, size_t size, void *opaqu
     struct ca_mp4_file *writer = (struct ca_mp4_file*)(opaque);
     const uint8_t *data = (const uint8_t*)(buffer);
 
-    if (offset < 0) { errno = EINVAL; return 1; }
+    if (offset < 0) { writer->write_error = EINVAL; return 1; }
     uint64_t at = (uint64_t)offset;
     if (writer->shift && at >= writer->index_at) at += writer->shift;
     if (at > writer->hard_limit || size > writer->hard_limit - at) {
-        errno = EFBIG;
+        writer->write_error = EFBIG;
         return 1;
     }
-    if (stage_write(writer, data, size, at) < 0) return 1;
+    if (stage_write(writer, data, size, at) < 0) { writer->write_error = errno; return 1; }
     uint64_t end = at + size;
     if (end > writer->bytes) writer->bytes = end;
     if (size >= 8 && !memcmp(data + 4, "moof", 4) && writer->pending_key) {
@@ -481,8 +525,11 @@ static int write_at(int64_t offset, const void *buffer, size_t size, void *opaqu
         uint8_t box[8];
         put32(box, CA_MP4_INDEX_RESERVE);
         memcpy(box + 4, "free", 4);
-        if (end + CA_MP4_INDEX_RESERVE > writer->hard_limit) { errno = EFBIG; return 1; }
-        if (stage_write(writer, box, sizeof(box), end) < 0) return 1;
+        if (end + CA_MP4_INDEX_RESERVE > writer->hard_limit) {
+            writer->write_error = EFBIG;
+            return 1;
+        }
+        if (stage_write(writer, box, sizeof(box), end) < 0) { writer->write_error = errno; return 1; }
         locate_headers(writer, data, size, at);
         writer->index_at = end;
         writer->shift = CA_MP4_INDEX_RESERVE;
@@ -491,10 +538,10 @@ static int write_at(int64_t offset, const void *buffer, size_t size, void *opaqu
     return 0;
 }
 
-/* Shrink the reserved box and end it with a sidx of keyframe-aligned
- * references covering the file, so the first fragment directly follows the
- * index (Chrome ignores an index whose first_offset skips padding). Then
- * give the headers the final duration. */
+/* End the reserved box with a sidx of keyframe-aligned references covering
+ * the file, so the first fragment directly follows the index (Chrome ignores
+ * an index whose first_offset skips padding), and give the headers the final
+ * duration. Shrinking the box to expose the sidx waits for expose_index. */
 static int write_index(struct ca_mp4_file *writer)
 {
     if (!writer->shift || writer->index_failed || writer->keyframe_count == 0) return 0;
@@ -524,14 +571,11 @@ static int write_index(struct ca_mp4_file *writer)
         put32(entry + 4, (uint32_t)duration);
         put32(entry + 8, 0x90000000U); /* starts with a type 1 SAP at delta 0 */
     }
-    uint8_t padding[8];
-    put32(padding, (uint32_t)(CA_MP4_INDEX_RESERVE - sidx_size));
-    memcpy(padding + 4, "free", 4);
     int result = write_file(writer, box, sidx_size,
                             writer->index_at + CA_MP4_INDEX_RESERVE - sidx_size);
-    if (result == 0) result = write_file(writer, padding, sizeof(padding), writer->index_at);
     free(box);
     if (result < 0) return -1;
+    writer->index_padding = (uint32_t)(CA_MP4_INDEX_RESERVE - sidx_size);
     uint64_t media = writer->next_pts90k;
     uint32_t ts = writer->media_timescale ? writer->media_timescale : 90000U;
     uint64_t movie = media * writer->movie_timescale / ts;
@@ -546,6 +590,19 @@ static int write_index(struct ca_mp4_file *writer)
         if (writer->tkhd_at && write_file(writer, value, 4, writer->tkhd_at + 28) < 0) return -1;
     }
     return 0;
+}
+
+/* Only once the sidx is synced: a shrunk header on the card without the sidx
+ * after it would leave zeros where a power cut expects a box. */
+static int expose_index(struct ca_mp4_file *writer)
+{
+    if (!writer->index_padding) return 0;
+    uint8_t padding[8];
+    put32(padding, writer->index_padding);
+    memcpy(padding + 4, "free", 4);
+    writer->index_padding = 0U;
+    if (write_file(writer, padding, sizeof(padding), writer->index_at) < 0) return -1;
+    return fdatasync(writer->fd);
 }
 
 static int recording_directory(const char *path)
@@ -767,9 +824,17 @@ static int write_recording_frame(struct ca_mp4_file *writer, const uint8_t *anne
     while (ca_annexb_next(annex_b, length, &offset, &nal, &nal_length)) {
         if (nal_length != 0U && (annex_b[nal] & 31U) == 5U) writer->pending_key = true;
     }
+    uint64_t frame_at = writer->bytes;
+    writer->write_error = 0;
     int result = write_h264(&writer->h264, writer->frame_duration, annex_b, length,
                             writer->next_pts90k, json, &json_length, metadata, utc);
-    if (result <= 0) return result;
+    if (result < 0) {
+        int error = writer->write_error ? writer->write_error : errno;
+        discard_from(writer, frame_at, writer->next_pts90k);
+        errno = error;
+        return -1;
+    }
+    if (result == 0) return 0;
     writer->next_pts90k += writer->frame_duration;
     return 1;
 }
@@ -816,15 +881,22 @@ static void preallocate(struct ca_mp4_file *writer)
 }
 
 /* Large writes at frame boundaries, and a data sync after the first write,
- * then every CA_MP4_SYNC_BYTES or CA_MP4_SYNC_MS. */
+ * then every CA_MP4_SYNC_BYTES or CA_MP4_SYNC_MS. A new file's headers and
+ * first IDR are written and synced, with its directory entry, at once. */
 static int file_tick(struct ca_mp4_file *writer)
 {
     int sync_error = atomic_load(&writer->sync_error);
     if (sync_error != 0) { errno = sync_error; return -1; }
     uint64_t now = monotonic_ms();
-    if (writer->stage_length >= CA_MP4_WRITE_BYTES ||
+    if ((writer->frames != 0U && !writer->sync_requested) ||
+        writer->stage_length >= CA_MP4_WRITE_BYTES ||
         (writer->stage_length != 0U && now - writer->staged_ms >= CA_MP4_WRITE_MS)) {
-        if (flush_stage(writer) < 0) return -1;
+        if (flush_stage(writer) < 0) {
+            int error = errno;
+            discard_from(writer, writer->stage_at, writer->stage_pts);
+            errno = error;
+            return -1;
+        }
         preallocate(writer);
     }
     if (writer->unsynced != 0U &&
@@ -843,25 +915,31 @@ static int file_tick(struct ca_mp4_file *writer)
     return 0;
 }
 
-/* Write what remains, then patch the index and durations at their offsets. */
+/* Write what remains, then patch the index and durations at their offsets.
+ * Those patches land in space the file already has, so a full card still
+ * gets them for the data it kept. */
 static int file_finish(struct ca_mp4_file *writer)
 {
     if (writer->finished) return 0;
     writer->finished = true;
-    int result = 0;
+    int error = 0;
     mp4_h26x_write_close(&writer->h264);
-    if (MP4E_close(writer->mux) != MP4E_STATUS_OK) result = -1;
-    if (flush_stage(writer) < 0) result = -1;
-    if (result == 0 && write_index(writer) < 0) result = -1;
+    if (MP4E_close(writer->mux) != MP4E_STATUS_OK) error = EIO;
+    if (flush_stage(writer) < 0) {
+        if (!error) error = errno ? errno : EIO;
+        discard_from(writer, writer->stage_at, writer->stage_pts);
+    }
+    if (write_index(writer) < 0 && !error) error = errno ? errno : EIO;
     /* return the space allocated past the data */
-    if (result == 0 && writer->preallocated && ftruncate(writer->fd, (off_t)writer->end) < 0)
-        result = -1;
+    if (writer->preallocated && ftruncate(writer->fd, (off_t)writer->end) < 0 && !error)
+        error = errno ? errno : EIO;
     free(writer->keyframes);
     writer->keyframes = NULL;
     free(writer->stage);
     writer->stage = NULL;
     writer->stage_length = 0U;
-    return result;
+    if (error) { errno = error; return -1; }
+    return 0;
 }
 
 static int file_close(struct ca_mp4_file *writer)
@@ -881,16 +959,21 @@ static int file_close(struct ca_mp4_file *writer)
     }
     int sync_error = atomic_load(&writer->sync_error);
     if (sync_error != 0) error = sync_error;
+    else if (expose_index(writer) < 0 && error == 0) error = errno ? errno : EIO;
     if (close(writer->fd) < 0 && error == 0) error = errno ? errno : EIO;
     if (writer->directory_fd >= 0) close(writer->directory_fd);
     unsigned percent = writer->capacity
         ? (unsigned)((uint64_t)writer->high_water * 100U / writer->capacity) : 0U;
-    fprintf(stderr, "recording closed %s: %" PRIu64 " frames written, %" PRIu64
-            " dropped, buffer high-water %zu bytes (%u%%), %" PRIu64
-            " bytes, max write %u ms, max sync %u ms%s%s\n",
-            writer->path, writer->frames, writer->dropped, writer->high_water, percent,
-            writer->end, writer->max_write_ms, max_sync_ms,
-            error ? ", error: " : "", error ? strerror(error) : "");
+    /* fewer than were muxed if a failed write was cut back */
+    uint64_t kept = writer->frame_duration
+        ? writer->next_pts90k / writer->frame_duration : writer->frames;
+    if (writer->frames != 0U)
+        fprintf(stderr, "recording closed %s: %" PRIu64 " frames written, %" PRIu64
+                " dropped, buffer high-water %zu bytes (%u%%), %" PRIu64
+                " bytes, max write %u ms, max sync %u ms%s%s\n",
+                writer->path, kept, writer->dropped, writer->high_water, percent,
+                writer->end, writer->max_write_ms, max_sync_ms,
+                error ? ", error: " : "", error ? strerror(error) : "");
     free(writer->path);
     delete writer;
     if (error != 0) { errno = error; return -1; }
@@ -1066,6 +1149,20 @@ static void log_drops(struct ca_mp4 *writer)
     writer->drop_logged_ms = now;
 }
 
+static int writer_error(struct ca_mp4 *writer)
+{
+    int error = atomic_load(&writer->error);
+    return error ? error : writer->close_error;
+}
+
+static void destroy_writer(struct ca_mp4 *writer)
+{
+    ca_mp4_queue_destroy(&writer->queue);
+    free(writer->headers);
+    free(writer->path);
+    delete writer;
+}
+
 /* All file I/O after open: mux, write, roll, sync requests and close. After
  * an error, frames are discarded until close. */
 static void *write_frames(void *opaque)
@@ -1092,6 +1189,13 @@ static void *write_frames(void *opaque)
         writer->file = NULL;
         if (reap_file(writer, true) < 0 && !error) error = errno ? errno : EIO;
         writer->close_error = error;
+    }
+    if (writer->detached) {
+        int error = writer_error(writer);
+        if (error)
+            fprintf(stderr, "recording %s closed in the background, error: %s\n",
+                    writer->path, strerror(error));
+        destroy_writer(writer);
     }
     return NULL;
 }
@@ -1169,17 +1273,26 @@ int ca_mp4_write_h264(struct ca_mp4 *writer, const uint8_t *annex_b,
 {
     (void)pts;
     (void)key_frame;
-    if (!writer || !annex_b || !length || length > INT_MAX / 2U) { errno = EINVAL; return -1; }
+    if (!writer || !annex_b) { errno = EINVAL; return -1; }
     int error = atomic_load(&writer->error);
     if (error) { errno = error; return -1; }
+    /* Bad input loses this frame, not the recording: every backend closes
+     * a failed recording on its frame thread. */
+    if (!length || length > INT_MAX / 2U) {
+        ca_mp4_queue_drop(&writer->queue);
+        return 0;
+    }
     /* Telemetry belongs to the frame's arrival, not to when it is written. */
     struct ca_metadata metadata;
     struct timespec utc;
     ca_metadata_snapshot(&metadata);
     metadata.hfov_deg = hfov_deg;
-    if (clock_gettime(CLOCK_REALTIME, &utc) < 0) return -1;
+    if (clock_gettime(CLOCK_REALTIME, &utc) < 0) {
+        ca_mp4_queue_drop(&writer->queue);
+        return 0;
+    }
     /* Real IDRs, not the caller's flag, end a run of dropped frames. */
-    if (ca_mp4_queue_push(&writer->queue, annex_b, length, access_unit_idr(annex_b, length),
+    if (ca_mp4_queue_push(&writer->queue, annex_b, length, access_unit_kind(annex_b, length),
                           &metadata, &utc) < 0) return -1;
     return 0;
 }
@@ -1189,14 +1302,19 @@ int ca_mp4_close(struct ca_mp4 *writer)
     if (!writer) return 0;
     ca_mp4_queue_close(&writer->queue);
     pthread_join(writer->thread, NULL);
-    int error = atomic_load(&writer->error);
-    if (!error) error = writer->close_error;
-    ca_mp4_queue_destroy(&writer->queue);
-    free(writer->headers);
-    free(writer->path);
-    delete writer;
+    int error = writer_error(writer);
+    destroy_writer(writer);
     if (error) { errno = error; return -1; }
     return 0;
+}
+
+void ca_mp4_close_async(struct ca_mp4 *writer)
+{
+    if (!writer) return;
+    writer->detached = true;
+    (void)pthread_detach(writer->thread);
+    /* the writer thread may free the writer once the queue is closed */
+    ca_mp4_queue_close(&writer->queue);
 }
 
 void ca_mp4_get_stats(struct ca_mp4 *writer, struct ca_mp4_stats *stats)

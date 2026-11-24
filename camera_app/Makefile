@@ -829,8 +829,14 @@ $(MP4_WRITER_TEST_TARGET): tests/test_mp4_writer.cpp src/recording/mp4_minimp4.c
 		-Wl,--wrap=ftruncate64 -Wl,--wrap=fallocate64 -Wl,--wrap=fstatfs64 -lpthread -lm
 
 .PHONY: recording-test
-recording-test: $(MP4_TEST_TARGET) $(MP4_SYNC_TEST_TARGET) $(MP4_ROLLOVER_TEST_TARGET)
+recording-test: $(MP4_TEST_TARGET) $(MP4_SYNC_TEST_TARGET) $(MP4_ROLLOVER_TEST_TARGET) \
+                $(MP4_WRITER_TEST_TARGET)
 	python3 tests/test_mp4_rollover.py --large
+	ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=size=320x240:rate=10 \
+		-t 3 -c:v libx264 -x264-params aud=1:bframes=0:keyint=10:min-keyint=10:scenecut=0 \
+		-pix_fmt yuv420p -f h264 -y tests/test_writer.h264
+	./$(MP4_WRITER_TEST_TARGET) tests/test_writer.h264
+	rm -f tests/test_writer.h264
 
 $(THERMAL_TEST_TARGET): tests/test_thermal.cpp $(BACKEND_DIR)/thermal.cpp src/log.cpp include/camera_app/thermal.h
 	$(call progress,Linking $@)
@@ -951,7 +957,7 @@ clean:
 	rm -f tests/test_support_mavlink tests/test_thermal_monitor $(MP4_SYNC_TEST_TARGET) $(MP4_ROLLOVER_TEST_TARGET) $(MP4_WRITER_TEST_TARGET)
 	rm -f tests/test_system_stats tests/test_binlog_sys tests/test_manual_control $(TARGET) $(COMMON_SOURCES:.cpp=.o) $(COMMON_SOURCES:.cpp=.d) $(TEST_TARGET) $(MAVLINK_TEST_TARGET) $(MP4_TEST_TARGET) $(E5739_TEST_TARGET) $(THERMAL_TEST_TARGET) $(RAW_THERMAL_TEST_TARGET) $(RAW_THERMAL_SERVER_TEST_TARGET) $(LIVE_VIDEO_SERVER_TEST_TARGET) $(FRAME_SOCKET_TEST_TARGET) $(VIDEO_METADATA_TEST_TARGET) $(STILL_TEST_TARGET) $(AUTOFOCUS_TEST_TARGET) $(CONFIG_TEST_TARGET) $(TARGETING_TEST_TARGET) $(MT11_IMX586_TEST_TARGET) $(HOST_TARGET) $(A8_HOST_TARGET) $(RPI_HOST_TARGET)
 	rm -f tests/test.h264 tests/test.mp4 tests/test.mp4.fragmented \
-		tests/test.ffprobe.err tests/test.fragmented.ffprobe.err
+		tests/test.ffprobe.err tests/test.fragmented.ffprobe.err tests/test_writer.h264
 	rm -rf build
 
 -include $(OBJECTS:.o=.d) $(SITL_APP_OBJECTS:.o=.d) $(SITL_RTSP_OBJECTS:.o=.d)

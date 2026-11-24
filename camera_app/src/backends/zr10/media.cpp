@@ -432,11 +432,18 @@ int APC_Media_ZR10::set_recording(bool active)
         (void)ca_zr10_venc_request_idr(CA_ZR10_RECORD_VENC);
         ca_log("recording started %s", media->recording_path);
     } else {
-        if (ca_mp4_close(media->mp4) < 0) result = -1;
+        struct ca_mp4 *mp4 = media->mp4;
+        char path[sizeof(media->recording_path)];
         media->mp4 = NULL;
         atomic_store(&media->recording, false);
         media->recording_wait_keyframe = false;
-        ca_log("recording stopped %s", media->recording_path);
+        memcpy(path, media->recording_path, sizeof(path));
+        pthread_mutex_unlock(&media->lock);
+        // closing drains the recording buffer and syncs the file; the capture
+        // thread must not wait on it for the lock
+        if (ca_mp4_close(mp4) < 0) result = -1;
+        ca_log("recording stopped %s", path);
+        return result;
     }
     pthread_mutex_unlock(&media->lock);
     return result;

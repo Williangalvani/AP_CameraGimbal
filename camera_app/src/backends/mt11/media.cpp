@@ -311,7 +311,10 @@ static void consume_frame(struct APC_Media_MT11_State *media, unsigned channel,
         ca_log("recording stopped after channel %u MP4 write failure: %s",
                channel, strerror(errno));
         for (unsigned i = 0; i < 2U; i++) {
-            (void)ca_mp4_close(media->mp4[i]);
+            // the failed writer's files are already closed; the other may
+            // still be writing its buffer to the card
+            if (i == recording_channel) (void)ca_mp4_close(media->mp4[i]);
+            else ca_mp4_close_async(media->mp4[i]);
             media->mp4[i] = NULL;
         }
         (void)ca_thermal_stream_recording(media->thermal_stream, false, nullptr);
@@ -880,17 +883,21 @@ int APC_Media_MT11::set_recording(bool active)
                media->recording_path[0], media->recording_path[1]);
     } else {
         int result = ca_thermal_stream_recording(media->thermal_stream, false, nullptr);
-        for (unsigned channel = 0; channel < 2U; channel++) {
-            if (ca_mp4_close(media->mp4[channel]) < 0) result = -1;
-            media->mp4[channel] = NULL;
-        }
+        struct ca_mp4 *mp4[2] = {media->mp4[0], media->mp4[1]};
+        char paths[2][PATH_MAX];
+        media->mp4[0] = media->mp4[1] = NULL;
         atomic_store(&media->recording, false);
         (void)set_record_path_locked(media, false);
         media->recording_wait_keyframe[0] = false;
         media->recording_wait_keyframe[1] = false;
-        ca_log("recording stopped RGB=%s thermal=%s",
-               media->recording_path[0], media->recording_path[1]);
+        memcpy(paths, media->recording_path, sizeof(paths));
         pthread_mutex_unlock(&media->lock);
+        // closing drains the recording buffers and syncs the files; the
+        // capture thread must not wait on it for the lock
+        for (unsigned channel = 0; channel < 2U; channel++) {
+            if (ca_mp4_close(mp4[channel]) < 0) result = -1;
+        }
+        ca_log("recording stopped RGB=%s thermal=%s", paths[0], paths[1]);
         return result;
     }
     pthread_mutex_unlock(&media->lock);

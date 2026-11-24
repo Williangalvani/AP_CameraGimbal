@@ -233,11 +233,13 @@ static int write_file_all(int fd, const uint8_t *data, size_t length)
 }
 
 #ifdef CAMERA_APP_SITL
-static int close_sitl_recording(struct APC_Media_SITL_State *media)
+/* Hands over the writers, which the caller closes once it no longer holds
+ * record_lock: closing drains their buffers and syncs. */
+static int stop_sitl_recording(struct APC_Media_SITL_State *media, struct ca_mp4 *closing[2])
 {
     int result = ca_thermal_stream_recording(media->thermal_stream, false, nullptr);
     for (unsigned i = 0U; i < 2U; i++) {
-        if (ca_mp4_close(media->mp4[i]) < 0) result = -1;
+        closing[i] = media->mp4[i];
         media->mp4[i] = NULL;
     }
     atomic_store(&media->sitl_recording, false);
@@ -562,7 +564,14 @@ static void *video_thread(void *opaque)
                         ca_mp4_write_h264(media->mp4[record], data, length,
                                           pts, key_frame, record_hfov) < 0) {
                         ca_log("SITL recording write failed: %s", strerror(errno));
-                        (void)close_sitl_recording(media);
+                        struct ca_mp4 *closing[2];
+                        (void)stop_sitl_recording(media, closing);
+                        /* The failed writer's file is already closed; the
+                         * other may still be writing to the card. */
+                        for (unsigned i = 0U; i < 2U; i++) {
+                            if (i == record) (void)ca_mp4_close(closing[i]);
+                            else ca_mp4_close_async(closing[i]);
+                        }
                     }
                 }
                 pthread_mutex_unlock(&media->record_lock);
@@ -729,9 +738,10 @@ int APC_Media_SITL::set_recording(bool active)
 #ifdef CAMERA_APP_SITL
     if (media->video_thread_started) {
         int result = 0;
+        struct ca_mp4 *closing[2] = {NULL, NULL};
         pthread_mutex_lock(&media->record_lock);
         if (active == atomic_load(&media->sitl_recording)) goto done;
-        if (!active) { result = close_sitl_recording(media); goto done; }
+        if (!active) { result = stop_sitl_recording(media, closing); goto done; }
         if (mkdir(media->record_root, 0755) < 0 && errno != EEXIST) { result = -1; goto done; }
         /* Recording encoders always produce H.264, independently of live codecs. */
         for (unsigned i = 0U; i < media->record_channels; i++) {
@@ -753,10 +763,16 @@ int APC_Media_SITL::set_recording(bool active)
         }
         if (result == 0) result = ca_recorder_set(&media->recorder, true);
         if (result == 0) result = ca_thermal_stream_recording(media->thermal_stream, true, media->recording_path[0]);
-        if (result < 0) (void)close_sitl_recording(media);
+        if (result < 0) (void)stop_sitl_recording(media, closing);
         else atomic_store(&media->sitl_recording, true);
     done:
         pthread_mutex_unlock(&media->record_lock);
+        int saved_errno = errno;
+        for (unsigned i = 0U; i < 2U; i++) {
+            if (ca_mp4_close(closing[i]) < 0 && !active) result = -1;
+        }
+        /* a failed start reports its own error, not the cleanup's */
+        if (active) errno = saved_errno;
         return result;
     }
 #endif
@@ -1178,7 +1194,9 @@ void APC_Media_SITL::shutdown()
     ca_sitl_terrain_interrupt(media->terrain);
     if (media->video_thread_started) pthread_join(media->video_thread, NULL);
     ca_sitl_terrain_close(media->terrain);
-    (void)close_sitl_recording(media);
+    struct ca_mp4 *closing[2];
+    (void)stop_sitl_recording(media, closing);
+    for (unsigned i = 0U; i < 2U; i++) (void)ca_mp4_close(closing[i]);
     ca_thermal_stream_close(media->thermal_stream);
     media->thermal_stream = nullptr;
     pthread_mutex_destroy(&media->record_lock);

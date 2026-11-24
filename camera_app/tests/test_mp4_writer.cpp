@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
+#include <limits.h>
 #include <pthread.h>
 #include "apcam/atomic.h"
 #include <stdio.h>
@@ -33,6 +34,10 @@ static pthread_t frame_thread;
 static bool hold_writes;
 static unsigned stall_ms;
 static int fail_writes;
+/* Writes within the file succeed; one that extends it takes half its data,
+ * then nothing more fits. */
+static bool card_full, card_filled;
+static int fail_syncs;
 static unsigned pwrite_calls, writes_entered, large_writes;
 static uint64_t pwrite_bytes;
 static bool fat;
@@ -52,6 +57,15 @@ extern "C" ssize_t __wrap_pwrite64(int fd, const void *data, size_t size, off64_
     while (hold_writes) pthread_cond_wait(&changed, &lock);
     int fail = fail_writes;
     unsigned stall = stall_ms;
+    if (card_full) {
+        struct stat st;
+        assert(fstat(fd, &st) == 0);
+        if ((uint64_t)offset + size > (uint64_t)st.st_size) {
+            if (card_filled || size < 2) fail = ENOSPC;
+            else size /= 2;
+            card_filled = true;
+        }
+    }
     if (!fail) {
         pwrite_calls++;
         pwrite_bytes += size;
@@ -67,6 +81,10 @@ extern "C" int __real_fdatasync(int fd);
 extern "C" int __wrap_fdatasync(int fd)
 {
     no_storage_on_frame_thread();
+    pthread_mutex_lock(&lock);
+    int fail = fail_syncs;
+    pthread_mutex_unlock(&lock);
+    if (fail) { errno = fail; return -1; }
     return __real_fdatasync(fd);
 }
 
@@ -81,6 +99,10 @@ extern "C" int __real_fallocate64(int fd, int mode, off64_t offset, off64_t leng
 extern "C" int __wrap_fallocate64(int fd, int mode, off64_t offset, off64_t length)
 {
     no_storage_on_frame_thread();
+    pthread_mutex_lock(&lock);
+    bool full = card_full;
+    pthread_mutex_unlock(&lock);
+    if (full) { errno = ENOSPC; return -1; }
     return __real_fallocate64(fd, mode, offset, length);
 }
 
@@ -140,12 +162,15 @@ static uint64_t write_frame(struct ca_mp4 *writer, unsigned n, int *result)
     return now_us() - started;
 }
 
+/* Fails rather than hangs if the writer stops. */
 static void drain(struct ca_mp4 *writer)
 {
     struct ca_mp4_stats stats;
+    uint64_t deadline = now_us() + 10000000U;
     for (;;) {
         ca_mp4_get_stats(writer, &stats);
         if (stats.buffer_bytes == 0) return;
+        assert(now_us() < deadline);
         usleep(1000);
     }
 }
@@ -161,26 +186,88 @@ static std::vector<uint8_t> read_file(const char *path)
     return data;
 }
 
+static uint32_t get32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+struct layout {
+    bool tiled;  /* top-level boxes cover the file exactly */
+    bool moov;
+    unsigned sidx, moofs;
+    uint32_t timescale, duration; /* from the mvhd */
+};
+
+static layout parse_file(const char *path)
+{
+    std::vector<uint8_t> data = read_file(path);
+    layout file = {};
+    size_t at = 0;
+    while (at < data.size()) {
+        if (data.size() - at < 8) return file;
+        uint32_t size = get32(&data[at]);
+        if (size < 8 || size > data.size() - at) return file;
+        if (at == 0 && memcmp(&data[4], "ftyp", 4)) return file;
+        if (!memcmp(&data[at + 4], "moov", 4)) {
+            file.moov = true;
+            for (size_t child = at + 8; child + 32 <= at + size;) {
+                uint32_t length = get32(&data[child]);
+                if (length < 8 || length > at + size - child) break;
+                if (!memcmp(&data[child + 4], "mvhd", 4) && data[child + 8] == 0) {
+                    file.timescale = get32(&data[child + 20]);
+                    file.duration = get32(&data[child + 24]);
+                }
+                child += length;
+            }
+        }
+        if (!memcmp(&data[at + 4], "sidx", 4)) file.sidx++;
+        if (!memcmp(&data[at + 4], "moof", 4)) file.moofs++;
+        at += size;
+    }
+    file.tiled = true;
+    return file;
+}
+
 /* Top-level boxes must tile the file exactly; one moof per frame. */
 static unsigned count_fragments(const char *path)
 {
+    layout file = parse_file(path);
+    assert(file.tiled && file.moov && file.sidx == 1);
+    return file.moofs;
+}
+
+/* The fixture frame number in each sample's telemetry, and whether the
+ * sample is an IDR. */
+struct sample { long frame; bool idr; };
+static const long LAT_BASE = -353632610;
+
+static std::vector<sample> samples(const char *path)
+{
     std::vector<uint8_t> data = read_file(path);
-    size_t at = 0;
-    unsigned moofs = 0, sidx = 0;
-    bool moov = false;
-    while (at < data.size()) {
-        assert(data.size() - at >= 8);
-        uint64_t size = ((uint64_t)data[at] << 24) | ((uint64_t)data[at + 1] << 16) |
-                        ((uint64_t)data[at + 2] << 8) | data[at + 3];
+    std::vector<sample> result;
+    static const char key[] = "\"lat_e7\":";
+    for (size_t at = 0; at + 8 <= data.size(); at += get32(&data[at])) {
+        uint32_t size = get32(&data[at]);
         assert(size >= 8 && size <= data.size() - at);
-        if (at == 0) assert(!memcmp(&data[4], "ftyp", 4));
-        if (!memcmp(&data[at + 4], "moov", 4)) moov = true;
-        if (!memcmp(&data[at + 4], "sidx", 4)) sidx++;
-        if (!memcmp(&data[at + 4], "moof", 4)) moofs++;
-        at += (size_t)size;
+        if (memcmp(&data[at + 4], "mdat", 4)) continue;
+        sample s = {LONG_MIN, false};
+        for (size_t nal = at + 8; nal + 4 < at + size;) {
+            uint32_t length = get32(&data[nal]);
+            assert(length > 0 && length <= at + size - nal - 4);
+            const uint8_t *p = &data[nal + 4];
+            if ((p[0] & 31) == 5) s.idr = true;
+            if ((p[0] & 31) == 6) {
+                std::string text((const char*)p, length);
+                size_t found = text.find(key);
+                if (found != std::string::npos)
+                    s.frame = strtol(text.c_str() + found + sizeof(key) - 1, NULL, 10) - LAT_BASE;
+            }
+            nal += 4 + length;
+        }
+        assert(s.frame != LONG_MIN);
+        result.push_back(s);
     }
-    assert(moov && sidx == 1);
-    return moofs;
+    return result;
 }
 
 static std::string run(const std::string &command)
@@ -232,31 +319,33 @@ static void test_queue(void)
     for (unsigned i = 0; i < 4; i++) memset(data[i], (int)i + 1, sizeof(data[i]));
     assert(ca_mp4_queue_init(&queue, 3 * cost) == 0);
 
+    const enum ca_mp4_unit IDR = CA_MP4_UNIT_IDR, P = CA_MP4_UNIT_PICTURE,
+                           HEADERS = CA_MP4_UNIT_HEADERS;
     metadata.lat_e7 = 11;
-    assert(ca_mp4_queue_push(&queue, data[0], sizeof(data[0]), true, &metadata, &utc) == 1);
+    assert(ca_mp4_queue_push(&queue, data[0], sizeof(data[0]), IDR, &metadata, &utc) == 1);
     metadata.lat_e7 = 12;
-    assert(ca_mp4_queue_push(&queue, data[1], sizeof(data[1]), false, &metadata, &utc) == 1);
+    assert(ca_mp4_queue_push(&queue, data[1], sizeof(data[1]), P, &metadata, &utc) == 1);
     ca_mp4_queue_stats(&queue, &stats, NULL);
     assert(stats.buffer_bytes == 2 * cost && stats.buffer_high_water == 2 * cost);
     assert(stats.buffer_capacity == 3 * cost);
-    assert(ca_mp4_queue_push(&queue, data[2], sizeof(data[2]), false, &metadata, &utc) == 1);
+    assert(ca_mp4_queue_push(&queue, data[2], sizeof(data[2]), P, &metadata, &utc) == 1);
 
     /* Full: the frame that does not fit, and every frame until an IDR that
      * does, is dropped; one event. */
-    assert(ca_mp4_queue_push(&queue, data[3], 1, false, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, data[3], 1, P, &metadata, &utc) == 0);
     assert(ca_mp4_queue_pop(&queue, 0, &frame) == 1);
     assert(frame->idr && frame->length == sizeof(data[0]) && frame->data[999] == 1);
     assert(frame->metadata.lat_e7 == 11 && frame->utc.tv_sec == utc.tv_sec &&
            frame->utc.tv_nsec == utc.tv_nsec);
     ca_mp4_queue_release(&queue, frame, true);
-    assert(ca_mp4_queue_push(&queue, data[3], sizeof(data[3]), false, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, data[3], sizeof(data[3]), P, &metadata, &utc) == 0);
     uint8_t large[2000] = {};
-    assert(ca_mp4_queue_push(&queue, large, sizeof(large), true, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, large, sizeof(large), IDR, &metadata, &utc) == 0);
     ca_mp4_queue_stats(&queue, &stats, NULL);
     assert(stats.frames_dropped == 3 && stats.drop_events == 1 && stats.frames_written == 1);
     assert(stats.buffer_bytes == 2 * cost);
-    assert(ca_mp4_queue_push(&queue, data[3], sizeof(data[3]), true, &metadata, &utc) == 1);
-    assert(ca_mp4_queue_push(&queue, data[0], 1, false, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, data[3], sizeof(data[3]), IDR, &metadata, &utc) == 1);
+    assert(ca_mp4_queue_push(&queue, data[0], 1, P, &metadata, &utc) == 0);
     ca_mp4_queue_stats(&queue, &stats, NULL);
     assert(stats.frames_dropped == 4 && stats.drop_events == 2);
     assert(stats.buffer_bytes == 3 * cost && stats.buffer_high_water == 3 * cost);
@@ -276,16 +365,53 @@ static void test_queue(void)
 
     /* A frame larger than the whole buffer never fits. */
     uint8_t huge[4000] = {};
-    assert(ca_mp4_queue_push(&queue, huge, sizeof(huge), true, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, huge, sizeof(huge), IDR, &metadata, &utc) == 0);
     assert(ca_mp4_queue_pop(&queue, 10, &frame) == 0 && frame == NULL);
-    assert(ca_mp4_queue_push(&queue, data[0], sizeof(data[0]), true, &metadata, &utc) == 1);
+    assert(ca_mp4_queue_push(&queue, data[0], sizeof(data[0]), IDR, &metadata, &utc) == 1);
     ca_mp4_queue_close(&queue);
-    assert(ca_mp4_queue_push(&queue, data[0], 1, true, &metadata, &utc) < 0 && errno == EPIPE);
+    assert(ca_mp4_queue_push(&queue, data[0], 1, IDR, &metadata, &utc) < 0 && errno == EPIPE);
     assert(ca_mp4_queue_pop(&queue, 0, &frame) == 1);
     ca_mp4_queue_release(&queue, frame, true);
     assert(ca_mp4_queue_pop(&queue, 1000, &frame) == -1);
     ca_mp4_queue_destroy(&queue);
-    puts("PASS recording buffer: order, accounting, drops until an IDR that fits, high-water");
+
+    /* While dropping, an IDR that fits resumes only with a quarter of the
+     * buffer free. Units without a picture are kept whenever they fit and
+     * neither end nor start a run. */
+    const size_t small = ca_mp4_queue_cost(100);
+    assert(ca_mp4_queue_init(&queue, 8 * small) == 0);
+    for (unsigned i = 0; i < 8; i++)
+        assert(ca_mp4_queue_push(&queue, data[0], 100, i ? P : IDR, &metadata, &utc) == 1);
+    assert(ca_mp4_queue_push(&queue, data[0], 100, P, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_pop(&queue, 0, &frame) == 1);
+    ca_mp4_queue_release(&queue, frame, true);
+    assert(ca_mp4_queue_push(&queue, data[0], 100, IDR, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, data[1], 100, HEADERS, &metadata, &utc) == 1);
+    for (unsigned i = 0; i < 2; i++) {
+        assert(ca_mp4_queue_pop(&queue, 0, &frame) == 1);
+        ca_mp4_queue_release(&queue, frame, true);
+    }
+    assert(ca_mp4_queue_push(&queue, data[0], 100, P, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, data[0], 100, IDR, &metadata, &utc) == 1);
+    ca_mp4_queue_stats(&queue, &stats, NULL);
+    assert(stats.frames_dropped == 3 && stats.drop_events == 1);
+    assert(ca_mp4_queue_push(&queue, data[1], 200, HEADERS, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, data[0], 100, P, &metadata, &utc) == 1);
+    ca_mp4_queue_stats(&queue, &stats, NULL);
+    assert(stats.frames_dropped == 4 && stats.drop_events == 1 && stats.buffer_bytes == 8 * small);
+    /* a frame the producer lost starts a run like one that did not fit */
+    ca_mp4_queue_drop(&queue);
+    for (unsigned i = 0; i < 4; i++) {
+        assert(ca_mp4_queue_pop(&queue, 0, &frame) == 1);
+        ca_mp4_queue_release(&queue, frame, true);
+    }
+    assert(ca_mp4_queue_push(&queue, data[0], 100, P, &metadata, &utc) == 0);
+    assert(ca_mp4_queue_push(&queue, data[0], 100, IDR, &metadata, &utc) == 1);
+    ca_mp4_queue_stats(&queue, &stats, NULL);
+    assert(stats.frames_dropped == 6 && stats.drop_events == 2);
+    ca_mp4_queue_destroy(&queue);
+    puts("PASS recording buffer: order, accounting, drops until an IDR that fits with a quarter "
+         "free, headers kept, high-water");
 }
 
 /* A stalled card never delays the caller; nothing is lost while it fits. */
@@ -312,7 +438,8 @@ static void test_stalled_card(void)
     pthread_mutex_lock(&lock);
     assert(pwrite_calls == 0);
     pthread_mutex_unlock(&lock);
-    assert(stats.frames_written == 1 && stats.frames_dropped == 0 && stats.buffer_bytes > 0);
+    /* the first IDR's own write is the one held */
+    assert(stats.frames_written == 0 && stats.frames_dropped == 0 && stats.buffer_bytes > 0);
     assert(slowest < 50000);
     stall_ms = 20;
     set_hold(false);
@@ -443,10 +570,167 @@ static void test_overflow(void)
     assert(stats.drop_events >= 1 && stats.frames_written > 150);
     assert(ca_mp4_close(writer) == 0);
     check_file(path, (unsigned)stats.frames_written);
-    printf("PASS overflow: %llu frames written, %llu dropped in %llu events, decodable\n",
+    /* Every run of frames, the first and each after a gap, starts on an IDR
+     * (every tenth fixture frame). */
+    std::vector<sample> written = samples(path);
+    assert(written.size() == stats.frames_written);
+    unsigned runs = 0;
+    for (size_t i = 0; i < written.size(); i++) {
+        assert(written[i].frame >= 0 && written[i].frame < (long)n);
+        assert(written[i].idr == (written[i].frame % 10 == 0));
+        if (i == 0 || written[i].frame != written[i - 1].frame + 1) {
+            assert(i == 0 || written[i].frame > written[i - 1].frame);
+            assert(written[i].idr);
+            runs++;
+        }
+    }
+    assert(runs == stats.drop_events + 1);
+    printf("PASS overflow: %llu frames written, %llu dropped in %llu events, every run starts "
+           "on an IDR, decodable\n",
            (unsigned long long)stats.frames_written, (unsigned long long)stats.frames_dropped,
            (unsigned long long)stats.drop_events);
     unlink(path);
+}
+
+/* The card fills during a stage write: the part it took is cut back to the
+ * last whole fragment, and the file keeps its index and duration. */
+static void test_card_full(void)
+{
+    char path[256];
+    snprintf(path, sizeof(path), "%s/full.mp4", directory);
+    struct ca_mp4 *writer = NULL;
+    assert(ca_mp4_open(&writer, path, 320, 240, 10) == 0);
+    int result;
+    unsigned n = 0;
+    /* past the first write and a timed one */
+    for (; n < 15; n++) {
+        write_frame(writer, n, &result);
+        assert(result == 0);
+        drain(writer);
+        usleep(100000);
+    }
+    struct stat st;
+    assert(stat(path, &st) == 0 && st.st_size > 0);
+    pthread_mutex_lock(&lock);
+    card_full = true;
+    card_filled = false;
+    pthread_mutex_unlock(&lock);
+    uint64_t deadline = now_us() + 10000000U;
+    for (result = 0; result == 0; n++) {
+        write_frame(writer, n, &result);
+        assert(now_us() < deadline);
+        usleep(20000);
+    }
+    assert(result < 0 && errno == ENOSPC);
+    errno = 0;
+    assert(ca_mp4_close(writer) < 0 && errno == ENOSPC);
+    pthread_mutex_lock(&lock);
+    assert(card_filled);
+    card_full = false;
+    pthread_mutex_unlock(&lock);
+
+    layout file = parse_file(path);
+    assert(file.tiled && file.moov && file.sidx == 1);
+    assert(file.moofs >= 1 && file.moofs < n);
+    assert(file.timescale != 0 && file.duration != 0);
+    assert((uint64_t)file.duration * 10 == (uint64_t)file.moofs * file.timescale);
+    assert(decoded_frames(path) == file.moofs);
+    printf("PASS card full: %u of %u frames kept on whole fragments, with sidx and duration\n",
+           file.moofs, n);
+    unlink(path);
+}
+
+/* A failed background sync fails the recording; a later write and close
+ * report it. */
+static void test_sync_error(void)
+{
+    char path[256];
+    snprintf(path, sizeof(path), "%s/sync-error.mp4", directory);
+    struct ca_mp4 *writer = NULL;
+    pthread_mutex_lock(&lock);
+    fail_syncs = EIO;
+    pthread_mutex_unlock(&lock);
+    assert(ca_mp4_open(&writer, path, 320, 240, 10) == 0);
+    int result = 0;
+    unsigned n = 0;
+    uint64_t deadline = now_us() + 10000000U;
+    for (; result == 0; n++) {
+        write_frame(writer, n, &result);
+        assert(now_us() < deadline);
+        usleep(5000);
+    }
+    assert(result < 0 && errno == EIO);
+    write_frame(writer, n, &result);
+    assert(result < 0 && errno == EIO);
+    errno = 0;
+    assert(ca_mp4_close(writer) < 0 && errno == EIO);
+    pthread_mutex_lock(&lock);
+    fail_syncs = 0;
+    pthread_mutex_unlock(&lock);
+    unlink(path);
+    puts("PASS sync error: fails the recording, reported by a later write and close");
+}
+
+/* Bad input costs the frame, not the recording. */
+static void test_bad_input(void)
+{
+    char path[256];
+    snprintf(path, sizeof(path), "%s/bad.mp4", directory);
+    struct ca_mp4 *writer = NULL;
+    assert(ca_mp4_open(&writer, path, 320, 240, 10) == 0);
+    uint8_t byte = 0;
+    assert(ca_mp4_write_h264(writer, &byte, 0, 0, true, 54.7f) == 0);
+    errno = 0;
+    assert(ca_mp4_write_h264(writer, NULL, 1, 0, true, 54.7f) < 0 && errno == EINVAL);
+    errno = 0;
+    assert(ca_mp4_write_h264(NULL, &byte, 1, 0, true, 54.7f) < 0 && errno == EINVAL);
+    struct ca_mp4_stats stats;
+    ca_mp4_get_stats(writer, &stats);
+    assert(stats.frames_dropped == 1 && stats.drop_events == 1);
+    int result;
+    for (unsigned n = 0; n < 20; n++) {
+        write_frame(writer, n, &result);
+        assert(result == 0);
+    }
+    drain(writer);
+    ca_mp4_get_stats(writer, &stats);
+    assert(stats.frames_written == 20 && stats.frames_dropped == 1);
+    assert(ca_mp4_close(writer) == 0);
+    check_file(path, 20);
+    unlink(path);
+    puts("PASS bad input: dropped and counted, recording continues at the next IDR");
+}
+
+/* The asynchronous close returns at once while the card is stalled, and the
+ * writer thread still completes the file. */
+static void test_close_async(void)
+{
+    char path[256];
+    snprintf(path, sizeof(path), "%s/async.mp4", directory);
+    struct ca_mp4 *writer = NULL;
+    reset_counts();
+    set_hold(true);
+    assert(ca_mp4_open(&writer, path, 320, 240, 10) == 0);
+    int result;
+    for (unsigned n = 0; n < 30; n++) {
+        write_frame(writer, n, &result);
+        assert(result == 0);
+    }
+    wait_for_write_entry();
+    uint64_t started = now_us();
+    ca_mp4_close_async(writer);
+    assert(now_us() - started < 50000);
+    set_hold(false);
+    uint64_t deadline = now_us() + 10000000U;
+    for (;;) {
+        layout file = parse_file(path);
+        if (file.tiled && file.sidx == 1 && file.moofs == 30) break;
+        assert(now_us() < deadline);
+        usleep(10000);
+    }
+    check_file(path, 30);
+    unlink(path);
+    puts("PASS asynchronous close: returns at once, file completed in the background");
 }
 
 /* A card error fails a later write and close, neither of which waits. */
@@ -509,6 +793,10 @@ int main(int argc, char **argv)
     test_split();
     test_overflow();
     test_error();
-    rmdir(directory);
+    test_card_full();
+    test_sync_error();
+    test_bad_input();
+    test_close_async();
+    assert(rmdir(directory) == 0);
     return 0;
 }

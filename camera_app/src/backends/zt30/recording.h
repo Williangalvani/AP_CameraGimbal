@@ -18,7 +18,8 @@ public:
     const char *path() const { return active()?paths[0].c_str():nullptr; }
     void frame(unsigned,const EncodedFrame&,uint64_t,bool,float);
 private:
-    int stop_locked();
+    // Stops and hands over the writers, which the caller closes.
+    int stop_locked(ca_mp4 *closing[2]);
     int paths_for_capture();
     std::mutex lock;
     std::atomic<bool> enabled{false};

@@ -20,19 +20,30 @@ typedef int (*ca_fmp4_write_fn)(void *opaque, const void *data,
  * A writer thread does all file I/O after open, from a bounded RAM buffer.
  * Its errors fail a later write and close; the file is complete by then.
  * Close drains the buffer, waits for the last sync of every part and reports
- * asynchronous I/O errors. */
+ * asynchronous I/O errors. Calls on one writer must not overlap: one thread
+ * at a time writes, then closes. */
 int ca_mp4_open(struct ca_mp4 **writer, const char *path,
                 unsigned width, unsigned height, unsigned frame_rate);
 /* One complete Annex-B access unit per call, including all slices/SEI.
  * Playback uses the configured constant frame rate (pts is encoder-specific).
  * Copies the frame and its telemetry and never waits for the card. A frame
- * that does not fit in the buffer is dropped with every following frame until
- * an IDR that fits; drops are counted and logged, not errors. */
+ * that does not fit in the buffer is dropped with every following picture
+ * until an IDR that fits while a quarter of the buffer is free. Drops, and
+ * frames that are empty or oversized, are counted and logged and return 0;
+ * only a NULL writer or frame (EINVAL) or a writer error returns -1.
+ * Dropped frames take no time in the file: playback runs straight through a
+ * gap, so the MP4 duration is shorter than the wall-clock recording time.
+ * Each frame's SEI keeps the UTC time it arrived. */
 int ca_mp4_write_h264(struct ca_mp4 *writer, const uint8_t *annex_b,
                       size_t length, uint64_t pts, bool key_frame, float hfov_deg);
 int ca_mp4_close(struct ca_mp4 *writer);
+/* Close without waiting, for a frame thread that must not wait for the card:
+ * the writer thread finishes the file in the background, logs any error and
+ * frees the writer. The writer must not be used afterwards. */
+void ca_mp4_close_async(struct ca_mp4 *writer);
 
 struct ca_mp4_stats {
+    /* muxed by the writer thread; not necessarily on the card yet */
     uint64_t frames_written;
     uint64_t frames_dropped;
     /* runs of consecutive dropped frames */

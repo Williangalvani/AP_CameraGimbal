@@ -18,6 +18,7 @@ int ca_mp4_open(ca_mp4 **out,const char *path,unsigned w,unsigned h,unsigned fps
     *out=new ca_mp4{f,fps==30?0U:1U};files.emplace_back(path);return 0;
 }
 int ca_mp4_close(ca_mp4 *writer) { assert(writer);closes++;fclose(writer->file);delete writer;return 0; }
+void ca_mp4_close_async(ca_mp4 *writer) { if(writer)(void)ca_mp4_close(writer); }
 int ca_mp4_write_h264(ca_mp4 *writer,const uint8_t *p,size_t n,uint64_t,bool,float) {
     assert(writer && p && n);writes[writer->stream]++;
     if(fail_write) { errno=ENOSPC;return -1; }

@@ -32,9 +32,17 @@ int Recording::paths_for_capture() {
     errno=EEXIST;return -1;
 }
 int Recording::set(bool active) {
-    std::lock_guard<std::mutex> guard(lock);
+    std::unique_lock<std::mutex> guard(lock);
     if(active==enabled.load())return 0;
-    if(!active)return stop_locked();
+    if(!active) {
+        ca_mp4 *closing[2]{};
+        int result=stop_locked(closing);
+        // Closing drains the buffers and syncs; the frame thread must not wait for the lock.
+        guard.unlock();
+        for(auto writer:closing)if(writer && ca_mp4_close(writer))result=-1;
+        ca_log("ZT30 recording stopped%s",result?" with an I/O error":"");
+        return result;
+    }
     if(paths_for_capture())return -1;
     if(ca_mp4_open(&writers[0],paths[0].c_str(),width,height,30))return -1;
     if(ca_mp4_open(&writers[1],paths[1].c_str(),640,512,15)) {
@@ -49,11 +57,10 @@ int Recording::set(bool active) {
     waiting[0]=waiting[1]=true;enabled.store(true);
     ca_log("ZT30 recording started: %s",paths[0].c_str());return 0;
 }
-int Recording::stop_locked() {
+int Recording::stop_locked(ca_mp4 *closing[2]) {
     enabled.store(false);int result=0;
     if(ca_thermal_stream_recording(raw,false,paths[0].c_str()))result=-1;
-    for(auto &writer:writers)if(writer) { if(ca_mp4_close(writer))result=-1;writer=nullptr; }
-    ca_log("ZT30 recording stopped%s",result?" with an I/O error":"");
+    for(unsigned i=0;i<2;i++) { closing[i]=writers[i];writers[i]=nullptr; }
     return result;
 }
 void Recording::frame(unsigned stream,const EncodedFrame &frame,uint64_t pts,bool key,float hfov) {
@@ -64,7 +71,13 @@ void Recording::frame(unsigned stream,const EncodedFrame &frame,uint64_t pts,boo
     if(waiting[stream])return;
     if(ca_mp4_write_h264(writers[stream],frame.data,frame.bytes,pts,key,hfov)) {
         ca_log("ZT30 recording stream=%u I/O failure errno=%d",stream,errno);
-        (void)stop_locked();
+        ca_mp4 *closing[2]{};
+        int result=stop_locked(closing);
+        // The failed writer's file is already closed; the other may still be
+        // writing its buffer to the card, which this thread must not wait for.
+        if(ca_mp4_close(closing[stream]))result=-1;
+        ca_mp4_close_async(closing[stream^1U]);
+        ca_log("ZT30 recording stopped%s",result?" with an I/O error":"");
     }
 }
 }
