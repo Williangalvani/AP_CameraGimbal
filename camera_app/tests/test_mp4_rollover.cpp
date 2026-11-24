@@ -36,6 +36,26 @@ extern "C" ssize_t __wrap_pwrite64(int fd, const void *data, size_t size, off64_
     }
     return __real_pwrite64(fd, data, size, offset);
 }
+extern "C" int __real_fallocate64(int fd, int mode, off64_t offset, off64_t length);
+extern "C" int __wrap_fallocate64(int fd, int mode, off64_t offset, off64_t length)
+{
+    /* nor reserve the space the sparse writes skip */
+    if (sparse) { errno = EOPNOTSUPP; return -1; }
+    return __real_fallocate64(fd, mode, offset, length);
+}
+
+/* Writes complete on the writer thread; wait so none is dropped and an
+ * error fails the next write. */
+static void drain(struct ca_mp4 *writer)
+{
+    struct ca_mp4_stats stats;
+    for (;;) {
+        ca_mp4_get_stats(writer, &stats);
+        assert(stats.frames_dropped == 0);
+        if (stats.buffer_bytes == 0) return;
+        usleep(1000);
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -87,6 +107,7 @@ int main(int argc, char **argv)
                 }
                 result = ca_mp4_write_h264(writer, au, used, i*9000U, false, 54.7f);
                 if (result < 0) break;
+                drain(writer);
             }
             free(au);
             if (!strcmp(argv[4], "no-idr")) assert(result < 0 && errno == EFBIG);
@@ -100,6 +121,7 @@ int main(int argc, char **argv)
         result = ca_mp4_write_h264(writer, au, used, frame*9000U, false, 54.7f);
         free(au);
         if (result < 0) break;
+        drain(writer);
         frame++; start = end;
         /* Give the real asynchronous final flush an opportunity to complete. */
         usleep(1000);

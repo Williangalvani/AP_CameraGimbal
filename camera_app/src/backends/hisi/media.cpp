@@ -655,7 +655,8 @@ int APC_Media_HiSi::set_recording(bool active)
     media->recording_wait_keyframe = false;
     memcpy(path, media->recording_path, sizeof(path));
     pthread_mutex_unlock(&media->lock);
-    // closing syncs the file; the capture thread must not wait on it for the lock
+    // closing drains the recording buffer and syncs the file; the capture
+    // thread must not wait on it for the lock
     int result = ca_mp4_close(mp4) < 0 ? -1 : 0;
     ca_log("recording stopped %s", path);
     return result;

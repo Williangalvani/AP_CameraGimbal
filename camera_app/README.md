@@ -455,19 +455,34 @@ the hard FAT limit still applies. For short FAT bench tests only,
 `make -C camera_app recording-test` for decoded segment/telemetry tests and sparse
 tests at the real 4 GiB boundary.
 
-Each recording has a background worker which requests `fdatasync` after the
-first frame and waits at least one second after each completed flush before
-syncing further data. Requests coalesce into a single dirty flag, so slow
-syncs do not create a backlog. The worker never holds the frame-write or
-download-snapshot locks while syncing. It also syncs the parent directory
-once to persist the new filename. Normal close waits for the worker's final
-flush and reports any asynchronous I/O error.
+Frame processing never waits for the card. Each recording copies frames,
+with the telemetry sampled on arrival, into a bounded RAM buffer (48 MiB,
+`CA_MP4_QUEUE_BYTES` at build time; about 7.7 s at 50 Mbit/s), and a writer
+thread does all file I/O after open. It muxes into a staging buffer written
+in 2 MiB pieces at frame boundaries, or after one second at low bitrates,
+under the lock the Files endpoint takes for its size snapshot. It splits
+parts and finishes the old part itself. If the card falls further behind than
+the buffer holds, the frame that does not fit and every following frame until
+an IDR that fits are dropped; recording continues, and drops are logged at
+most every 5 s. Each closed part logs its frames written and dropped, the
+buffer high-water mark, size and the longest single write and sync.
+`CAMERA_APP_RECORD_BUFFER_BYTES` can lower the buffer for tests (minimum
+65536 bytes).
 
-Frame processing does not wait for the sync worker, but writes still share
-the card's bandwidth and can block under kernel dirty-page pressure. The
-one-second interval is not a maximum loss window: slow flushes, SD-card
-hardware caches and filesystem damage from a physical power cut can still
-affect what reaches storage.
+A background sync worker runs `fdatasync` when the writer asks: after the
+first write, then every 32 MiB or 5 s. Requests coalesce into a single dirty
+flag, so slow syncs do not create a backlog. The worker never holds the
+download-snapshot lock while syncing. It also syncs the parent directory
+once to persist the new filename. The writer allocates 64 MiB ahead with
+`FALLOC_FL_KEEP_SIZE` where the filesystem supports it, so the file size only
+ever covers data, and releases the rest at close. A writer error closes the
+file and then fails the next frame write, so the backend's close after a
+failed write does not wait for the card. Normal close drains the buffer,
+waits for the worker's final flush and reports any asynchronous I/O error.
+
+Neither interval is a maximum loss window: buffered frames, slow flushes,
+SD-card hardware caches and filesystem damage from a physical power cut can
+still affect what reaches storage.
 
 Telemetry remains in every frame's SEI, including FOV, position and attitude.
 New recordings omit the duplicate `mett` JSON track: VLC 3's fragmented MP4

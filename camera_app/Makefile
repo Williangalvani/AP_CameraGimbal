@@ -230,6 +230,7 @@ VIDEO_METADATA_TEST_TARGET := tests/test_video_metadata
 MP4_TEST_TARGET := tests/test_mp4
 MP4_SYNC_TEST_TARGET := tests/test_mp4_sync
 MP4_ROLLOVER_TEST_TARGET := tests/test_mp4_rollover
+MP4_WRITER_TEST_TARGET := tests/test_mp4_writer
 E5739_TEST_TARGET := tests/test_e5739
 THERMAL_TEST_TARGET := tests/test_thermal
 RAW_THERMAL_TEST_TARGET := tests/test_raw_thermal
@@ -816,7 +817,16 @@ $(MP4_ROLLOVER_TEST_TARGET): tests/test_mp4_rollover.cpp src/recording/mp4_minim
                     $(MINIMP4_HEADER)
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(CPPFLAGS) -Ibuild $(APP_CXXFLAGS) -Wno-error \
-		-o $@ $(filter %.cpp,$^) -Wl,--wrap=fstatfs64 -Wl,--wrap=pwrite64 -lpthread -lm
+		-o $@ $(filter %.cpp,$^) -Wl,--wrap=fstatfs64 -Wl,--wrap=pwrite64 \
+		-Wl,--wrap=fallocate64 -lpthread -lm
+
+$(MP4_WRITER_TEST_TARGET): tests/test_mp4_writer.cpp src/recording/mp4_minimp4.cpp \
+                    src/recording/video_metadata.cpp src/recording/metadata.cpp \
+                    include/camera_app/mp4_queue.h $(MINIMP4_HEADER)
+	$(call progress,Linking $@)
+	$(HOST_CXX) $(CPPFLAGS) -Ibuild $(APP_CXXFLAGS) -Wno-error \
+		-o $@ $(filter %.cpp,$^) -Wl,--wrap=pwrite64 -Wl,--wrap=fdatasync \
+		-Wl,--wrap=ftruncate64 -Wl,--wrap=fallocate64 -Wl,--wrap=fstatfs64 -lpthread -lm
 
 .PHONY: recording-test
 recording-test: $(MP4_TEST_TARGET) $(MP4_SYNC_TEST_TARGET) $(MP4_ROLLOVER_TEST_TARGET)
@@ -860,7 +870,7 @@ $(LIVE_VIDEO_SERVER_TEST_TARGET): tests/test_live_video_server.cpp \
 
 test: survey-test rpi_libcam_caddx-test timezone-test hisi-image-test system-stats-test thermal-mavlink-test media-overlay-test z1-overlay-race-test manual-control-test tests/test_gimbal_rate tests/test_mavlink_time tests/test_telemetry_time tests/test_support_mavlink $(VIDEO_METADATA_TEST_TARGET) $(TEST_TARGET) $(MAVLINK_TEST_TARGET) $(MP4_TEST_TARGET) $(E5739_TEST_TARGET) \
 	$(MP4_SYNC_TEST_TARGET) \
-	$(MP4_ROLLOVER_TEST_TARGET) \
+	$(MP4_ROLLOVER_TEST_TARGET) $(MP4_WRITER_TEST_TARGET) \
 	$(THERMAL_TEST_TARGET) $(RAW_THERMAL_TEST_TARGET) \
 	$(RAW_THERMAL_SERVER_TEST_TARGET) $(STILL_TEST_TARGET) \
 	$(LIVE_VIDEO_SERVER_TEST_TARGET) $(FRAME_SOCKET_TEST_TARGET) \
@@ -897,6 +907,10 @@ test: survey-test rpi_libcam_caddx-test timezone-test hisi-image-test system-sta
 	./$(LIVE_VIDEO_SERVER_TEST_TARGET) tests/test.h264
 	./$(MP4_TEST_TARGET) tests/test.h264 tests/test.mp4
 	./$(MP4_SYNC_TEST_TARGET) tests/test.h264
+	ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=size=320x240:rate=10 \
+		-t 3 -c:v libx264 -x264-params aud=1:bframes=0:keyint=10:min-keyint=10:scenecut=0 \
+		-pix_fmt yuv420p -f h264 -y tests/test_writer.h264
+	./$(MP4_WRITER_TEST_TARGET) tests/test_writer.h264
 	python3 tests/test_mp4_rollover.py
 	grep -aq 'tfdt' tests/test.mp4.fragmented
 	ffprobe -v error -select_streams v:0 -count_frames \
@@ -910,7 +924,7 @@ test: survey-test rpi_libcam_caddx-test timezone-test hisi-image-test system-sta
 		2>tests/test.fragmented.ffprobe.err | grep -qx 'codec_name=h264'
 	test ! -s tests/test.fragmented.ffprobe.err
 	rm -f tests/test.h264 tests/test.mp4 tests/test.mp4.fragmented \
-		tests/test.ffprobe.err tests/test.fragmented.ffprobe.err
+		tests/test.ffprobe.err tests/test.fragmented.ffprobe.err tests/test_writer.h264
 
 install: all test install-app install-web install-init
 
@@ -934,7 +948,7 @@ install-init: $(APP_INIT) $(APP_SELECTION) $(TIMESYNC)
 clean:
 	rm -f tests/test_gimbal_rate
 	rm -f tests/test_telemetry_time tests/test_mavlink_time
-	rm -f tests/test_support_mavlink tests/test_thermal_monitor $(MP4_SYNC_TEST_TARGET) $(MP4_ROLLOVER_TEST_TARGET)
+	rm -f tests/test_support_mavlink tests/test_thermal_monitor $(MP4_SYNC_TEST_TARGET) $(MP4_ROLLOVER_TEST_TARGET) $(MP4_WRITER_TEST_TARGET)
 	rm -f tests/test_system_stats tests/test_binlog_sys tests/test_manual_control $(TARGET) $(COMMON_SOURCES:.cpp=.o) $(COMMON_SOURCES:.cpp=.d) $(TEST_TARGET) $(MAVLINK_TEST_TARGET) $(MP4_TEST_TARGET) $(E5739_TEST_TARGET) $(THERMAL_TEST_TARGET) $(RAW_THERMAL_TEST_TARGET) $(RAW_THERMAL_SERVER_TEST_TARGET) $(LIVE_VIDEO_SERVER_TEST_TARGET) $(FRAME_SOCKET_TEST_TARGET) $(VIDEO_METADATA_TEST_TARGET) $(STILL_TEST_TARGET) $(AUTOFOCUS_TEST_TARGET) $(CONFIG_TEST_TARGET) $(TARGETING_TEST_TARGET) $(MT11_IMX586_TEST_TARGET) $(HOST_TARGET) $(A8_HOST_TARGET) $(RPI_HOST_TARGET)
 	rm -f tests/test.h264 tests/test.mp4 tests/test.mp4.fragmented \
 		tests/test.ffprobe.err tests/test.fragmented.ffprobe.err

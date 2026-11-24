@@ -8,6 +8,7 @@ tests/camera-app-rpi-host
 tests/test_mp4
 tests/test_mp4_sync
 tests/test_mp4_rollover
+tests/test_mp4_writer
 tests/test_protocol
 tests/test_mavlink
 tests/test_mavlink_time

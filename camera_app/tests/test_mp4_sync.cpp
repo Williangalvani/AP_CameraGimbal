@@ -66,6 +66,22 @@ static void wait_for_sync(void)
     pthread_mutex_unlock(&lock);
 }
 
+/* The writer thread writes staged data within about a second. */
+static off_t wait_for_size(const char *path, off_t size)
+{
+    struct stat st = {};
+    for (unsigned i = 0; i < 300; i++) {
+        int fd = open(path, O_RDONLY);
+        if (fd >= 0) {
+            assert(flock(fd, LOCK_SH | LOCK_NB) == 0 && fstat(fd, &st) == 0);
+            close(fd);
+            if (st.st_size > size) return st.st_size;
+        }
+        usleep(10000);
+    }
+    return st.st_size;
+}
+
 static void *close_writer(void *opaque)
 {
     close_result = ca_mp4_close((struct ca_mp4*)(opaque));
@@ -118,10 +134,7 @@ int main(int argc, char **argv)
     assert(sync_calls == 1);
     pthread_mutex_unlock(&lock);
     /* Files downloads can snapshot a complete fragment even during slow sync. */
-    int snapshot = open(path, O_RDONLY);
-    assert(snapshot >= 0 && flock(snapshot, LOCK_SH | LOCK_NB) == 0);
-    assert(fstat(snapshot, &st) == 0 && st.st_size > (off_t)(60 * frame_length));
-    close(snapshot);
+    assert(wait_for_size(path, (off_t)(60 * frame_length)) > (off_t)(60 * frame_length));
     pthread_t closer;
     assert(pthread_create(&closer, NULL, close_writer, writer) == 0);
     nanosleep(&delay, NULL);
@@ -148,7 +161,13 @@ int main(int argc, char **argv)
     char part2[256], part3[256];
     snprintf(part2, sizeof(part2), "%s/video_part0002.mp4", directory);
     snprintf(part3, sizeof(part3), "%s/video_part0003.mp4", directory);
-    assert(stat(part2, &st) == 0 && st.st_size > 65536);
+    assert(wait_for_size(part2, 65536) > 65536);
+    struct ca_mp4_stats stats;
+    do {
+        usleep(1000);
+        ca_mp4_get_stats(writer, &stats);
+    } while (stats.buffer_bytes != 0);
+    assert(stats.frames_written == 121 && stats.frames_dropped == 0);
     assert(access(part3, F_OK) < 0 && errno == ENOENT);
     release_sync();
     assert(ca_mp4_close(writer) == 0);
