@@ -31,6 +31,8 @@ int main()
     assert(config.max_again == 32 && config.max_dgain == 0 && !config.manual_again && config.again == 128);
     assert(!config.manual_dgain && config.dgain == 128 && config.ae_strategy == CA_AE_PRIOR_HIGHLIGHT);
     assert(config.max_exposure == 25 && !config.slow_shutter && config.iris_mode == CA_IRIS_AUTO);
+    // temporal noise reduction as the sensor driver and VI start-up leave it
+    assert(config.tnr && config.tnr_strength == 255 && config.vi_3dnr && config.vi_3dnr_strength == 100);
 
     write_file(path, "[image]\nhue = 200\nsharpness = 0\ngamma = 255\nbacklight = 90\n"
                      "wb_style_red = 10\nwb_style_green = 20\nwb_style_blue = 255\nwb_water = blue\n"
@@ -62,6 +64,44 @@ int main()
     assert(running.hue == 200 && running.wb_water == CA_WATER_BLUE && running.slow_shutter);
     assert(running.max_exposure == 8000 && running.gain_mode == CA_GAIN_MANUAL);
     assert(running.brightness + 1 == config.brightness);
+
+    // temporal noise reduction: no MAVLink names, live like the other image settings
+    write_file(path, "[image]\ntnr = false\ntnr_strength = 0\nvi_3dnr = false\nvi_3dnr_strength = 0\n");
+    ca_config_defaults(&config);
+    assert(ca_config_load(&config, path, error, sizeof(error)) == 0);
+    assert(!config.tnr && config.tnr_strength == 0 && !config.vi_3dnr && config.vi_3dnr_strength == 0);
+    write_file(path, "[image]\ntnr_strength = 255\nvi_3dnr_strength = 100\n");
+    ca_config_defaults(&config);
+    assert(ca_config_load(&config, path, error, sizeof(error)) == 0);
+    assert(config.tnr && config.tnr_strength == 255 && config.vi_3dnr && config.vi_3dnr_strength == 100);
+    static const char *const nr_keys[] = {"tnr", "tnr_strength", "vi_3dnr", "vi_3dnr_strength"};
+    for (const char *key : nr_keys) {
+        const APC_Config::Field *field = APC_Config::find("image", key);
+        assert(field != NULL && field->param_name == NULL);
+    }
+    assert(APC_Config::find("image", "tnr_strength")->minimum == 0 &&
+           APC_Config::find("image", "tnr_strength")->maximum == 255);
+    assert(APC_Config::find("image", "vi_3dnr_strength")->minimum == 0 &&
+           APC_Config::find("image", "vi_3dnr_strength")->maximum == 100);
+    struct ca_config nr;
+    ca_config_defaults(&config);
+    static void (*const nr_changes[])(struct ca_config *) = {
+        [](struct ca_config *c) { c->tnr = false; },
+        [](struct ca_config *c) { c->tnr_strength = 64U; },
+        [](struct ca_config *c) { c->vi_3dnr = false; },
+        [](struct ca_config *c) { c->vi_3dnr_strength = 30U; },
+    };
+    for (auto change : nr_changes) {
+        nr = config;
+        change(&nr);
+        assert(!ca_config_image_equal(&config, &nr));
+        ca_config_defaults(&running);
+        ca_config_copy_image(&running, &nr);
+        assert(ca_config_image_equal(&running, &nr));
+        ca_config_defaults(&running);
+        ca_config_copy_4kcam(&running, &nr);
+        assert(ca_config_image_equal(&running, &nr));
+    }
 
     // iris priority is a MAVLink parameter, saved and loaded through camera.ini
     write_file(path, "[image]\niris_mode = priority\n");
@@ -190,6 +230,8 @@ int main()
         "[image]\nhue = 256\n",          "[image]\nmax_exposure = 11\n", "[image]\nmax_exposure = 8001\n",
         "[image]\ngain_mode = fixed\n",  "[image]\nwb_water = red\n",    "[image]\nae_strategy = middle\n",
         "[image]\nslow_shutter = maybe\n", "[image]\nshutter = 1/34464\n",
+        "[image]\ntnr = 1\n", "[image]\ntnr_strength = 256\n", "[image]\ntnr_strength = -1\n",
+        "[image]\nvi_3dnr = off\n", "[image]\nvi_3dnr_strength = 101\n", "[image]\nvi_3dnr_strength = 50%\n",
         "[image]\niris_mode = manual\n", "[image]\niris_mode = 1\n", "[image]\niris_mode = Priority\n",
         "[stream.main]\nkeyframe_interval_ms = 29\n", "[stream.main]\nkeyframe_interval_ms = 10001\n",
         "[stream.sub]\nkeyframe_interval_ms = 0\n", "[stream.sub]\nkeyframe_interval_ms = 1s\n",

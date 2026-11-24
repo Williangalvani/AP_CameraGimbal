@@ -171,6 +171,10 @@ enum string_id {
     S_P_AE_STRATEGY,
     S_P_MAX_EXPOSURE,
     S_P_SLOW_SHUTTER,
+    S_P_TNR,
+    S_P_TNR_STRENGTH,
+    S_P_VI_3DNR,
+    S_P_VI_3DNR_STRENGTH,
     S_P_IRIS_MODE,
     S_P_FOURKCAM,
     S_P_ONVIF_PASSWORD,
@@ -315,6 +319,10 @@ enum string_id {
     S_H_AE_STRATEGY,
     S_H_MAX_EXPOSURE,
     S_H_SLOW_SHUTTER,
+    S_H_TNR,
+    S_H_TNR_STRENGTH,
+    S_H_VI_3DNR,
+    S_H_VI_3DNR_STRENGTH,
     S_H_IRIS_MODE,
     S_IRIS_UNAVAILABLE,
     S_IRIS_APPLIED_SHUTTER,
@@ -942,6 +950,12 @@ static constexpr Translations translations = [] {
     result[S_P_AE_STRATEGY] = {"Exposure priority", "曝光优先", "露出優先"};
     result[S_P_MAX_EXPOSURE] = {"Maximum exposure", "最长曝光", "最大露出時間"};
     result[S_P_SLOW_SHUTTER] = {"Slow shutter", "慢快门", "スローシャッター"};
+    result[S_P_TNR] = {"ISP temporal noise reduction", "ISP 时域降噪", "ISP 時間ノイズリダクション"};
+    result[S_P_TNR_STRENGTH] = {"ISP temporal noise reduction strength", "ISP 时域降噪强度",
+                                "ISP 時間ノイズリダクション強度"};
+    result[S_P_VI_3DNR] = {"Video 3D noise reduction", "视频 3D 降噪", "映像 3D ノイズリダクション"};
+    result[S_P_VI_3DNR_STRENGTH] = {"Video 3D noise reduction strength", "视频 3D 降噪强度",
+                                    "映像 3D ノイズリダクション強度"};
     result[S_P_IRIS_MODE] = {"Iris mode", "光圈模式", "絞りモード"};
     result[S_P_FOURKCAM] = {"Allow 4K Cam Manager", "允许 4K Cam Manager", "4K Cam Manager を許可"};
     result[S_P_ONVIF_PASSWORD] = {"ONVIF password", "ONVIF 密码", "ONVIF パスワード"};
@@ -1167,6 +1181,26 @@ static constexpr Translations translations = [] {
     result[S_H_SLOW_SHUTTER] = {"Let automatic exposure lower the frame rate in the dark, up to the maximum exposure.",
                                 "允许自动曝光在暗处降低帧率，最长到最长曝光。",
                                 "暗い場所で自動露出がフレームレートを下げられるようにします（最大露出時間まで）。"};
+    result[S_H_TNR] = {"Blend each frame with earlier ones to reduce noise. Off reduces ghosting behind moving "
+                       "objects in the dark, at the cost of more noise.",
+                       "将每帧与之前的帧混合以降低噪声。关闭可减少暗处运动物体后的拖影，但噪声会增加。",
+                       "各フレームを前のフレームと混ぜてノイズを減らします。オフにすると暗い場所で動く物体の残像が"
+                       "減りますが、ノイズは増えます。"};
+    result[S_H_TNR_STRENGTH] = {"How strongly ISP temporal noise reduction blends frames (0–255). Lower reduces "
+                                "ghosting; 255 is the sensor default.",
+                                "ISP 时域降噪混合帧的强度（0–255）。越低拖影越少；255 为传感器默认值。",
+                                "ISP 時間ノイズリダクションがフレームを混ぜる強さ（0–255）。低いほど残像が減ります。255 が"
+                                "センサーの既定値です。"};
+    result[S_H_VI_3DNR] = {"The video pipeline's 3D (temporal) noise reduction. If the camera cannot turn it off "
+                           "while running, its strength is set to 0 instead.",
+                           "视频管线的 3D（时域）降噪。如果相机运行时无法关闭，则改为将其强度设为 0。",
+                           "映像パイプラインの 3D（時間）ノイズリダクション。動作中にオフにできない場合は、代わりに強度を "
+                           "0 にします。"};
+    result[S_H_VI_3DNR_STRENGTH] = {"Temporal strength of the video 3D noise reduction, in percent of the camera's "
+                                    "default (0–100). Lower reduces ghosting.",
+                                    "视频 3D 降噪的时域强度，为相机默认值的百分比（0–100）。越低拖影越少。",
+                                    "映像 3D ノイズリダクションの時間方向の強さ。カメラ既定値に対する割合（0–100）。低いほど"
+                                    "残像が減ります。"};
     result[S_H_IRIS_MODE] = {"Auto: automatic exposure sets the shutter and gain, and the lens iris also works "
                              "automatically. Iris priority: the shutter speed and ISO (or the manual gains) stay "
                              "fixed and the iris alone holds the brightness at the exposure target (exposure and "

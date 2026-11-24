@@ -284,6 +284,13 @@ struct ca_config {
     enum ca_ae_priority ae_strategy;
     unsigned max_exposure;
     bool slow_shutter;
+    /* not 4K Cam Manager controls, and no MAVLink parameter: temporal noise
+     * reduction, the ISP Bayer NR's (strength 0–255) and the VI pipe 3DNR's
+     * (strength in percent of the start-up parameters) */
+    bool tnr;
+    unsigned tnr_strength;
+    bool vi_3dnr;
+    unsigned vi_3dnr_strength;
     /* not a 4K Cam Manager control: IMG_IRIS_MODE */
     enum ca_iris_mode iris_mode;
 #endif

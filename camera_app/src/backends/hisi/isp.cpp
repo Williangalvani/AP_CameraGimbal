@@ -8,6 +8,7 @@
 #include "ss_mpi_ae.h"
 #include "ss_mpi_awb.h"
 #include "ss_mpi_isp.h"
+#include "ss_mpi_vi.h"
 
 #include <errno.h>
 #include <string.h>
@@ -387,6 +388,129 @@ static td_s32 set_sharpen(ot_vi_pipe pipe, unsigned sharpness)
     return ss_mpi_isp_set_sharpen_attr(pipe, &attr);
 }
 
+/* What the noise reduction steps last left in effect, for the log: at first
+ * the IMX678 driver's Bayer NR and the VI pipe's start-up 3DNR. */
+static struct {
+    bool tnr;
+    unsigned tnr_strength;
+    bool vi_3dnr;
+    unsigned vi_3dnr_strength;
+} nr_status = {true, 255U, true, 100U};
+
+/* Only the Bayer NR's temporal filter; its spatial settings stay as read. */
+static td_s32 set_tnr(ot_vi_pipe pipe, const struct ca_config *config)
+{
+    static ot_isp_nr_attr attr;  // ISP applies are serialised
+    td_s32 result = ss_mpi_isp_get_nr_attr(pipe, &attr);
+    if (result != TD_SUCCESS) return result;
+    const td_u8 strength = (td_u8)(config->tnr_strength < 255U ? config->tnr_strength : 255U);
+    attr.tnr_en = config->tnr ? TD_TRUE : TD_FALSE;
+    for (unsigned bin = 0; bin < OT_ISP_AUTO_ISO_NUM; bin++) attr.tnr_cfg.tnr_auto.tfs[bin] = strength;
+    attr.tnr_cfg.tnr_manual.tfs = strength;
+    result = ss_mpi_isp_set_nr_attr(pipe, &attr);
+    if (result == TD_SUCCESS) {
+        nr_status.tnr = config->tnr;
+        nr_status.tnr_strength = strength;
+    }
+    return result;
+}
+
+/* The VI pipe's 3DNR parameters as start-up left them, read once; a strength
+ * in percent scales their temporal filtering, so 100 is exactly them. An
+ * automatic set's ISO table is copied, and scaled, in arrays of our own. */
+static bool vi_3dnr_read;
+static ot_3dnr_param vi_3dnr_original;
+static bool vi_3dnr_auto_scales;
+static td_u32 vi_3dnr_auto_iso[OT_ISP_AUTO_ISO_NUM];
+static ot_nr_v1 vi_3dnr_auto_original[OT_ISP_AUTO_ISO_NUM];
+static ot_nr_v1 vi_3dnr_auto_scaled[OT_ISP_AUTO_ISO_NUM];
+
+static td_s32 read_vi_3dnr(ot_vi_pipe pipe)
+{
+    if (vi_3dnr_read) return TD_SUCCESS;
+    ot_3dnr_param &param = vi_3dnr_original;
+    memset(&param, 0, sizeof(param));
+    // as the SDK's scene_auto asks for them
+    param.nr_version = OT_NR_V1;
+    param.nr_norm_param_v1.op_mode = OT_OP_MODE_MANUAL;
+    const td_s32 result = ss_mpi_vi_get_pipe_3dnr_param(pipe, &param);
+    if (result != TD_SUCCESS) return result;
+    const ot_nr_norm_param_v1 &norm = param.nr_norm_param_v1;
+    if (norm.op_mode == OT_OP_MODE_AUTO) {
+        const ot_nr_param_auto_v1 &table = norm.nr_auto;
+        vi_3dnr_auto_scales = table.iso != NULL && table.nr_param != NULL && table.param_num > 0U &&
+                              table.param_num <= OT_ISP_AUTO_ISO_NUM;
+        if (vi_3dnr_auto_scales) {
+            memcpy(vi_3dnr_auto_iso, table.iso, table.param_num * sizeof(vi_3dnr_auto_iso[0]));
+            memcpy(vi_3dnr_auto_original, table.nr_param, table.param_num * sizeof(vi_3dnr_auto_original[0]));
+        } else {
+            ca_log("VI 3DNR is automatic without a readable ISO table (%u sets); "
+                   "vi_3dnr_strength scales only its manual parameters", (unsigned)table.param_num);
+        }
+    }
+    vi_3dnr_read = true;
+    return TD_SUCCESS;
+}
+
+static ot_nr_v1 scaled_temporal(const ot_nr_v1 &original, unsigned percent)
+{
+    ot_nr_v1 nr = original;
+    for (unsigned i = 0; i < sizeof(nr.tfy) / sizeof(nr.tfy[0]); i++) {
+        nr.tfy[i].tfs0 = (td_u16)(original.tfy[i].tfs0 * percent / 100U);
+        nr.tfy[i].tfs1 = (td_u16)(original.tfy[i].tfs1 * percent / 100U);
+    }
+    nr.nrc0.trc = (td_u8)(original.nrc0.trc * percent / 100U);
+    return nr;
+}
+
+static td_s32 set_vi_3dnr_strength(ot_vi_pipe pipe, unsigned percent)
+{
+    td_s32 result = read_vi_3dnr(pipe);
+    if (result != TD_SUCCESS || percent == nr_status.vi_3dnr_strength) return result;
+    static ot_3dnr_param param;
+    param = vi_3dnr_original;
+    ot_nr_norm_param_v1 &norm = param.nr_norm_param_v1;
+    norm.nr_manual.nr_param = scaled_temporal(vi_3dnr_original.nr_norm_param_v1.nr_manual.nr_param, percent);
+    if (norm.op_mode == OT_OP_MODE_AUTO && vi_3dnr_auto_scales) {
+        for (td_u32 k = 0; k < norm.nr_auto.param_num; k++)
+            vi_3dnr_auto_scaled[k] = scaled_temporal(vi_3dnr_auto_original[k], percent);
+        norm.nr_auto.iso = vi_3dnr_auto_iso;
+        norm.nr_auto.nr_param = vi_3dnr_auto_scaled;
+    }
+    result = ss_mpi_vi_set_pipe_3dnr_param(pipe, &param);
+    if (result == TD_SUCCESS) nr_status.vi_3dnr_strength = percent;
+    return result;
+}
+
+/* A pipe that refuses to turn its 3DNR off while running gets strength 0
+ * instead. */
+static td_s32 set_vi_3dnr(ot_vi_pipe pipe, const struct ca_config *config)
+{
+    ot_3dnr_attr attr;
+    td_s32 result = ss_mpi_vi_get_pipe_3dnr_attr(pipe, &attr);
+    if (result != TD_SUCCESS) return result;
+    unsigned strength = config->vi_3dnr_strength < 100U ? config->vi_3dnr_strength : 100U;
+    bool enabled = attr.enable == TD_TRUE;
+    // the start-up parameters, read while the 3DNR still runs; retried below
+    if (enabled) (void)read_vi_3dnr(pipe);
+    if (enabled != config->vi_3dnr) {
+        attr.enable = config->vi_3dnr ? TD_TRUE : TD_FALSE;
+        result = ss_mpi_vi_set_pipe_3dnr_attr(pipe, &attr);
+        if (result == TD_SUCCESS) {
+            enabled = config->vi_3dnr;
+        } else if (config->vi_3dnr) {
+            nr_status.vi_3dnr = false;
+            return result;
+        } else {
+            ca_log("VI 3DNR could not be turned off while running (0x%x); using strength 0 instead",
+                   (unsigned)result);
+            strength = 0U;
+        }
+    }
+    nr_status.vi_3dnr = enabled;
+    return enabled ? set_vi_3dnr_strength(pipe, strength) : TD_SUCCESS;
+}
+
 /* The picture's look: a value the SDK refuses keeps the previous one and is
  * logged, rather than stopping the video. */
 static void set_tuning(ot_vi_pipe pipe, const struct ca_config *config)
@@ -399,6 +523,8 @@ static void set_tuning(ot_vi_pipe pipe, const struct ca_config *config)
         {"colour tone", set_colour_tone(pipe, config)},
         {"gamma", set_gamma(pipe, config->gamma)},
         {"sharpening", set_sharpen(pipe, config->sharpness)},
+        {"temporal noise reduction", set_tnr(pipe, config)},
+        {"VI 3DNR", set_vi_3dnr(pipe, config)},
     };
     for (const auto &step : steps)
         if (step.result != TD_SUCCESS) ca_log("ISP %s failed: 0x%x", step.name, (unsigned)step.result);
@@ -459,7 +585,7 @@ static td_s32 apply_isp_config(const struct ca_config *config, bool startup)
            config->wb_blue, config->wb_temp);
     ca_log("ISP tuning hue=%u sharpness=%u gamma=%u backlight=%u style=%u/%u/%u water=%s "
            "max_gain=%u gain_mode=%s max_again=%u max_dgain=%u again=%s:%u dgain=%s:%u "
-           "ae=%s max_exposure=1/%u slow_shutter=%s iris=%s",
+           "ae=%s max_exposure=1/%u slow_shutter=%s iris=%s tnr=%s:%u vi_3dnr=%s:%u",
            config->hue, config->sharpness, config->gamma, config->backlight, config->wb_style_red,
            config->wb_style_green, config->wb_style_blue, config->wb_water == CA_WATER_BLUE ? "blue" : "green",
            config->max_gain, config->gain_mode == CA_GAIN_MANUAL ? "manual" : "auto", config->max_again,
@@ -467,7 +593,9 @@ static td_s32 apply_isp_config(const struct ca_config *config, bool startup)
            config->manual_dgain ? "on" : "off", config->dgain,
            config->ae_strategy == CA_AE_PRIOR_LOWLIGHT ? "lowlight" : "highlight", config->max_exposure,
            config->slow_shutter ? "on" : "off",
-           iris_priority ? "priority" : wanted ? "priority (not applied)" : "auto");
+           iris_priority ? "priority" : wanted ? "priority (not applied)" : "auto",
+           nr_status.tnr ? "on" : "off", nr_status.tnr_strength,
+           nr_status.vi_3dnr ? "on" : "off", nr_status.vi_3dnr_strength);
     return TD_SUCCESS;
 }
 

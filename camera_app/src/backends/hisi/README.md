@@ -190,6 +190,28 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   steps the gains until the channels match, then saves them as manual gains.
   ISP attributes and statistics have their own mutex, taken only per step, so
   a one-push does not stall recording or the main loop.
+- **Temporal noise reduction**, against ghosting behind moving objects at
+  night: four `[image]` keys, no MAVLink names, live like the other image
+  settings and on the Parameters page. Spatial NR is not touched. Absent, they
+  keep what the camera did before: the IMX678 driver's Bayer NR and the VI
+  start-up's 3DNR.
+  - `tnr` (default `true`) is the ISP Bayer NR's `tnr_en`; `tnr_strength`
+    0–255 (default 255, the driver's) its `tfs` in every ISO bin and in the
+    manual set.
+  - `vi_3dnr` (default `true`) is the VI pipe 3DNR's `enable`
+    (`ss_mpi_vi_set_pipe_3dnr_attr`); `vi_3dnr_strength` 0–100 (default 100)
+    scales, in percent, the pipe's start-up 3DNR parameters, read once at the
+    first apply: each `tfy[].tfs0`/`tfs1` and `nrc0.trc`. 100 sets nothing.
+    The parameters are read as the SDK's `scene_auto` does (V1, manual); if
+    the pipe reports automatic mode with an ISO table, the table is copied
+    and scaled too, otherwise only the manual set is scaled (logged). A pipe
+    that refuses to turn its 3DNR off while running is logged and gets
+    strength 0 instead.
+  Out-of-range values make camera.ini invalid, as for the other keys. An SDK
+  refusal is logged and the video carries on; the `ISP tuning` line shows
+  what is in effect, e.g. `tnr=on:255 vi_3dnr=on:100`. Not yet checked on
+  hardware: whether the pipe takes a live 3DNR enable change and a manual
+  parameter set, and how much each key helps at night.
 
 ## Bring-up overrides (environment)
 - `CA_HISI_SENSOR_BUS=<0-7>`: sensor I²C bus. The default 3 is the SDK's DMEB

@@ -857,6 +857,12 @@ static const struct parameter replacement_parameters[] = {
     {"max_exposure", "image", "max_exposure", S_P_MAX_EXPOSURE, S_H_MAX_EXPOSURE, PARAM_INTEGER, 12, 8000, 1, NULL, 0},
     {"slow_shutter", "image", "slow_shutter", S_P_SLOW_SHUTTER, S_H_SLOW_SHUTTER,
      PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
+    {"tnr", "image", "tnr", S_P_TNR, S_H_TNR, PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
+    {"tnr_strength", "image", "tnr_strength", S_P_TNR_STRENGTH, S_H_TNR_STRENGTH,
+     PARAM_INTEGER, 0, 255, 1, NULL, 0},
+    {"vi_3dnr", "image", "vi_3dnr", S_P_VI_3DNR, S_H_VI_3DNR, PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
+    {"vi_3dnr_strength", "image", "vi_3dnr_strength", S_P_VI_3DNR_STRENGTH, S_H_VI_3DNR_STRENGTH,
+     PARAM_INTEGER, 0, 100, 1, NULL, 0},
     {"iris_mode", "image", "iris_mode", S_P_IRIS_MODE, S_H_IRIS_MODE, PARAM_ENUM, 0, 0, 0, iris_mode_options, 2},
     {"fourkcam_manager", "compat", "fourkcam_manager", S_P_FOURKCAM, S_H_FOURKCAM,
      PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
@@ -996,7 +1002,7 @@ static const char *replacement_defaults[] = {
 #endif
 #if APCAM_HAVE_4KCAM_COMPAT
     "green", "128", "128", "20", "50", "0", "0", "0", "12", "auto", "32", "0", "false", "128", "false", "128",
-    "highlight", "25", "false", "auto", "true", "blue",
+    "highlight", "25", "false", "true", "255", "true", "100", "auto", "true", "blue",
 #endif
     "false", "", "10001", "false", "", "1", "0", "video1", "0", "video2",
 #if APCAM_HAVE_RAW_THERMAL

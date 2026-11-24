@@ -102,6 +102,10 @@ void ca_config_defaults(struct ca_config *config)
     config->dgain = 128U;
     config->ae_strategy = CA_AE_PRIOR_HIGHLIGHT;
     config->max_exposure = 25U;
+    config->tnr = true;
+    config->tnr_strength = 255U;
+    config->vi_3dnr = true;
+    config->vi_3dnr_strength = 100U;
     config->iris_mode = CA_IRIS_AUTO;
 #endif
     config->position_targeting = APCAM_DEFAULT_POSITION_TARGETING;
@@ -568,7 +572,8 @@ int ca_config_param_save(struct ca_config *config, const char *path,
 #if APCAM_HAVE_4KCAM_COMPAT
 #define FOURKCAM_FIELDS(X) X(hue) X(sharpness) X(gamma) X(backlight) X(wb_style_red) X(wb_style_green) \
     X(wb_style_blue) X(wb_water) X(max_gain) X(gain_mode) X(max_again) X(max_dgain) X(manual_again) \
-    X(again) X(manual_dgain) X(dgain) X(ae_strategy) X(max_exposure) X(slow_shutter)
+    X(again) X(manual_dgain) X(dgain) X(ae_strategy) X(max_exposure) X(slow_shutter) \
+    X(tnr) X(tnr_strength) X(vi_3dnr) X(vi_3dnr_strength)
 #define IRIS_FIELDS(X) X(iris_mode)
 #else
 #define FOURKCAM_FIELDS(X)

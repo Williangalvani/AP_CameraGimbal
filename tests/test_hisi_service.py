@@ -1015,6 +1015,31 @@ echo ok
             assert status == 400 and ini.read_text() == before, (value, status, page)
         status, page = save({'main_keyframe_interval': '1000', 'sub_keyframe_interval': '1000'})
         assert status == 200 and (saved_keyint('main'), saved_keyint('sub')) == ('1000', '1000'), ini.read_text()
+
+        # Temporal noise reduction: [image] rows defaulting to the camera's own, applied live.
+        def saved_image(key):
+            match = re.search(rf'^\[image\][^\[]*?^{key} = (\w+)$', ini.read_text(), re.M)
+            return match.group(1) if match else None
+
+        for name in ('tnr', 'vi_3dnr'):
+            field = keyint_field(name)
+            assert f'<select required name="{name}"' in field and '<option value="true" selected>' in field, field
+        for name, maximum, default in (('tnr_strength', 255, 255), ('vi_3dnr_strength', 100, 100)):
+            field = keyint_field(name)
+            assert f'<input required name="{name}" id="{name}" type=number min="0" max="{maximum}" ' \
+                   f'step="1" value="{default}">' in field, field
+        old = ready.read_text()
+        changes = {'tnr': 'false', 'tnr_strength': '40', 'vi_3dnr': 'false', 'vi_3dnr_strength': '25'}
+        status, page = save(changes)
+        assert status == 200 and b'Parameters saved' in page, page
+        assert {key: saved_image(key) for key in changes} == changes, ini.read_text()
+        assert ready.read_text() == old, 'a noise reduction change applied live restarted camera-app'
+        before = ini.read_text()
+        for name, value in (('tnr_strength', '256'), ('vi_3dnr_strength', '101'), ('vi_3dnr_strength', '-1')):
+            status, page = save({name: value})
+            assert status == 400 and ini.read_text() == before, (name, value, status, page)
+        status, page = save({'tnr': 'true', 'tnr_strength': '255', 'vi_3dnr': 'true', 'vi_3dnr_strength': '100'})
+        assert status == 200 and saved_image('tnr_strength') == '255', ini.read_text()
         (root / 'live-apply').unlink()
         iris_file.unlink()
         update_type.unlink()
@@ -1028,7 +1053,7 @@ echo ok
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
               'microSD benchmark, restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
               'repeated SIGTERM, live and restarting codec change, '
-              'web respawn, iris mode row and save, keyframe interval rows and save, MCM start after ready, restart backoff, mcm.disable, '
+              'web respawn, iris mode row and save, keyframe interval rows and save, noise reduction rows and save, MCM start after ready, restart backoff, mcm.disable, '
               'missing bundle, log pruning and stop')
     finally:
         try:
