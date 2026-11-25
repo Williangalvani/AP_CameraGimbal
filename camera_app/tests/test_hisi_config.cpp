@@ -25,14 +25,15 @@ int main()
     struct ca_config config;
 
     ca_config_defaults(&config);
-    assert(config.hue == 128 && config.sharpness == 128 && config.gamma == 20 && config.backlight == 50);
+    assert(config.brightness == 50 && config.saturation == 40 && config.contrast == 50);
+    assert(config.hue == 128 && config.sharpness == 64 && config.gamma == 20 && config.backlight == 50);
     assert(config.wb_style_red == 0 && config.wb_style_green == 0 && config.wb_style_blue == 0);
-    assert(config.wb_water == CA_WATER_GREEN && config.max_gain == 12 && config.gain_mode == CA_GAIN_AUTO);
-    assert(config.max_again == 32 && config.max_dgain == 0 && !config.manual_again && config.again == 128);
+    assert(config.wb_water == CA_WATER_GREEN && config.max_gain == 64 && config.gain_mode == CA_GAIN_AUTO);
+    assert(config.max_again == 255 && config.max_dgain == 0 && !config.manual_again && config.again == 128);
     assert(!config.manual_dgain && config.dgain == 128 && config.ae_strategy == CA_AE_PRIOR_HIGHLIGHT);
-    assert(config.max_exposure == 25 && !config.slow_shutter && config.iris_mode == CA_IRIS_AUTO);
-    // temporal noise reduction as the sensor driver and VI start-up leave it
-    assert(config.tnr && config.tnr_strength == 255 && config.vi_3dnr && config.vi_3dnr_strength == 100);
+    assert(config.max_exposure == 30 && !config.slow_shutter && config.iris_mode == CA_IRIS_AUTO);
+    // Bayer TNR off against ghosting; VI 3DNR as the VI start-up leaves it
+    assert(!config.tnr && config.tnr_strength == 255 && config.vi_3dnr && config.vi_3dnr_strength == 100);
 
     write_file(path, "[image]\nhue = 200\nsharpness = 0\ngamma = 255\nbacklight = 90\n"
                      "wb_style_red = 10\nwb_style_green = 20\nwb_style_blue = 255\nwb_water = blue\n"
@@ -70,7 +71,7 @@ int main()
     ca_config_defaults(&config);
     assert(ca_config_load(&config, path, error, sizeof(error)) == 0);
     assert(!config.tnr && config.tnr_strength == 0 && !config.vi_3dnr && config.vi_3dnr_strength == 0);
-    write_file(path, "[image]\ntnr_strength = 255\nvi_3dnr_strength = 100\n");
+    write_file(path, "[image]\ntnr = true\ntnr_strength = 255\nvi_3dnr = true\nvi_3dnr_strength = 100\n");
     ca_config_defaults(&config);
     assert(ca_config_load(&config, path, error, sizeof(error)) == 0);
     assert(config.tnr && config.tnr_strength == 255 && config.vi_3dnr && config.vi_3dnr_strength == 100);
@@ -86,7 +87,7 @@ int main()
     struct ca_config nr;
     ca_config_defaults(&config);
     static void (*const nr_changes[])(struct ca_config *) = {
-        [](struct ca_config *c) { c->tnr = false; },
+        [](struct ca_config *c) { c->tnr = true; },
         [](struct ca_config *c) { c->tnr_strength = 64U; },
         [](struct ca_config *c) { c->vi_3dnr = false; },
         [](struct ca_config *c) { c->vi_3dnr_strength = 30U; },

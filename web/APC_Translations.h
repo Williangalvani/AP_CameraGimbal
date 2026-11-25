@@ -1137,9 +1137,9 @@ static constexpr Translations translations = [] {
     result[S_H_WB_WATER] = {"Water that auto white balance and 4K Cam Manager's one-push are tuned for. The Photos page asks each time.",
                             "自动白平衡和 4K Cam Manager 一键白平衡所针对的水色。照片页面每次单独选择。",
                             "自動ホワイトバランスと 4K Cam Manager のワンプッシュが対象とする水の色。写真ページでは毎回選びます。"};
-    result[S_H_FOURKCAM_LEVEL] = {"0–255, as 4K Cam Manager sets it; 128 is the default.",
-                                  "0–255，与 4K Cam Manager 的设置相同；默认 128。",
-                                  "0–255。4K Cam Manager と同じ値で、既定値は 128 です。"};
+    result[S_H_FOURKCAM_LEVEL] = {"0–255, as 4K Cam Manager sets it; the default is 128 for hue and 64 for sharpness.",
+                                  "0–255，与 4K Cam Manager 的设置相同；色调默认 128，锐度默认 64。",
+                                  "0–255。4K Cam Manager と同じ値で、既定値は色相 128、シャープネス 64 です。"};
     result[S_H_GAMMA] = {"Tone curve, 0–255 in steps of 32: 0–31, 128–159 and 192–223 give the default curve, "
                          "32–63, 96–127 and 160–191 lift the shadows most, 64–95 a little; 224–255 keep the current curve.",
                          "色调曲线，0–255，每 32 为一档：0–31、128–159、192–223 为默认曲线；32–63、96–127、160–191 "

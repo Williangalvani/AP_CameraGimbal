@@ -1021,9 +1021,9 @@ echo ok
             match = re.search(rf'^\[image\][^\[]*?^{key} = (\w+)$', ini.read_text(), re.M)
             return match.group(1) if match else None
 
-        for name in ('tnr', 'vi_3dnr'):
+        for name, default in (('tnr', 'false'), ('vi_3dnr', 'true')):
             field = keyint_field(name)
-            assert f'<select required name="{name}"' in field and '<option value="true" selected>' in field, field
+            assert f'<select required name="{name}"' in field and f'<option value="{default}" selected>' in field, field
         for name, maximum, default in (('tnr_strength', 255, 255), ('vi_3dnr_strength', 100, 100)):
             field = keyint_field(name)
             assert f'<input required name="{name}" id="{name}" type=number min="0" max="{maximum}" ' \

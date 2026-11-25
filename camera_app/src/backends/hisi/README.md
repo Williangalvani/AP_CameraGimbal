@@ -192,10 +192,10 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   a one-push does not stall recording or the main loop.
 - **Temporal noise reduction**, against ghosting behind moving objects at
   night: four `[image]` keys, no MAVLink names, live like the other image
-  settings and on the Parameters page. Spatial NR is not touched. Absent, they
-  keep what the camera did before: the IMX678 driver's Bayer NR and the VI
-  start-up's 3DNR.
-  - `tnr` (default `true`) is the ISP Bayer NR's `tnr_en`; `tnr_strength`
+  settings and on the Parameters page. Spatial NR is not touched. Absent,
+  `tnr` is off and the others keep what the camera did before: the IMX678
+  driver's Bayer NR strength and the VI start-up's 3DNR.
+  - `tnr` (default `false`) is the ISP Bayer NR's `tnr_en`; `tnr_strength`
     0–255 (default 255, the driver's) its `tfs` in every ISO bin and in the
     manual set.
   - `vi_3dnr` (default `true`) is the VI pipe 3DNR's `enable`

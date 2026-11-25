@@ -994,15 +994,15 @@ static const char *replacement_defaults[] = {
 #if APCAM_HAVE_PHOTO_RESOLUTION
     "video",
 #endif
-    "50", "50", "50", "0",
+    "50", APCAM_HAVE_4KCAM_COMPAT ? "40" : "50", "50", "0",
     "auto", "auto", "average", "auto",
 #if APCAM_HAVE_WB_TUNING
     APCAM_STRING_VALUE(APCAM_DEFAULT_WB_RED), APCAM_STRING_VALUE(APCAM_DEFAULT_WB_GREEN),
     APCAM_STRING_VALUE(APCAM_DEFAULT_WB_BLUE), APCAM_STRING_VALUE(APCAM_DEFAULT_WB_TEMP),
 #endif
 #if APCAM_HAVE_4KCAM_COMPAT
-    "green", "128", "128", "20", "50", "0", "0", "0", "12", "auto", "32", "0", "false", "128", "false", "128",
-    "highlight", "25", "false", "true", "255", "true", "100", "auto", "true", "blue",
+    "green", "128", "64", "20", "50", "0", "0", "0", "64", "auto", "255", "0", "false", "128", "false", "128",
+    "highlight", "30", "false", "false", "255", "true", "100", "auto", "true", "blue",
 #endif
     "false", "", "10001", "false", "", "1", "0", "video1", "0", "video2",
 #if APCAM_HAVE_RAW_THERMAL

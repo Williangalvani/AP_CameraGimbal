@@ -90,19 +90,20 @@ void ca_config_defaults(struct ca_config *config)
     config->wb_blue = APCAM_DEFAULT_WB_BLUE;
     config->wb_temp = APCAM_DEFAULT_WB_TEMP;
 #if APCAM_HAVE_4KCAM_COMPAT
+    config->saturation = 40;
     config->hue = 128U;
-    config->sharpness = 128U;
+    config->sharpness = 64U;
     config->gamma = 20U;
     config->backlight = 50U;
     config->wb_water = CA_WATER_GREEN;
-    config->max_gain = 12U;
+    config->max_gain = 64U;
     config->gain_mode = CA_GAIN_AUTO;
-    config->max_again = 32U;
+    config->max_again = 255U;
     config->again = 128U;
     config->dgain = 128U;
     config->ae_strategy = CA_AE_PRIOR_HIGHLIGHT;
-    config->max_exposure = 25U;
-    config->tnr = true;
+    config->max_exposure = 30U;
+    config->tnr = false;
     config->tnr_strength = 255U;
     config->vi_3dnr = true;
     config->vi_3dnr_strength = 100U;
