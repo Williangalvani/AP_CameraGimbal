@@ -10,10 +10,14 @@ namespace ca {
  * RTSP event loop; not thread safe. */
 class RtpPacer {
 public:
-    // The burst sent back to back: about 16 full RTP packets, or 2 ms at the
-    // rate if that is more.
+    // Sent back to back after the client had nothing to send: about 16 full
+    // RTP packets.
     static const int64_t kBurstBytes = 16 * 1500;
-    static const int64_t kBurstUs = 2000;
+    // While packets wait, the bucket keeps 30 ms at the rate, or the burst if
+    // that is more. The camera's kernel has no high-resolution timers: a 1 ms
+    // wait wakes 10-20 ms later, and that wakeup must send everything earned
+    // meanwhile for the client to get the rate.
+    static const int64_t kBucketUs = 30000;
 
     // [stream.*] rtp_pacing_mbps over the stream's bitrate: 0 is off, and a
     // stream is never paced below twice its bitrate.
@@ -26,14 +30,15 @@ public:
     }
 
     // Bits per second; 0 sends without delay. Tokens earned at the old rate
-    // are kept, up to the new burst; turning pacing on starts with a burst.
+    // are kept, up to the new bucket; turning pacing on starts with a burst.
     void SetRate(uint64_t bits_per_second, int64_t now_us)
     {
         if (bits_per_second == rate_) return;
         Refill(now_us);
         const bool was_off = rate_ == 0;
         rate_ = bits_per_second;
-        if (was_off || tokens_ > Burst()) tokens_ = Burst();
+        if (was_off) tokens_ = kBurstBytes * kUnitsPerByte;
+        else if (tokens_ > Bucket()) tokens_ = Bucket();
     }
 
     uint64_t Rate() const { return rate_; }
@@ -44,6 +49,7 @@ public:
     {
         if (rate_ == 0) return 0;
         Refill(now_us);
+        idle_ = false;
         const int64_t cost = int64_t(bytes) * kUnitsPerByte;
         if (tokens_ >= cost) {
             tokens_ -= cost;
@@ -53,14 +59,23 @@ public:
         return int64_t((missing + rate_ - 1) / rate_);
     }
 
+    // The client has nothing left to send: until the next Take the bucket
+    // refills only to the burst, so a frame after a gap does not leave 30 ms
+    // of tokens at line rate.
+    void Idle(int64_t now_us)
+    {
+        Refill(now_us);
+        idle_ = true;
+    }
+
 private:
     // Tokens count bits x 10^6, so that rate (bit/s) x elapsed (us) adds
     // them exactly.
     static const int64_t kUnitsPerByte = 8 * 1000000;
 
-    int64_t Burst() const
+    int64_t Bucket() const
     {
-        const int64_t by_time = int64_t(rate_) * kBurstUs;
+        const int64_t by_time = int64_t(rate_) * kBucketUs;
         const int64_t by_packets = kBurstBytes * kUnitsPerByte;
         return by_time > by_packets ? by_time : by_packets;
     }
@@ -68,11 +83,12 @@ private:
     void Refill(int64_t now_us)
     {
         if (rate_ != 0 && now_us > refilled_us_) {
-            const int64_t room = Burst() - tokens_;
+            const int64_t full = idle_ ? kBurstBytes * kUnitsPerByte : Bucket();
+            const int64_t room = full - tokens_;
             const int64_t elapsed = now_us - refilled_us_;
             // Compare before multiplying: a long idle gap would overflow.
-            if (room <= 0 || elapsed >= room / int64_t(rate_) + 1) tokens_ = Burst();
-            else tokens_ += elapsed * int64_t(rate_);
+            if (room > 0 && elapsed >= room / int64_t(rate_) + 1) tokens_ = full;
+            else if (room > 0) tokens_ += elapsed * int64_t(rate_);
         }
         refilled_us_ = now_us;
     }
@@ -80,6 +96,7 @@ private:
     uint64_t rate_ = 0;
     int64_t tokens_ = 0;
     int64_t refilled_us_ = 0;
+    bool idle_ = true;
 };
 
 }  // namespace ca

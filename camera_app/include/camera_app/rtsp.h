@@ -38,8 +38,9 @@ int ca_rtsp_set_frame_rate(struct ca_rtsp *server, unsigned stream_id,
                            unsigned frame_rate);
 int ca_rtsp_support_proxy(struct ca_rtsp *server, const struct ca_support_config *config);
 /* Send each RTSP client of a stream (aliases included) its RTP at no more than
- * bits_per_second, with a burst of 16 packets or 2 ms, so a key frame is spread
- * over a few frame intervals instead of leaving at line rate. 0, the default,
+ * bits_per_second, with a burst of 16 packets after a gap and up to 30 ms at the
+ * rate kept across late timer wakeups, so a key frame is spread over a few
+ * frame intervals instead of leaving at line rate. 0, the default,
  * sends as fast as the socket accepts. Applies to UDP and TCP clients within a
  * packet of the change; RTCP and RTSP replies are never held back. */
 int ca_rtsp_set_pacing(struct ca_rtsp *server, unsigned stream_id, uint64_t bits_per_second);

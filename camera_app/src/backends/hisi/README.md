@@ -104,14 +104,18 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   and applied live like the bitrate:
   - `rtp_pacing_mbps` (default **60** for `[stream.main]`, **0** for
     `[stream.sub]`; 0-1000, 0 off) paces each RTSP client, UDP and
-    RTP-over-TCP alike, with a token bucket: a burst of 16 packets (or 2 ms
-    at the rate) goes at once, the rest at the rate, never below twice the
+    RTP-over-TCP alike, with a token bucket: after a gap a burst of 16
+    packets goes at once, the rest at the rate, never below twice the
     stream's bitrate (main: `bitrate_kbps`, or its automatic value; sub: its
     automatic rate). At 28 Mbit/s the default is 60 Mbit/s, which sends a
     685 KB key frame in about 90 ms (three frame times); at 40 and 50 Mbit/s
     the floor makes it 80 and 100 Mbit/s. The XOP event loop waits on its
     millisecond timers, never blocking, and RTSP replies and RTCP go out
-    unpaced. Paced packets wait in the client's queue and count towards its
+    unpaced. The camera's kernel has no high-resolution timers (10 ms
+    jiffies), so a paced wait wakes 10-20 ms late; while packets wait the
+    bucket keeps up to 30 ms at the rate (or 16 packets) and each wakeup
+    sends all of it, so a client still gets the full rate, at most the rate
+    over 10 ms plus that bucket in any 10 ms. Paced packets wait in the client's queue and count towards its
     2048-packet limit, which a paced key frame and the P-frames behind it
     (~750 packets) do not reach: a client
     that cannot keep up is still dropped to the next key frame (with an IDR

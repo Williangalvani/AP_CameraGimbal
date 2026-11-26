@@ -57,7 +57,7 @@
  
      peer_rtp_addr_[channel_id].sin_family = AF_INET;
      peer_rtp_addr_[channel_id].sin_addr.s_addr = peer_addr_.sin_addr.s_addr;
-@@ -290,44 +324,211 @@
+@@ -290,44 +324,215 @@
          pkt = annex_b;
      }
  
@@ -167,6 +167,9 @@
 +        pacer_.reset(new ca::RtpPacer);
 +    }
 +    pacer_->SetRate(ca_rtsp_pacing_bps(((RtspConnection *)conn.get())->session_id_), NowUs());
++    // Sends until the pacer asks to wait or the socket is full: a paced timer
++    // wakes 10-20 ms late on the camera, and every packet earned meanwhile
++    // goes now. The budget only lets other clients in; the next pass resumes.
 +    for (int budget = kDrainBudget; budget > 0; budget--) {
 +        if (!has_pending_) {
 +            std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -174,6 +177,7 @@
 +                queue_.clear();
 +            }
 +            if (queue_.empty()) {
++                pacer_->Idle(NowUs());
 +                drain_scheduled_ = false;
 +                stalled_since_ms_ = 0;
 +                return;
@@ -301,7 +305,7 @@
  }
  
  int RtpConnection::SendRtpOverTcp(MediaChannelId channel_id, RtpPacket pkt)
-@@ -349,10 +550,13 @@
+@@ -349,10 +554,13 @@
  
  int RtpConnection::SendRtpOverUdp(MediaChannelId channel_id, RtpPacket pkt)
  {

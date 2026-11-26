@@ -31,6 +31,66 @@ static size_t sent_before(const std::vector<int64_t> &sent, int64_t until_us)
     return count;
 }
 
+static int64_t bucket_bytes(uint64_t rate)
+{
+    const int64_t by_time = int64_t(rate / 8) * ca::RtpPacer::kBucketUs / 1000000;
+    return by_time > ca::RtpPacer::kBurstBytes ? by_time : ca::RtpPacer::kBurstBytes;
+}
+
+struct Frame {
+    int64_t at_us;
+    size_t packets;
+};
+
+// The camera's kernel has 10 ms jiffies and no high-resolution timers, so a
+// paced wait of any length wakes the drain on the next tick of tick_us. Each
+// wakeup sends every packet the tokens allow, as the drain loop does. A frame
+// wakes an idle drain at once; one queued during a wait goes at the next tick.
+// Returns each packet's send time in us; *max_queued is the largest backlog.
+static std::vector<int64_t> stream(ca::RtpPacer &pacer, const std::vector<Frame> &frames, int64_t tick_us,
+                                   size_t *max_queued = nullptr)
+{
+    std::vector<int64_t> sent;
+    size_t next = 0, queued = 0;
+    int64_t now = frames.front().at_us;
+    if (max_queued) *max_queued = 0;
+    while (next < frames.size() || queued > 0) {
+        while (next < frames.size() && frames[next].at_us <= now) queued += frames[next++].packets;
+        if (max_queued && queued > *max_queued) *max_queued = queued;
+        if (queued == 0) {
+            pacer.Idle(now);
+            now = frames[next].at_us;
+            continue;
+        }
+        const int64_t wait = pacer.Take(kPacket, now);
+        if (wait == 0) {
+            sent.push_back(now);
+            queued--;
+            continue;
+        }
+        now = (now + wait + tick_us - 1) / tick_us * tick_us;
+    }
+    return sent;
+}
+
+static size_t packets_of(size_t bytes)
+{
+    return bytes / 1420 + 1;
+}
+
+// The largest number of bytes sent in any window_us.
+static int64_t max_window_bytes(const std::vector<int64_t> &sent, int64_t window_us)
+{
+    int64_t most = 0;
+    size_t first = 0;
+    for (size_t last = 0; last < sent.size(); last++) {
+        while (sent[last] - sent[first] >= window_us) first++;
+        const int64_t bytes = int64_t(last - first + 1) * kPacket;
+        if (bytes > most) most = bytes;
+    }
+    return most;
+}
+
 int main()
 {
     // Off: every packet goes at once.
@@ -62,22 +122,88 @@ int main()
             assert(bytes <= 60000000U / 8 / 100 + ca::RtpPacer::kBurstBytes);
         }
         // Idle refills the burst, and no more.
+        pacer.Idle(now);
         now += 1000000;
         assert(drain(pacer, now, 16).back() == now);
         assert(pacer.Take(kPacket, now) > 0);
     }
 
-    // The burst is 2 ms at the rate where that exceeds 16 packets.
-    {
+    // A late wakeup with packets waiting keeps 30 ms at the rate, or 16
+    // packets where that is more.
+    for (uint64_t rate : {400000000U, 2000000U}) {
         ca::RtpPacer pacer;
-        pacer.SetRate(400000000U, 0);
-        size_t burst = 0;
-        while (pacer.Take(kPacket, 0) == 0) burst++;
-        assert(burst == 400000000U / 8 * 2 / 1000 / kPacket);
+        pacer.SetRate(rate, 0);
+        while (pacer.Take(kPacket, 0) == 0) {}
+        size_t kept = 0;
+        while (pacer.Take(kPacket, 1000000) == 0) kept++;
+        assert(kept == size_t(bucket_bytes(rate) / kPacket));
+    }
+
+    // Wakeups every 10 or 20 ms with packets always waiting still get the
+    // rate over a second; no 10 ms carries more than the rate plus the bucket.
+    for (int64_t tick : {10000, 20000}) {
+        for (uint64_t rate : {10000000U, 28000000U, 60000000U, 100000000U}) {
+            ca::RtpPacer pacer;
+            const int64_t start = 3000000 + 3000;
+            pacer.SetRate(rate, start);
+            const std::vector<int64_t> sent = stream(pacer, {{start, packets_of(rate / 8 * 2)}}, tick);
+            const double delivered = double(sent_before(sent, start + 1000000)) * kPacket * 8;
+            printf("%lld ms wakeups: %.1f of %.1f Mbit/s in 1 s\n", (long long)tick / 1000, delivered / 1e6,
+                   double(rate) / 1e6);
+            assert(delivered >= rate * 0.95 && delivered <= rate * 1.05);
+            assert(max_window_bytes(sent, 10000) <= int64_t(rate / 8 / 100) + bucket_bytes(rate));
+        }
+    }
+
+    // A 600 KB frame after a gap at 60 Mbit/s leaves over about 80 ms, less
+    // what the last frame left in the bucket, plus up to one 10 or 20 ms
+    // wakeup, whatever its phase against the wakeups.
+    for (int64_t tick : {10000, 20000}) {
+        int64_t fastest = INT64_MAX, slowest = 0;
+        for (int64_t phase = 0; phase < tick; phase += 500) {
+            ca::RtpPacer pacer;
+            pacer.SetRate(60000000U, 0);
+            const int64_t at = 1000000 + phase;
+            const std::vector<int64_t> sent =
+                stream(pacer, {{0, packets_of(117000)}, {at, packets_of(600000)}}, tick);
+            const int64_t span = sent.back() - at;
+            if (span < fastest) fastest = span;
+            if (span > slowest) slowest = span;
+            assert(sent[sent.size() - packets_of(600000)] == at);
+        }
+        printf("600 KB frame, %lld ms wakeups: %lld-%lld us\n", (long long)tick / 1000, (long long)fastest,
+               (long long)slowest);
+        assert(fastest >= 70000 && slowest <= 100000);
+    }
+
+    // The 4K main stream (685 KB key frames, 117 KB P frames, 30 fps) paced
+    // at 60 Mbit/s with 10 or 20 ms wakeups keeps up: key frames leave in
+    // about 90 ms and the backlog stays far below the 2048-packet queue.
+    for (int64_t tick : {10000, 20000}) {
+        std::vector<Frame> frames;
+        for (int frame = 0; frame < 150; frame++)
+            frames.push_back({1000000 + frame * 1000000LL / 30, packets_of(frame % 30 == 0 ? 685000 : 117000)});
+        ca::RtpPacer pacer;
+        pacer.SetRate(60000000U, 0);
+        size_t max_queued = 0;
+        const std::vector<int64_t> sent = stream(pacer, frames, tick, &max_queued);
+        printf("4K stream, %lld ms wakeups: largest backlog %zu packets, key frames over", (long long)tick / 1000,
+               max_queued);
+        size_t last = 0;
+        for (size_t frame = 0; frame < frames.size(); frame++) {
+            last += frames[frame].packets;
+            const int64_t done = sent[last - 1] - frames[frame].at_us;
+            if (frame % 30 == 0) {
+                printf(" %lld", (long long)done / 1000);
+                assert(done >= 75000 && done <= 110000);
+            }
+        }
+        printf(" ms\n");
+        assert(max_queued < 1024);
     }
 
     // A rate change applies to the next packet; slowing keeps no more than
-    // the new burst, and turning pacing off releases the rest at once.
+    // the new bucket, and turning pacing off releases the rest at once.
     {
         ca::RtpPacer pacer;
         int64_t now = 0;
@@ -119,6 +245,6 @@ int main()
     assert(ca::RtpPacer::StreamRate(60, 40000) == 80000000U);
     assert(ca::RtpPacer::StreamRate(10, 2048) == 10000000U);
 
-    puts("PASS RTP pacer: off, burst, spread, runtime rate change, stream rate");
+    puts("PASS RTP pacer: off, burst, spread, coarse wakeups, runtime rate change, stream rate");
     return 0;
 }
