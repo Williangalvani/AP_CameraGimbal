@@ -37,11 +37,21 @@ int ca_rtsp_push_video_timed(struct ca_rtsp *server, unsigned stream_id,
 int ca_rtsp_set_frame_rate(struct ca_rtsp *server, unsigned stream_id,
                            unsigned frame_rate);
 int ca_rtsp_support_proxy(struct ca_rtsp *server, const struct ca_support_config *config);
-/* Called on the RTSP event thread when a client starts playing a stream or
- * sends an RTCP PLI or FIR for it, at most every 500 ms per stream. */
+/* Called on the RTSP event thread when a client starts playing a stream,
+ * sends an RTCP PLI or FIR for it, or fell behind and is waiting for a key
+ * frame; at most every 500 ms per stream. */
 typedef void (*ca_rtsp_keyframe_fn)(void *context, unsigned stream_id);
 void ca_rtsp_set_keyframe_callback(struct ca_rtsp *server, ca_rtsp_keyframe_fn request,
                                    void *context);
+/* A watchdog thread checks that the RTSP event loop keeps running. If it is
+ * stuck for stall_ms (default 5000) the watchdog logs it and calls action
+ * once, on the watchdog thread. The default action shuts camera-app down
+ * with SIGTERM, so its supervisor restarts it, and exits if that hangs.
+ * A null action restores the default. */
+void ca_rtsp_set_watchdog(struct ca_rtsp *server, unsigned stall_ms,
+                          void (*action)(void *context), void *context);
+/* Tests only: block the event loop for ms milliseconds. */
+void ca_rtsp_test_stall_loop(struct ca_rtsp *server, unsigned ms);
 void ca_rtsp_close(struct ca_rtsp *server);
 
 #ifdef __cplusplus

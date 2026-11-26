@@ -1,0 +1,282 @@
+--- RtpConnection.cpp
++++ RtpConnection.cpp
+@@ -4,6 +4,7 @@
+ #include "RtpConnection.h"
+ #include "RtspConnection.h"
+ #include "net/SocketUtil.h"
++#include <cerrno>
+ #include <chrono>
+ 
+ using namespace std;
+@@ -12,6 +13,28 @@
+ extern "C" bool ca_rtsp_is_satip_client(const void *client);
+ extern "C" void ca_rtsp_unmark_satip_client(const void *client);
+ extern "C" size_t ca_rtsp_sender_report(uint8_t *, uint32_t, uint64_t, uint32_t, uint32_t, uint32_t);
++extern "C" void ca_rtsp_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
++extern void ca_rtsp_client_playing(xop::MediaSessionId session_id);
++
++namespace {
++// About 3 MB, several of the largest 4K key frames. Queues hold the newest
++// packets, which all clients of a stream share, so this bounds the total.
++const size_t kMaxQueuedPackets = 2048;
++// Packets in a TCP connection's own buffer before it counts as full.
++const uint32_t kMaxTcpQueuedPackets = 256;
++// Packets sent per event-loop pass, so other clients and requests take turns.
++const int kDrainBudget = 64;
++const uint32_t kRetryMs = 5;
++// A client accepting nothing this long is gone or stuck.
++const int64_t kStallMs = 3000;
++const int64_t kDropLogIntervalMs = 10000;
++
++#ifdef MSG_DONTWAIT
++const int kSendFlags = MSG_DONTWAIT;
++#else
++const int kSendFlags = 0;
++#endif
++}
+ 
+ RtpConnection::RtpConnection(std::weak_ptr<TcpConnection> rtsp_connection)
+     : rtsp_connection_(rtsp_connection)
+@@ -114,7 +137,7 @@
+         break;
+     }
+ 
+-    SocketUtil::SetSendBufSize(rtpfd_[channel_id], 50*1024);
++    SocketUtil::SetSendBufSize(rtpfd_[channel_id], 256*1024);
+ 
+     peer_rtp_addr_[channel_id].sin_family = AF_INET;
+     peer_rtp_addr_[channel_id].sin_addr.s_addr = peer_addr_.sin_addr.s_addr;
+@@ -290,44 +313,186 @@
+         pkt = annex_b;
+     }
+ 
++    // Called on the encoder thread: queue only. A full queue drops the rest
++    // of the stream up to the next key frame, which decodes cleanly.
++    bool schedule = false;
++    bool overflow = false;
++    bool log_drop = false;
++    uint64_t dropped = 0;
++    {
++        std::lock_guard<std::mutex> lock(queue_mutex_);
++        const bool starts_frame = next_starts_frame_;
++        next_starts_frame_ = pkt.last != 0;
++        if (drop_until_key_) {
++            if (!starts_frame || pkt.type == VIDEO_FRAME_P || pkt.type == VIDEO_FRAME_B) {
++                dropped_packets_++;
++                return 0;
++            }
++            drop_until_key_ = false;
++        }
++        if (queue_.size() >= kMaxQueuedPackets) {
++            dropped_packets_ += queue_.size() + 1;
++            queue_.clear();
++            drop_until_key_ = true;
++            overflow = true;
++            const int64_t now = RtspConnection::NowMs();
++            if (now - drop_logged_ms_ >= kDropLogIntervalMs) {
++                drop_logged_ms_ = now;
++                log_drop = true;
++                dropped = dropped_packets_;
++            }
++        }
++        else {
++            QueuedPacket queued;
++            queued.channel_id = channel_id;
++            queued.pkt = pkt;
++            queue_.push_back(std::move(queued));
++            schedule = !drain_scheduled_;
++            drain_scheduled_ = true;
++        }
++    }
++
+     RtspConnection *rtsp_conn = (RtspConnection *)conn.get();
++    if (overflow) {
++        if (log_drop) {
++            ca_rtsp_log("RTSP client %s:%u is too slow; dropping video to the next key frame (%llu packets dropped)",
++                        conn->GetIp().c_str(), conn->GetPort(), (unsigned long long)dropped);
++        }
++        const MediaSessionId session_id = rtsp_conn->session_id_;
++        rtsp_conn->task_scheduler_->AddTriggerEvent([session_id] { ca_rtsp_client_playing(session_id); });
++    }
++    if (schedule && !rtsp_conn->task_scheduler_->AddTriggerEvent([this, conn] { DrainQueue(conn); })) {
++        // The loop is far behind. The next packet tries again; waiting here
++        // would stall the encoder.
++        std::lock_guard<std::mutex> lock(queue_mutex_);
++        drain_scheduled_ = false;
++    }
++    return 0;
++}
+ 
+-    bool ret = rtsp_conn->task_scheduler_->AddTriggerEvent([this, conn, channel_id, pkt] {
+-        this->SetFrameType(pkt.type);
+-        this->SetRtpHeader(channel_id, pkt);
+-        if((media_channel_info_[channel_id].is_play || media_channel_info_[channel_id].is_record) && has_key_frame_ ) {
+-            const int sent = transport_mode_ == RTP_OVER_TCP
+-                ? SendRtpOverTcp(channel_id, pkt) : SendRtpOverUdp(channel_id, pkt);
+-            if (sent <= 0) return;
+-
+-            auto &info = media_channel_info_[channel_id];
+-            info.packet_count++;
+-            info.octet_count += pkt.size - RTP_TCP_HEAD_SIZE - RTP_HEADER_SIZE;
+-            const uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+-                std::chrono::system_clock::now().time_since_epoch()).count();
+-            const uint64_t ntp = ((ns / 1000000000ULL + 2208988800ULL) << 32) |
+-                (((ns % 1000000000ULL) << 32) / 1000000000ULL);
+-            if (info.last_rtcp_ntp_time == 0 ||
+-                ntp - info.last_rtcp_ntp_time >= (uint64_t(5) << 32)) {
+-                uint8_t report[68];
+-                const size_t length = ca_rtsp_sender_report(report + 4,
+-                    ntohl(info.rtp_header.ssrc), ntp, ntohl(info.rtp_header.ts),
+-                    uint32_t(info.packet_count), uint32_t(info.octet_count));
+-                if (transport_mode_ == RTP_OVER_TCP) {
+-                    report[0] = '$'; report[1] = info.rtcp_channel;
+-                    report[2] = length >> 8; report[3] = length;
+-                    conn->Send(reinterpret_cast<const char *>(report), length + 4);
+-                } else {
+-                    (void)sendto(rtcpfd_[channel_id], report + 4, length, 0,
+-                        reinterpret_cast<struct sockaddr *>(&peer_rtcp_sddr_[channel_id]),
+-                        sizeof(struct sockaddr_in));
++// On the event loop, never lose a scheduled drain: a refused trigger falls
++// back to a timer that retries the post. Timer callbacks must not touch the
++// timer queue, so the timer only posts and the drain runs as a trigger event.
++void RtpConnection::ScheduleDrain(std::shared_ptr<TcpConnection> conn, uint32_t delay_ms)
++{
++    TaskScheduler *scheduler = ((RtspConnection *)conn.get())->task_scheduler_;
++    TriggerEvent drain = [this, conn] { DrainQueue(conn); };
++    if (delay_ms == 0 && scheduler->AddTriggerEvent(drain)) {
++        return;
++    }
++    scheduler->AddTimer([scheduler, drain] { return !scheduler->AddTriggerEvent(drain); },
++                        delay_ms ? delay_ms : 1);
++}
++
++void RtpConnection::DrainQueue(std::shared_ptr<TcpConnection> conn)
++{
++    for (int budget = kDrainBudget; budget > 0; budget--) {
++        if (!has_pending_) {
++            std::lock_guard<std::mutex> lock(queue_mutex_);
++            if (is_closed_ || conn->IsClosed()) {
++                queue_.clear();
++            }
++            if (queue_.empty()) {
++                drain_scheduled_ = false;
++                stalled_since_ms_ = 0;
++                return;
++            }
++            pending_ = std::move(queue_.front());
++            queue_.pop_front();
++            has_pending_ = true;
++            pending_ready_ = false;
++            pending_private_ = false;
++        }
++        if (!SendPending(conn)) {
++            const int64_t now = RtspConnection::NowMs();
++            if (stalled_since_ms_ == 0) {
++                stalled_since_ms_ = now;
++            }
++            else if (now - stalled_since_ms_ > kStallMs) {
++                ca_rtsp_log("RTSP client %s:%u accepted no video for %lld ms; disconnecting",
++                            conn->GetIp().c_str(), conn->GetPort(), (long long)(now - stalled_since_ms_));
++                Teardown();
++                has_pending_ = false;
++                {
++                    std::lock_guard<std::mutex> lock(queue_mutex_);
++                    queue_.clear();
++                    drain_scheduled_ = false;
+                 }
+-                info.last_rtcp_ntp_time = ntp;
++                conn->Disconnect();
++                return;
+             }
++            ScheduleDrain(conn, kRetryMs);
++            return;
+         }
+-    });
++        stalled_since_ms_ = 0;
++        has_pending_ = false;
++    }
++    ScheduleDrain(conn, 0);
++}
+ 
+-    return ret ? 0 : -1;
++// Sends pending_ without blocking. Returns false if the socket is full and
++// pending_ must be retried; true once it is sent or dropped.
++bool RtpConnection::SendPending(std::shared_ptr<TcpConnection>& conn)
++{
++    const MediaChannelId channel_id = pending_.channel_id;
++    RtpPacket& pkt = pending_.pkt;
++    auto &info = media_channel_info_[channel_id];
++    if (!pending_ready_) {
++        if (transport_mode_ == RTP_OVER_TCP && conn->QueuedPackets() >= kMaxTcpQueuedPackets) {
++            return false;
++        }
++        this->SetFrameType(pkt.type);
++        this->SetRtpHeader(channel_id, pkt);
++        if (!(info.is_play || info.is_record) || !has_key_frame_) {
++            return true;
++        }
++        pending_ready_ = true;
++    }
++
++    const int sent = transport_mode_ == RTP_OVER_TCP
++        ? SendRtpOverTcp(channel_id, pkt) : SendRtpOverUdp(channel_id, pkt);
++    if (sent == 0) {
++        // Every client writes its own header into the one shared buffer.
++        if (!pending_private_) {
++            RtpPacket copy;
++            memcpy(copy.data.get(), pkt.data.get(), pkt.size);
++            copy.size = pkt.size;
++            copy.timestamp = pkt.timestamp;
++            copy.type = pkt.type;
++            copy.last = pkt.last;
++            pkt = copy;
++            pending_private_ = true;
++        }
++        return false;
++    }
++    if (sent < 0) {
++        return true;
++    }
++
++    info.packet_count++;
++    info.octet_count += pkt.size - RTP_TCP_HEAD_SIZE - RTP_HEADER_SIZE;
++    const uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::system_clock::now().time_since_epoch()).count();
++    const uint64_t ntp = ((ns / 1000000000ULL + 2208988800ULL) << 32) |
++        (((ns % 1000000000ULL) << 32) / 1000000000ULL);
++    if (info.last_rtcp_ntp_time == 0 ||
++        ntp - info.last_rtcp_ntp_time >= (uint64_t(5) << 32)) {
++        uint8_t report[68];
++        const size_t length = ca_rtsp_sender_report(report + 4,
++            ntohl(info.rtp_header.ssrc), ntp, ntohl(info.rtp_header.ts),
++            uint32_t(info.packet_count), uint32_t(info.octet_count));
++        if (transport_mode_ == RTP_OVER_TCP) {
++            report[0] = '$'; report[1] = info.rtcp_channel;
++            report[2] = length >> 8; report[3] = length;
++            conn->Send(reinterpret_cast<const char *>(report), length + 4);
++        } else {
++            (void)sendto(rtcpfd_[channel_id], report + 4, length, kSendFlags,
++                reinterpret_cast<struct sockaddr *>(&peer_rtcp_sddr_[channel_id]),
++                sizeof(struct sockaddr_in));
++        }
++        info.last_rtcp_ntp_time = ntp;
++    }
++    return true;
+ }
+ 
+ int RtpConnection::SendRtpOverTcp(MediaChannelId channel_id, RtpPacket pkt)
+@@ -349,10 +514,13 @@
+ 
+ int RtpConnection::SendRtpOverUdp(MediaChannelId channel_id, RtpPacket pkt)
+ {
+-    int ret = sendto(rtpfd_[channel_id], (const char*)pkt.data.get()+4, pkt.size-4, 0,
++    int ret = sendto(rtpfd_[channel_id], (const char*)pkt.data.get()+4, pkt.size-4, kSendFlags,
+                     (struct sockaddr *)&(peer_rtp_addr_[channel_id]), sizeof(struct sockaddr_in));
+ 
+     if(ret < 0) {
++        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS || errno == EINTR) {
++            return 0;
++        }
+         Teardown();
+         return -1;
+     }

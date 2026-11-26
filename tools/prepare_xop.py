@@ -26,8 +26,9 @@ with tempfile.TemporaryDirectory(prefix='.xop-', dir=destination.parent) as dire
             path.write_text(original.read_text())
         else:
             path.write_bytes(original.read_bytes())
-    subprocess.run(['patch', '-s', '-t', '-N', '-p1', '-d', str(staging), '-i',
-                    str(Path(__file__).with_name('xop_warnings.patch').resolve())], check=True)
+    for patch in ('xop_warnings.patch', 'xop_robustness.patch'):
+        subprocess.run(['patch', '-s', '-t', '-N', '-p1', '-d', str(staging), '-i',
+                        str(Path(__file__).with_name(patch).resolve())], check=True)
     for path in staging.rglob('*'):
         if not path.is_file():
             continue

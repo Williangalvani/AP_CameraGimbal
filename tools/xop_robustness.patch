@@ -1,0 +1,335 @@
+--- a/net/SocketUtil.cpp
++++ b/net/SocketUtil.cpp
+@@ -83,6 +83,14 @@
+ {
+     int on = 1;
+     setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, (char *)&on, sizeof(on));
++    // A peer that vanished (power loss, cable pulled) is found in ~25 s,
++    // not the kernel default of over two hours.
++#if defined(TCP_KEEPIDLE) && defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
++    int idle = 10, interval = 5, count = 3;
++    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE, (char *)&idle, sizeof(idle));
++    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&interval, sizeof(interval));
++    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&count, sizeof(count));
++#endif
+ }
+ 
+ void SocketUtil::SetNoSigpipe(SOCKET sockfd)
+--- a/net/TaskScheduler.cpp
++++ b/net/TaskScheduler.cpp
+@@ -47,6 +47,10 @@
+         this->HandleTriggerEvent();
+         this->timer_queue_.HandleTimerEvent();
+         int64_t timeout = this->timer_queue_.GetTimeRemaining();
++        // Events queued meanwhile run next pass, after polling the sockets.
++        if (trigger_events_->Size() > 0) {
++            timeout = 0;
++        }
+         this->HandleEvent((int)timeout);
+     }
+ }
+@@ -71,15 +75,14 @@
+ 
+ bool TaskScheduler::AddTriggerEvent(TriggerEvent callback)
+ {
+-    if (trigger_events_->Size() < kMaxTriggetEvents) {
+-        std::lock_guard<std::mutex> lock(mutex_);
+-        char event = kTriggetEvent;
+-        trigger_events_->Push(std::move(callback));
+-        wakeup_pipe_->Write(&event, 1);
+-        return true;
++    // A full queue refuses the event; callers drop or retry, never wait.
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (!trigger_events_->Push(std::move(callback))) {
++        return false;
+     }
+-
+-    return false;
++    char event = kTriggetEvent;
++    wakeup_pipe_->Write(&event, 1);
++    return true;
+ }
+ 
+ void TaskScheduler::Wake()
+@@ -90,11 +93,14 @@
+ 
+ void TaskScheduler::HandleTriggerEvent()
+ {
+-    do
+-    {
++    // Only the events queued on entry: a producer that queues them faster
++    // than they run must not keep this thread from accepting, reading
++    // requests and closing connections.
++    for (int pending = trigger_events_->Size(); pending > 0; pending--) {
+         TriggerEvent callback;
+-        if (trigger_events_->Pop(callback)) {
+-            callback();
++        if (!trigger_events_->Pop(callback)) {
++            break;
+         }
+-    } while (trigger_events_->Size() > 0);
++        callback();
++    }
+ }
+--- a/net/TaskScheduler.h
++++ b/net/TaskScheduler.h
+@@ -48,7 +48,8 @@
+ 
+     static const char kTriggetEvent = 1;
+     static const char kTimerEvent = 2;
+-    static const int  kMaxTriggetEvents = 50000;
++    // Media is queued per connection, so few events are ever pending.
++    static const int  kMaxTriggetEvents = 8192;
+ };
+ 
+ }
+--- a/net/TcpConnection.h
++++ b/net/TcpConnection.h
+@@ -49,6 +49,13 @@
+     std::string GetIp() const
+     { return SocketUtil::GetPeerIp(channel_->GetSocket()); }
+ 
++    // Packets not yet accepted by the socket, for senders to bound.
++    uint32_t QueuedPackets()
++    {
++        std::lock_guard<std::mutex> lock(mutex_);
++        return write_buffer_->Size();
++    }
++
+ protected:
+     friend class TcpServer;
+ 
+--- a/xop/RtpConnection.h
++++ b/xop/RtpConnection.h
+@@ -5,6 +5,8 @@
+ #define XOP_RTP_CONNECTION_H
+ 
+ #include <cstdint>
++#include <deque>
++#include <mutex>
+ #include <vector>
+ #include <string>
+ #include <memory>
+@@ -107,6 +109,32 @@
+     struct sockaddr_in peer_rtp_addr_[MAX_MEDIA_CHANNEL];
+     struct sockaddr_in peer_rtcp_sddr_[MAX_MEDIA_CHANNEL];
+     MediaChannelInfo media_channel_info_[MAX_MEDIA_CHANNEL];
++
++    // The encoder thread queues packets here and one event-loop task sends
++    // them, without blocking: a slow peer costs dropped frames, not a stalled
++    // server. Defined by src/streaming/xop_rtp_backpressure.patch.
++    struct QueuedPacket
++    {
++        MediaChannelId channel_id = channel_0;
++        RtpPacket pkt;
++    };
++    void DrainQueue(std::shared_ptr<TcpConnection> conn);
++    void ScheduleDrain(std::shared_ptr<TcpConnection> conn, uint32_t delay_ms);
++    bool SendPending(std::shared_ptr<TcpConnection>& conn);
++
++    std::mutex queue_mutex_;
++    std::deque<QueuedPacket> queue_;
++    bool drain_scheduled_ = false;
++    bool drop_until_key_ = false;
++    bool next_starts_frame_ = true;
++    uint64_t dropped_packets_ = 0;
++    int64_t drop_logged_ms_ = 0;
++    // Event loop only: the packet being sent, kept while the socket is full.
++    QueuedPacket pending_;
++    bool has_pending_ = false;
++    bool pending_ready_ = false;   // RTP header written
++    bool pending_private_ = false; // copied out of the buffer shared by all clients
++    int64_t stalled_since_ms_ = 0;
+ };
+ 
+ }
+--- a/xop/RtspConnection.h
++++ b/xop/RtspConnection.h
+@@ -11,6 +11,7 @@
+ #include "DigestAuthentication.h"
+ #include "rtsp.h"
+ #include <iostream>
++#include <chrono>
+ #include <functional>
+ #include <memory>
+ #include <vector>
+@@ -51,8 +52,18 @@
+     TaskScheduler *GetTaskScheduler() const
+     { return task_scheduler_; }
+ 
++    // Any RTSP request or RTCP packet from the client. Event loop only.
+     void KeepAlive()
+-    { alive_count_++; }
++    { alive_count_++; last_alive_ms_ = NowMs(); }
++
++    int64_t LastAliveMs() const
++    { return last_alive_ms_; }
++
++    static int64_t NowMs()
++    {
++        return std::chrono::duration_cast<std::chrono::milliseconds>(
++            std::chrono::steady_clock::now().time_since_epoch()).count();
++    }
+ 
+     bool IsAlive() const
+     {
+@@ -127,6 +138,9 @@
+     std::unique_ptr<RtspRequest>   rtsp_request_;
+     std::unique_ptr<RtspResponse>  rtsp_response_;
+     std::shared_ptr<RtpConnection> rtp_conn_;
++
++    int64_t last_alive_ms_ = NowMs();
++    bool evicted_ = false; // closing to make room for a new connection
+ };
+ 
+ }
+--- a/xop/RtspMessage.cpp
++++ b/xop/RtspMessage.cpp
+@@ -408,7 +408,7 @@
+             "RTSP/1.0 200 OK\r\n"
+             "CSeq: %u\r\n"
+             "Transport: RTP/AVP;multicast;destination=%s;source=%s;port=%u-0;ttl=255\r\n"
+-            "Session: %u\r\n"
++            "Session: %u; timeout=60\r\n"
+             "\r\n",
+             this->GetCSeq(),
+             multicast_ip,
+@@ -426,7 +426,7 @@
+             "RTSP/1.0 200 OK\r\n"
+             "CSeq: %u\r\n"
+             "Transport: RTP/AVP;unicast;client_port=%hu-%hu;server_port=%hu-%hu\r\n"
+-            "Session: %u\r\n"
++            "Session: %u; timeout=60\r\n"
+             "\r\n",
+             this->GetCSeq(),
+             this->GetRtpPort(),
+@@ -445,7 +445,7 @@
+             "RTSP/1.0 200 OK\r\n"
+             "CSeq: %u\r\n"
+             "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\n"
+-            "Session: %u\r\n"
++            "Session: %u; timeout=60\r\n"
+             "\r\n",
+             this->GetCSeq(),
+             rtp_chn, rtcp_chn,
+--- a/xop/RtspServer.cpp
++++ b/xop/RtspServer.cpp
+@@ -6,6 +6,8 @@
+ using namespace xop;
+ using namespace std;
+ 
++extern "C" void ca_rtsp_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
++
+ RtspServer::RtspServer(EventLoop* loop)
+     : TcpServer(loop)
+ {
+@@ -14,15 +16,82 @@
+ 
+ RtspServer::~RtspServer()
+ {
+-
++    // Waits for a running sweep: timer callbacks run under the queue's lock.
++    event_loop_->RemoveTimer(idle_timer_);
+ }
+ 
+ std::shared_ptr<RtspServer> RtspServer::Create(xop::EventLoop* loop)
+ {
+     std::shared_ptr<RtspServer> server(new RtspServer(loop));
++    RtspServer *raw = server.get();
++    server->idle_timer_ = loop->AddTimer([raw] { raw->CloseIdleConnections(); return true; }, 1000);
+     return server;
+ }
+ 
++// Runs on the event loop in a timer callback, so it must not add or remove
++// timers; Disconnect() only queues the close.
++void RtspServer::CloseIdleConnections()
++{
++    const int64_t now = RtspConnection::NowMs();
++    std::lock_guard<std::mutex> locker(TcpServer::mutex_);
++    for (auto& entry : connections_) {
++        auto conn = std::static_pointer_cast<RtspConnection>(entry.second);
++        if (conn->IsClosed() || now - conn->LastAliveMs() <= kSessionTimeoutMs) {
++            continue;
++        }
++        ca_rtsp_log("RTSP client %s:%u sent nothing for %lld s; closing", conn->GetIp().c_str(),
++                    conn->GetPort(), (long long)((now - conn->LastAliveMs()) / 1000));
++        conn->Disconnect();
++    }
++}
++
++// At kMaxConnections, make room by closing the least recently active
++// connection that is not playing; with every slot playing, refuse.
++bool RtspServer::AdmitConnection(SOCKET sockfd)
++{
++    std::shared_ptr<RtspConnection> victim;
++    {
++        std::lock_guard<std::mutex> locker(TcpServer::mutex_);
++        size_t open = 0;
++        for (auto& entry : connections_) {
++            auto conn = std::static_pointer_cast<RtspConnection>(entry.second);
++            if (conn->IsClosed() || conn->evicted_) {
++                continue;
++            }
++            open++;
++            if (!conn->IsPlay() && !conn->IsRecord() &&
++                (!victim || conn->LastAliveMs() < victim->LastAliveMs())) {
++                victim = conn;
++            }
++        }
++        if (open < kMaxConnections) {
++            return true;
++        }
++        if (victim) {
++            victim->evicted_ = true;
++            victim->Disconnect();
++        }
++    }
++    if (victim) {
++        ca_rtsp_log("RTSP: %zu connections; closing idle %s:%u for a new one", (size_t)kMaxConnections,
++                    victim->GetIp().c_str(), victim->GetPort());
++        return true;
++    }
++    ca_rtsp_log("RTSP: %zu clients playing; refusing %s:%u", (size_t)kMaxConnections,
++                SocketUtil::GetPeerIp(sockfd).c_str(), SocketUtil::GetPeerPort(sockfd));
++    static const char busy[] = "RTSP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
++    int flags = 0;
++#ifdef MSG_DONTWAIT
++    flags |= MSG_DONTWAIT;
++#endif
++#ifdef MSG_NOSIGNAL
++    flags |= MSG_NOSIGNAL;
++#endif
++    (void)::send(sockfd, busy, sizeof(busy) - 1, flags);
++    SocketUtil::Close(sockfd);
++    return false;
++}
++
+ MediaSessionId RtspServer::AddSession(MediaSession* session)
+ {
+     std::lock_guard<std::mutex> locker(mutex_);
+@@ -99,6 +168,9 @@
+ 
+ TcpConnection::Ptr RtspServer::OnConnect(SOCKET sockfd)
+ {
++    if (!AdmitConnection(sockfd)) {
++        return nullptr;
++    }
+     return std::make_shared<RtspConnection>(shared_from_this(), event_loop_->GetTaskScheduler().get(), sockfd);
+ }
+ 
+--- a/xop/RtspServer.h
++++ b/xop/RtspServer.h
+@@ -34,6 +34,13 @@
+     MediaSession::Ptr LookMediaSession(const std::string& suffix);
+     MediaSession::Ptr LookMediaSession(MediaSessionId session_id);
+     virtual TcpConnection::Ptr OnConnect(SOCKET sockfd);
++    bool AdmitConnection(SOCKET sockfd);
++    void CloseIdleConnections();
++
++    // SETUP replies advertise "timeout=60"; allow a little more than that.
++    static const int64_t kSessionTimeoutMs = 65000;
++    static const size_t kMaxConnections = 16;
++    TimerId idle_timer_ = 0;
+ 
+     std::mutex mutex_;
+     std::unordered_map<MediaSessionId, std::shared_ptr<MediaSession>> media_sessions_;

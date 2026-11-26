@@ -930,7 +930,23 @@ packets (a 4K keyframe above about 35 Mbit/s overflowed it, and the overflow
 was dropped silently), and removes unused declarations and incomplete C++
 aggregate initializers. The same buffer/socket implementations replace the corresponding
 objects in the MT11 vendor archive. `make -C camera_app xop-test` checks buffer
-release with AddressSanitizer and verifies TCP_NODELAY. The minimp4 patch also
+release with AddressSanitizer and verifies TCP_NODELAY.
+
+The event loop must keep serving RTSP requests whatever clients do.
+`tools/xop_robustness.patch` makes each loop pass run only the work queued
+when it began, enables TCP keepalive (dead peers found in about 25 s), closes
+sessions silent for 65 s (no request or RTCP; SETUP advertises
+`timeout=60`), and caps connections at 16: the least recently active
+non-playing one makes room, or the newcomer gets 503.
+`src/streaming/xop_rtp_backpressure.patch` queues each client's RTP packets
+for the loop to send without blocking. A client that falls more than about
+2000 packets behind skips to the next key frame (requesting one), and one
+that accepts nothing for 3 s is disconnected. `rtsp_xop.cpp` adds a
+watchdog thread: if the loop stops for 5 s it logs `RTSP WATCHDOG` and
+shuts camera-app down for its supervisor to restart. `make -C camera_app
+rtsp-robustness-test` exercises all of this with a fast producer and
+misbehaving clients, again over a UDP-limited loopback where namespaces
+allow. The minimp4 patch also
 annotates intentional fall-throughs and checks signed file sizes before
 unsigned comparisons; compiler diagnostics remain enabled.
 

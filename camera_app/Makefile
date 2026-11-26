@@ -123,7 +123,7 @@ XOP_PREPARED_FILES := $(patsubst $(RTSP_SOURCE_ROOT)/%,$(RTSP_ROOT)/%,$(XOP_INPU
 XOP_PREPARE_STAMP := $(RTSP_ROOT)/.prepared
 XOP_PREPARE = $(PYTHON) ../tools/prepare_xop.py $(if $(filter Darwin,$(shell uname -s)),,--native) $(RTSP_SOURCE_ROOT) $(RTSP_ROOT)
 
-$(XOP_PREPARE_STAMP): $(XOP_INPUT_FILES) ../tools/prepare_xop.py ../tools/xop_warnings.patch
+$(XOP_PREPARE_STAMP): $(XOP_INPUT_FILES) ../tools/prepare_xop.py ../tools/xop_warnings.patch ../tools/xop_robustness.patch
 	$(call progress,Preparing RTSP sources)
 	$(XOP_PREPARE)
 	touch $@
@@ -218,6 +218,7 @@ OBJECTS := $(COMMON_SOURCES:.cpp=.o) build/mt11_media.o build/mt11_overlay.o bui
 	build/mp4_minimp4.o \
 	build/rtsp_xop.o build/xop_rtsp_connection.o build/xop_rtp_connection.o \
 	build/xop_buffer_writer.o build/xop_socket_util.o \
+	build/xop_task_scheduler.o build/xop_rtsp_server.o \
 	build/mt11_imx586.o \
 	build/sample_comm_sys.o \
 	build/sample_comm_isp.o build/sample_comm_vi.o build/sample_comm_vpss.o \
@@ -664,9 +665,10 @@ build/xop_rtsp_connection.o: build/xop_rtsp_connection.cpp
 		-O2 -pipe -Wall -Wextra -Werror -Wno-error=unused-parameter \
 		-Wno-error=missing-field-initializers -std=c++11 -c $< -o $@
 
-build/xop_rtp_connection.cpp: $(RTSP_ROOT)/xop/RtpConnection.cpp src/streaming/xop_satip_payload.patch ../tools/patch_source.py
+XOP_RTP_PATCHES := src/streaming/xop_satip_payload.patch src/streaming/xop_rtp_backpressure.patch
+build/xop_rtp_connection.cpp: $(RTSP_ROOT)/xop/RtpConnection.cpp $(XOP_RTP_PATCHES) ../tools/patch_source.py
 	$(call progress,Generating $@)
-	$(PYTHON) ../tools/patch_source.py $< src/streaming/xop_satip_payload.patch $@
+	$(PYTHON) ../tools/patch_source.py $< $(XOP_RTP_PATCHES) $@
 
 build/xop_rtp_connection.o: build/xop_rtp_connection.cpp
 	$(call progress,Compiling $(notdir $<))
@@ -684,11 +686,22 @@ build/xop_socket_util.o: $(RTSP_ROOT)/net/SocketUtil.cpp
 	$(call progress,Compiling $(notdir $<))
 	$(CXX) $(DEPFLAGS) -I$(RTSP_ROOT) -I$(RTSP_ROOT)/net -O2 -pipe -Wall -Wextra -Werror -std=c++11 -c $< -o $@
 
+# The event-loop fairness, idle-session and connection-cap fixes in
+# xop_robustness.patch also replace these archive members.
+build/xop_task_scheduler.o: $(RTSP_ROOT)/net/TaskScheduler.cpp
+	$(call progress,Compiling $(notdir $<))
+	$(CXX) $(DEPFLAGS) -I$(RTSP_ROOT) -I$(RTSP_ROOT)/net -O2 -pipe -Wall -Wextra -Werror -std=c++11 -c $< -o $@
+
+build/xop_rtsp_server.o: $(RTSP_ROOT)/xop/RtspServer.cpp
+	$(call progress,Compiling $(notdir $<))
+	$(CXX) $(DEPFLAGS) -I$(RTSP_ROOT) -I$(RTSP_ROOT)/net -I$(RTSP_ROOT)/xop -O2 -pipe -Wall -Wextra -Werror \
+		-Wno-error=unused-parameter -std=c++11 -c $< -o $@
+
 $(XOP_COMPAT_LIB): $(XOP_VENDOR_LIB) Makefile
 	mkdir -p build
 	cp $< $@
 	$(CROSS_COMPILE)ar d $@ RtspConnection.o
-	$(CROSS_COMPILE)ar d $@ RtpConnection.o BufferWriter.o SocketUtil.o
+	$(CROSS_COMPILE)ar d $@ RtpConnection.o BufferWriter.o SocketUtil.o TaskScheduler.o RtspServer.o
 
 build/mt11_imx586.o: $(BACKEND_DIR)/imx586.cpp $(BACKEND_DIR)/imx586.h \
 		$(BACKEND_DIR)/imx586_mode0_registers.inc
@@ -1182,6 +1195,24 @@ build/tests/test_xop_buffer: tests/test_xop_buffer.cpp $(RTSP_ROOT)/net/BufferWr
 	mkdir -p $(dir $@)
 	$(call progress,Linking $@)
 	$(HOST_CXX) -O1 -g -fsanitize=address -fno-omit-frame-pointer -std=c++11 -Wall -Wextra -Werror -I$(RTSP_ROOT) $(filter %.cpp,$^) -o $@
+
+# The whole RTSP server (patched xop and rtsp_xop.cpp) under a fast producer
+# and misbehaving clients, with ASan watching the cross-thread packet queues.
+.PHONY: rtsp-robustness-test
+xop-test test: rtsp-robustness-test
+rtsp-robustness-test: build/tests/test_rtsp_robustness
+	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_rtsp_robustness
+	ASAN_OPTIONS=detect_leaks=0 tests/paced_loopback.sh ./build/tests/test_rtsp_robustness
+
+build/tests/test_rtsp_robustness: tests/test_rtsp_robustness.cpp src/streaming/rtsp_xop.cpp \
+		$(XOP_HOST_SOURCES) build/xop_rtsp_connection.cpp build/xop_rtp_connection.cpp \
+		src/streaming/support_video.cpp src/recording/video_metadata.cpp src/recording/metadata.cpp \
+		src/log.cpp include/camera_app/rtsp.h $(filter %.h,$(XOP_PREPARED_FILES))
+	mkdir -p $(dir $@)
+	$(call progress,Linking $@)
+	$(HOST_CXX) $(CPPFLAGS) -I$(RTSP_ROOT) -I$(RTSP_ROOT)/net -I$(RTSP_ROOT)/xop -I$(RTSP_ROOT)/3rdpart \
+		-include cstdint -O1 -g -fsanitize=address -fno-omit-frame-pointer -std=c++11 -Wall \
+		-Wno-unused-parameter -Wno-missing-field-initializers $(filter %.cpp,$^) -o $@ -lpthread -lm
 
 # Isolate dlib exceptions from the rest of the firmware. Compile only its
 # correlation tracker and FFT, without optional GUI/BLAS/CUDA dependencies.

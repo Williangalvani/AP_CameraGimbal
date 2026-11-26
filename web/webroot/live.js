@@ -25,6 +25,10 @@
   let session = null;
   // Not streaming: the tab is hidden, or the viewer paused (userPaused).
   let stopped = false, userPaused = false;
+  // Retry soon after a glitch, then back off: an unavailable stream must not
+  // be requested every 1.5 s for as long as the page stays open.
+  const RETRY_FIRST = 1500, RETRY_MAX = 30000;
+  let retryDelay = RETRY_FIRST;
   const streamUrl = () => '/live/video' + (Number(stream.value) + 1) + '.mp4?start=' + Date.now();
   // The stream is one fragment per frame, so MSE can play it as it arrives.
   // A plain <video src> buffers ~0.7 s of it before Chrome starts playing.
@@ -52,6 +56,11 @@
     const response = await fetch(streamUrl(), {cache: 'no-store', signal: current.abort.signal});
     // The session is gone (a reboot clears them); retrying cannot succeed.
     if (response.status === 401) { window.location.replace('/login'); return; }
+    // Not an H.264 stream: retrying cannot help until another is chosen.
+    if (response.status === 415) {
+      const error = new Error((await response.text()).trim() || 'HTTP 415');
+      error.permanent = true; throw error;
+    }
     if (!response.ok || !response.body) throw new Error('HTTP ' + response.status);
     const reader = response.body.getReader();
     let head = new Uint8Array(0), end = 0;
@@ -115,11 +124,15 @@
   const fail = (current, error) => {
     if (session !== current) return;
     session = null; current.abort.abort();
-    reconnect(L.liveUnavailable + (error.message || L.unknownError));
+    reconnect(L.liveUnavailable + (error.message || L.unknownError), error.permanent);
   };
-  const reconnect = message => {
+  const reconnect = (message, permanent) => {
+    if (permanent) { status.textContent = message; return; }
     status.textContent = message + L.retrying;
-    if (retry === null && !stopped) retry = window.setTimeout(start, 1500);
+    if (retry === null && !stopped) {
+      retry = window.setTimeout(start, retryDelay);
+      retryDelay = Math.min(2 * retryDelay, RETRY_MAX);
+    }
   };
   // Stop downloading while nobody watches. MSE keeps the last frame on
   // screen; a native player is emptied, as it would otherwise keep buffering.
@@ -139,7 +152,7 @@
     else if (stopped && !userPaused) start();
   });
   video.addEventListener('loadedmetadata', () => { status.textContent = L.livePrefix + video.videoWidth + '×' + video.videoHeight; });
-  video.addEventListener('playing', () => { status.textContent = L.livePrefix + video.videoWidth + '×' + video.videoHeight; });
+  video.addEventListener('playing', () => { retryDelay = RETRY_FIRST; status.textContent = L.livePrefix + video.videoWidth + '×' + video.videoHeight; });
   video.addEventListener('ended', () => reconnect(L.streamEnded));
   video.addEventListener('error', () => {
     const names = ['', L.errorAborted, L.errorNetwork, L.errorDecode, L.errorUnsupported];
@@ -172,7 +185,7 @@
     else if (lag < 0.3) video.playbackRate = 1.0;
   };
   window.setInterval(catchUp, 250);
-  stream.addEventListener('change', start); start();
+  stream.addEventListener('change', () => { retryDelay = RETRY_FIRST; start(); }); start();
   let lease = '', held = null, renewing = false, leaving = false;
   const controls = [...document.querySelectorAll('[data-direction]'), document.getElementById('live-center'), rate, zoom];
   const refreshControls = () => { controls.forEach(control => { control.disabled = !lease; }); };

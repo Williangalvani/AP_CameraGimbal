@@ -16,6 +16,40 @@
 #include <time.h>
 #include <unistd.h>
 
+/* A viewer of stream 1: its status byte, or -1 if the server closed it first. */
+static int open_viewer(unsigned port, int *result)
+{
+    struct sockaddr_in address = {.sin_family = AF_INET};
+    struct timeval timeout = {.tv_sec = 3, .tv_usec = 0};
+    uint8_t byte = 1;
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+
+    *result = fd;
+    address.sin_port = htons((uint16_t)port);
+    address.sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)};
+    if (fd < 0 || connect(fd, (const struct sockaddr *)&address, sizeof(address)) < 0) return -2;
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    if (send(fd, &byte, 1U, MSG_NOSIGNAL) != 1) return -1;
+    return recv(fd, &byte, 1U, MSG_WAITALL) == 1 ? byte : -1;
+}
+
+/* Called after the only viewer disconnected with no frames flowing: it must
+ * be reaped all the same, leaving room for four viewers and no more. */
+static int viewer_limits(unsigned port)
+{
+    int fds[4], extra, status;
+    const struct timespec wait = {.tv_sec = 7, .tv_nsec = 0};
+
+    (void)nanosleep(&wait, NULL);
+    for (unsigned i = 0; i < 4U; i++) {
+        if (open_viewer(port, &fds[i]) != 0) return -1;
+    }
+    status = open_viewer(port, &extra);
+    if (extra >= 0) close(extra);
+    for (unsigned i = 0; i < 4U; i++) close(fds[i]);
+    return status == -1 ? 0 : -1;
+}
+
 static int contains(const uint8_t *data, size_t length, const char text[4])
 {
     for (size_t i = 0; i + 4U <= length; i++) {
@@ -81,7 +115,12 @@ int main(int argc, char **argv)
             memmem(received, used, "\"hfov_deg\":88.0000",
                    strlen("\"hfov_deg\":88.0000")) != NULL) {
             puts("PASS native fragmented-MP4 live server stream selection");
-            result = 0;
+            close(fd);
+            fd = -1;
+            if (viewer_limits(ca_live_video_server_port(server)) == 0) {
+                puts("PASS live server caps viewers and reaps departed ones");
+                result = 0;
+            }
             break;
         }
     }

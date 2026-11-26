@@ -13,7 +13,8 @@
   MPP sample tree and minimp4 header used by target and SITL builds.
 - `prepare_xop.py` applies `xop_warnings.patch` to a private RTSP source copy,
   fixing buffer ownership, TCP_NODELAY, the TCP send queue size and compiler
-  warnings. Its default mode
+  warnings, then `xop_robustness.patch`: bounded event-loop work, TCP
+  keepalive, a 60 s session timeout and a 16-connection cap. Its default mode
   also prepares Cygwin/macOS sockets; `--native` retains Linux epoll. Unchanged
   files retain their timestamps. Compiler warning checks remain enabled.
 - `prebuilt_mt11_tools.py` verifies and unpacks the stripped, compressed MT11

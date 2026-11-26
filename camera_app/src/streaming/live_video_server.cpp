@@ -17,9 +17,15 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define LIVE_STREAMS 2U
+/* Each viewer is a thread and a copy of the latest frame. Further connections
+ * are closed at once, which hisi-web reports as 503. */
+#define LIVE_MAX_VIEWERS 4U
+/* Without new frames a viewer checks this often whether its peer is gone. */
+#define LIVE_IDLE_CHECK_SECONDS 5
 
 struct live_stream {
     uint8_t *frame;
@@ -86,6 +92,14 @@ static void client_finished(struct live_client *client)
     pthread_mutex_unlock(&server->lock);
 }
 
+static bool peer_closed(int fd)
+{
+    uint8_t byte;
+    ssize_t got = recv(fd, &byte, 1U, MSG_PEEK | MSG_DONTWAIT);
+    return got == 0 ||
+           (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
+}
+
 static void *client_thread(void *opaque)
 {
     struct live_client *client = (live_client*)(opaque);
@@ -135,14 +149,24 @@ static void *client_thread(void *opaque)
         bool key_frame;
         float hfov_deg;
 
+        bool gone = false;
+
         pthread_mutex_lock(&server->lock);
         while (!atomic_load(&server->stop) &&
                server->streams[selection].config_generation ==
                    config_generation &&
                server->streams[selection].generation == generation) {
-            pthread_cond_wait(&server->changed, &server->lock);
+            struct timespec deadline;
+            (void)clock_gettime(CLOCK_REALTIME, &deadline);
+            deadline.tv_sec += LIVE_IDLE_CHECK_SECONDS;
+            if (pthread_cond_timedwait(&server->changed, &server->lock,
+                                       &deadline) == ETIMEDOUT &&
+                peer_closed(client->fd)) {
+                gone = true;
+                break;
+            }
         }
-        if (atomic_load(&server->stop) ||
+        if (gone || atomic_load(&server->stop) ||
             server->streams[selection].config_generation !=
                 config_generation) {
             pthread_mutex_unlock(&server->lock);
@@ -201,6 +225,13 @@ static void *server_thread(void *opaque)
         client->server = server;
         client->fd = fd;
         pthread_mutex_lock(&server->lock);
+        if (server->clients >= LIVE_MAX_VIEWERS) {
+            pthread_mutex_unlock(&server->lock);
+            ca_log("live video: %u viewers already; refusing another", LIVE_MAX_VIEWERS);
+            close(fd);
+            free(client);
+            continue;
+        }
         server->clients++;
         pthread_mutex_unlock(&server->lock);
         if (pthread_attr_init(&attr) != 0) {

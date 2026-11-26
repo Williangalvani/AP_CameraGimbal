@@ -12,15 +12,32 @@
 #include "MediaSession.h"
 #include "RtspServer.h"
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <csignal>
+#include <cstdarg>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <string>
 #include <cstring>
+#include <thread>
 #include <unordered_set>
 #include <vector>
+#include <unistd.h>
+
+// Logging for the patched xop sources, which do not include camera_app headers.
+extern "C" void ca_rtsp_log(const char *format, ...)
+{
+    char message[512];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    ca_log("%s", message);
+}
 
 static std::mutex satip_clients_mutex;
 static std::unordered_set<const void *> satip_clients;
@@ -206,6 +223,30 @@ private:
     uint32_t timestamp_ = 0;
 };
 
+static uint32_t steady_ms()
+{
+    return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// The default watchdog action. A wedged event loop thread cannot be stopped
+// or replaced in-process, so shut down cleanly and let the supervisor
+// (packaging/hisi/service.sh) start camera-app again. main() can miss a
+// SIGTERM while vendor code holds the disposition, hence the repeats; if the
+// shutdown itself hangs, exit anyway.
+static void restart_process(void *)
+{
+    ca_log("RTSP WATCHDOG: restarting camera-app");
+    std::thread([] {
+        for (int second = 0; second < 30; second++) {
+            kill(getpid(), SIGTERM);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        ca_log("RTSP WATCHDOG: shutdown did not finish in 30 s; exiting");
+        _exit(1);
+    }).detach();
+}
+
 struct ca_rtsp {
     struct stream {
         ca_support_video *publisher = nullptr;
@@ -224,7 +265,37 @@ struct ca_rtsp {
     ca_rtsp_keyframe_fn keyframe_request = nullptr;
     void *keyframe_context = nullptr;
     std::map<unsigned, std::chrono::steady_clock::time_point> keyframe_requested;
+
+    // Stamped by an event-loop timer; checked by the watchdog thread.
+    std::shared_ptr<std::atomic<uint32_t>> heartbeat;
+    std::thread watchdog;
+    std::mutex watchdog_mutex;
+    std::condition_variable watchdog_wake;
+    bool watchdog_stop = false;
+    unsigned stall_ms = 5000;
+    void (*stall_action)(void *) = restart_process;
+    void *stall_context = nullptr;
 };
+
+static const unsigned heartbeat_ms = 500;
+
+static void watch_event_loop(ca_rtsp *rtsp)
+{
+    std::unique_lock<std::mutex> lock(rtsp->watchdog_mutex);
+    const auto stop = [rtsp] { return rtsp->watchdog_stop; };
+    while (!rtsp->watchdog_wake.wait_for(lock, std::chrono::milliseconds(heartbeat_ms), stop)) {
+        const uint32_t silent = steady_ms() - rtsp->heartbeat->load();
+        if (silent < rtsp->stall_ms) continue;
+        void (*action)(void *) = rtsp->stall_action;
+        void *context = rtsp->stall_context;
+        lock.unlock();
+        ca_log("RTSP WATCHDOG: RTSP event loop stuck for %u ms; RTSP clients are not being served", silent);
+        action(context);
+        lock.lock();
+        rtsp->watchdog_wake.wait(lock, stop);
+        return;
+    }
+}
 
 // Sessions, aliases included, by xop session id. Keyframe requests arrive on
 // the RTSP event thread; holding this lock while calling the encoder keeps
@@ -313,6 +384,9 @@ extern "C" int ca_rtsp_open(struct ca_rtsp **result, unsigned port,
     std::unique_ptr<ca_rtsp> rtsp(new (std::nothrow) ca_rtsp);
     if (!rtsp) return -1;
     rtsp->loop = std::make_shared<xop::EventLoop>();
+    rtsp->heartbeat = std::make_shared<std::atomic<uint32_t>>(steady_ms());
+    std::shared_ptr<std::atomic<uint32_t>> heartbeat = rtsp->heartbeat;
+    rtsp->loop->AddTimer([heartbeat] { heartbeat->store(steady_ms()); return true; }, heartbeat_ms);
     rtsp->server = xop::RtspServer::Create(rtsp->loop.get());
     if (!rtsp->server || !rtsp->server->Start("0.0.0.0", port)) return -1;
     xop::MediaSession *session = xop::MediaSession::CreateNew(path);
@@ -323,8 +397,25 @@ extern "C" int ca_rtsp_open(struct ca_rtsp **result, unsigned port,
     if (session_id == 0) return -1;
     add_stream(rtsp.get(), session_id, codec, frame_rate, parameters);
     add_keyframe_target(rtsp.get(), session_id, 0);
+    rtsp->watchdog = std::thread(watch_event_loop, rtsp.get());
     *result = rtsp.release();
     return 0;
+}
+
+extern "C" void ca_rtsp_set_watchdog(struct ca_rtsp *rtsp, unsigned stall_ms,
+                                     void (*action)(void *context), void *context)
+{
+    if (rtsp == nullptr) return;
+    std::lock_guard<std::mutex> lock(rtsp->watchdog_mutex);
+    rtsp->stall_ms = stall_ms ? stall_ms : 5000;
+    rtsp->stall_action = action ? action : restart_process;
+    rtsp->stall_context = action ? context : nullptr;
+}
+
+extern "C" void ca_rtsp_test_stall_loop(struct ca_rtsp *rtsp, unsigned ms)
+{
+    if (rtsp == nullptr) return;
+    rtsp->loop->AddTriggerEvent([ms] { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
 }
 
 extern "C" int ca_rtsp_add_video(struct ca_rtsp *rtsp, const char *path,
@@ -470,6 +561,19 @@ extern "C" int ca_rtsp_support_proxy(struct ca_rtsp *rtsp,
 extern "C" void ca_rtsp_close(struct ca_rtsp *rtsp)
 {
     if (rtsp == nullptr) return;
+    {
+        std::lock_guard<std::mutex> lock(rtsp->watchdog_mutex);
+        rtsp->watchdog_stop = true;
+    }
+    rtsp->watchdog_wake.notify_all();
+    rtsp->watchdog.join();
+    // Stopping the server waits for the event loop, so with the loop stuck
+    // it would never return. Leave the server and its thread to process exit.
+    if (steady_ms() - rtsp->heartbeat->load() >= 4 * heartbeat_ms) {
+        ca_log("RTSP: event loop stuck; abandoning the RTSP server");
+        (void)new std::shared_ptr<xop::RtspServer>(std::move(rtsp->server));
+        (void)new std::shared_ptr<xop::EventLoop>(std::move(rtsp->loop));
+    }
     {
         std::lock_guard<std::mutex> lock(keyframe_mutex);
         for (auto target = keyframe_targets.begin(); target != keyframe_targets.end();) {

@@ -17,7 +17,7 @@ class XopPreparationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='apcam-xop-build-') as directory:
             root = Path(directory)
             for name in ('camera_app/Makefile', 'tools/build.mk', 'tools/prepare_xop.py',
-                         'tools/xop_warnings.patch', 'include/apcam/targets.mk'):
+                         'tools/xop_warnings.patch', 'tools/xop_robustness.patch', 'include/apcam/targets.mk'):
                 output = root / name
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / name, output)
