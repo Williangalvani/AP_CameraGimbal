@@ -408,7 +408,7 @@ struct InterleavedReader {
 };
 
 // A healthy RTP-over-TCP player of a realistic 4K H.265 stream (685 KB key
-// frames, 117 KB P frames, 30 fps) paced at the default 60 Mbit/s: no packet
+// frames, 117 KB P frames, 30 fps) paced at 60 Mbit/s: no packet
 // may be dropped, a key frame takes about 90 ms instead of a line-rate burst,
 // and an OPTIONS on the same connection is answered while the key frame is
 // still going out. With pacing turned off live, the next key frame bursts.

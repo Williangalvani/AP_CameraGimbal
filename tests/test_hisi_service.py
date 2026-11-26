@@ -1048,7 +1048,7 @@ echo ok
 
         rows = (('main_max_iframe_ratio', 'main', 'max_iframe_ratio', 100, '0', 'Main RTSP key frame size limit'),
                 ('sub_max_iframe_ratio', 'sub', 'max_iframe_ratio', 100, '0', 'Sub RTSP key frame size limit'),
-                ('main_rtp_pacing', 'main', 'rtp_pacing_mbps', 1000, '60', 'Main RTSP send pacing (Mbit/s)'),
+                ('main_rtp_pacing', 'main', 'rtp_pacing_mbps', 1000, '0', 'Main RTSP send pacing (Mbit/s)'),
                 ('sub_rtp_pacing', 'sub', 'rtp_pacing_mbps', 1000, '0', 'Sub RTSP send pacing (Mbit/s)'))
         for name, stream, key, maximum, default, label in rows:
             field = keyint_field(name)
@@ -1057,7 +1057,7 @@ echo ok
             assert saved_stream(stream, key) == default, ini.read_text()
         old = ready.read_text()
         changes = {'main_max_iframe_ratio': '4', 'sub_max_iframe_ratio': '100',
-                   'main_rtp_pacing': '0', 'sub_rtp_pacing': '1000'}
+                   'main_rtp_pacing': '80', 'sub_rtp_pacing': '1000'}
         status, page = save(changes)
         assert status == 200 and b'Parameters saved' in page, page
         assert {name: saved_stream(stream, key) for name, stream, key, *_ in rows} == changes, ini.read_text()
@@ -1067,7 +1067,7 @@ echo ok
             status, page = save({name: value})
             assert status == 400 and ini.read_text() == before, (name, value, status, page)
         status, page = save({name: default for name, _, _, _, default, _ in rows})
-        assert status == 200 and saved_stream('main', 'rtp_pacing_mbps') == '60', ini.read_text()
+        assert status == 200 and saved_stream('main', 'rtp_pacing_mbps') == '0', ini.read_text()
 
         # Low latency: super frame thresholds apply live; slice output and low delay rebuild the
         # pipeline inside camera-app, which acknowledges that as applied too.

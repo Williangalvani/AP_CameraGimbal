@@ -107,8 +107,6 @@ void ca_config_defaults(struct ca_config *config)
     config->tnr_strength = 255U;
     config->vi_3dnr = true;
     config->vi_3dnr_strength = 100U;
-    // a 4K key frame drains over about 100 ms instead of bursting at line rate
-    config->main_rtp_pacing_mbps = 60U;
     config->iris_mode = CA_IRIS_AUTO;
 #endif
     config->position_targeting = APCAM_DEFAULT_POSITION_TARGETING;

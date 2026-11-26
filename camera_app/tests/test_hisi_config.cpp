@@ -228,7 +228,7 @@ int main()
     // [stream.*] max_iframe_ratio and rtp_pacing_mbps: no MAVLink names, live like the bitrate
     ca_config_defaults(&config);
     assert(config.main_max_iframe_ratio == 0U && config.sub_max_iframe_ratio == 0U);
-    assert(config.main_rtp_pacing_mbps == 60U && config.sub_rtp_pacing_mbps == 0U);
+    assert(config.main_rtp_pacing_mbps == 0U && config.sub_rtp_pacing_mbps == 0U);
     static const struct { const char *section, *key; int maximum; } stream_keys[] = {
         {"stream.main", "max_iframe_ratio", 100}, {"stream.sub", "max_iframe_ratio", 100},
         {"stream.main", "rtp_pacing_mbps", 1000}, {"stream.sub", "rtp_pacing_mbps", 1000},
@@ -238,11 +238,11 @@ int main()
         assert(field != NULL && field->param_name == NULL);
         assert(field->minimum == 0 && field->maximum == key.maximum);
     }
-    write_file(path, "[stream.main]\nmax_iframe_ratio = 4\nrtp_pacing_mbps = 0\n"
+    write_file(path, "[stream.main]\nmax_iframe_ratio = 4\nrtp_pacing_mbps = 60\n"
                      "[stream.sub]\nmax_iframe_ratio = 100\nrtp_pacing_mbps = 1000\n");
     assert(ca_config_load(&config, path, error, sizeof(error)) == 0);
     assert(config.main_max_iframe_ratio == 4U && config.sub_max_iframe_ratio == 100U);
-    assert(config.main_rtp_pacing_mbps == 0U && config.sub_rtp_pacing_mbps == 1000U);
+    assert(config.main_rtp_pacing_mbps == 60U && config.sub_rtp_pacing_mbps == 1000U);
     static void (*const stream_changes[])(struct ca_config *) = {
         [](struct ca_config *c) { c->main_max_iframe_ratio = 3U; },
         [](struct ca_config *c) { c->sub_max_iframe_ratio = 0U; },

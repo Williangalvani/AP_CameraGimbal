@@ -102,14 +102,15 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   (~10k packets/s) that stalls some RTSP-over-TCP players (Cockpit). Two
   settings per stream, without a MAVLink name, set in the web Parameters
   and applied live like the bitrate:
-  - `rtp_pacing_mbps` (default **60** for `[stream.main]`, **0** for
-    `[stream.sub]`; 0-1000, 0 off) paces each RTSP client, UDP and
-    RTP-over-TCP alike, with a token bucket: after a gap a burst of 16
-    packets goes at once, the rest at the rate, never below twice the
-    stream's bitrate (main: `bitrate_kbps`, or its automatic value; sub: its
-    automatic rate). At 28 Mbit/s the default is 60 Mbit/s, which sends a
-    685 KB key frame in about 90 ms (three frame times); at 40 and 50 Mbit/s
-    the floor makes it 80 and 100 Mbit/s. The XOP event loop waits on its
+  - `rtp_pacing_mbps` (default **0**, off, for both streams; 0-1000) paces
+    each RTSP client, UDP and RTP-over-TCP alike, with a token bucket: after
+    a gap a burst of 16 packets goes at once, the rest at the rate, never
+    below twice the stream's bitrate (main: `bitrate_kbps`, or its automatic
+    value; sub: its automatic rate). At 28 Mbit/s, 60 Mbit/s sends a 685 KB
+    key frame in about 90 ms (three frame times); at 40 and 50 Mbit/s the
+    floor makes it 80 and 100 Mbit/s. It is off by default because on
+    hardware 60 Mbit/s stretched key-frame delivery from ~60 ms to ~95 ms
+    without lowering the 10 ms packet peak (see below). The XOP event loop waits on its
     millisecond timers, never blocking, and RTSP replies and RTCP go out
     unpaced. The camera's kernel has no high-resolution timers (10 ms
     jiffies), so a paced wait wakes 10-20 ms late; while packets wait the
@@ -127,10 +128,9 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
     encoders (`ss_mpi_venc_set_rc_param`), with `min_i_proportion` lowered
     to 1 if it would exceed it. 0 keeps, or restores, the limits the encoder
     started with. Recordings that share the main encoder get the cap too.
-    It is off by default because pacing removes the burst without costing
-    picture quality, while a cap blurs every key frame (most visibly at a
-    long `keyframe_interval_ms`) and its effect is not yet checked on
-    hardware; 3-4 is a starting point if pacing alone is not enough. camera-app
+    It is off by default because a cap blurs every key frame (most visibly
+    at a long `keyframe_interval_ms`) and its effect is not yet checked on
+    hardware; 3-4 is a starting point if the burst stalls a player. camera-app
     logs "main/sub stream key frames at most N times a P-frame".
 
   Pacing alone did not flatten the peak on the camera: with 10 ms jiffies

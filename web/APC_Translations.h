@@ -1244,14 +1244,14 @@ static constexpr Translations translations = [] {
                                     "なりますが、キーフレームはぼやけます。即時反映されます。"};
     result[S_H_RTP_PACING] = {"Send each RTSP client the stream at no more than this rate, so a key frame goes out "
                               "over several frame times instead of one burst at the link's full speed (UDP and TCP). "
-                              "The camera never paces below twice the stream's bitrate. 0 sends at once; the default "
-                              "is 60 for the main stream and 0 for the sub. Applies immediately.",
+                              "The camera never paces below twice the stream's bitrate. 0, the default, sends at "
+                              "once. Applies immediately.",
                               "以不超过此速率向每个 RTSP 客户端发送码流，使关键帧分散在几个帧时间内发出，而不是以链路全速"
-                              "一次突发（UDP 和 TCP）。实际速率不低于码流码率的两倍。0 表示立即发送；主码流默认 60，"
-                              "子码流默认 0。立即生效。",
+                              "一次突发（UDP 和 TCP）。实际速率不低于码流码率的两倍。默认 0 表示立即发送。"
+                              "立即生效。",
                               "各 RTSP クライアントへこの速度以下で送信し、キーフレームを回線速度の一度のバーストではなく"
                               "数フレーム時間に分散させます（UDP と TCP）。実際の速度はストリームのビットレートの 2 倍を"
-                              "下回りません。0 は即時送信です。既定はメインが 60、サブが 0。即時反映されます。"};
+                              "下回りません。既定の 0 は即時送信です。即時反映されます。"};
     result[S_H_SUPER_FRAME] = {"A key frame larger than this many kbit is encoded again at a lower quality, so key "
                                "frames stay near this size; other frames over half of it are too. 0, the default, "
                                "leaves the encoder's own behaviour. Applies immediately.",
