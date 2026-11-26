@@ -18,6 +18,12 @@ void ca_binlog_emit(uint8_t, const void *, size_t) {}
 static int control() { overlay_live=false; errno=EIO; return control_result; }
 bool ca_config_image_equal(const ca_config *a, const ca_config *b)
 { return a->brightness == b->brightness; }
+bool ca_config_pipeline_equal(const ca_config *a, const ca_config *b)
+{
+    return a->main_resolution == b->main_resolution && a->sub_resolution == b->sub_resolution &&
+        a->recording_resolution == b->recording_resolution && a->main_codec == b->main_codec &&
+        a->sub_codec == b->sub_codec;
+}
 class OverlayBackend final : public TestMediaBackend {
 public:
     ~OverlayBackend() override { closed++; }

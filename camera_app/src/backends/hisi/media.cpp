@@ -14,6 +14,7 @@
 #include "ircut.h"
 #include "iris.h"
 #include "isp.h"
+#include "low_latency.h"
 #include "one_push_wb.h"
 #include "pipeline.h"
 
@@ -37,6 +38,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
+#include <memory>
 #include <new>
 #include <poll.h>
 #include <pthread.h>
@@ -52,6 +54,9 @@
 #define CA_HISI_VENC_COUNT 3U
 #define CA_HISI_STILL_VENC 3
 #define CA_HISI_LIVE_VIDEO_PORT 8555U
+// the low-delay line counts of vendor firmware V18
+#define CA_HISI_VI_LOW_DELAY_LINES 300U
+#define CA_HISI_VPSS_LOW_DELAY_LINES 200U
 
 class APC_Media_HiSi;
 struct APC_Media_HiSi_State {
@@ -83,6 +88,16 @@ struct APC_Media_HiSi_State {
     bool recording_wait_keyframe;
     // the main and sub channels' key-frame limits at creation; max 0 if unread
     ca_hisi_rc::IProportion i_proportion[CA_HISI_SUB_VENC + 1U];
+    // and their super frame strategies
+    ot_venc_super_frame_strategy super_frame[CA_HISI_SUB_VENC + 1U];
+    bool super_frame_read[CA_HISI_SUB_VENC + 1U];
+    // set for main and sub channels whose slices go to RTSP as they are encoded
+    std::unique_ptr<ca_hisi_ll::Assembler> slices[CA_HISI_SUB_VENC + 1U];
+    unsigned long unterminated_logged[CA_HISI_SUB_VENC + 1U];
+    // VPSS channels configured for low delay, and those that have it now:
+    // VPSS cannot flip a low-delay channel
+    bool vpss_low_delay[CA_HISI_SUB_VENC + 1U];
+    bool vpss_low_delay_on[CA_HISI_SUB_VENC + 1U];
     struct ca_rtsp *rtsp;
     unsigned sub_rtsp_stream;
     struct ca_live_video_server *live_video;
@@ -256,13 +271,23 @@ static void request_rtsp_keyframe(void *context, unsigned stream)
                                                                    : CA_HISI_MAIN_VENC, TD_TRUE);
 }
 
-static void consume_frame(struct APC_Media_HiSi_State *media, unsigned channel,
-                          uint8_t *data, size_t length, uint64_t pts)
+// a dedicated recorder encodes in the main stream's codec
+static enum ca_video_codec channel_codec(const struct APC_Media_HiSi_State *media, unsigned channel)
 {
-    const struct ca_config *settings = &media->config.settings;
-    // a dedicated recorder encodes in the main stream's codec
-    enum ca_video_codec codec = channel == CA_HISI_SUB_VENC ? settings->sub_codec
-                                                            : settings->main_codec;
+    return channel == CA_HISI_SUB_VENC ? media->config.settings.sub_codec
+                                       : media->config.settings.main_codec;
+}
+
+static unsigned rtsp_stream(const struct APC_Media_HiSi_State *media, unsigned channel)
+{
+    return channel == CA_HISI_MAIN_VENC ? 0U : media->sub_rtsp_stream;
+}
+
+// rtsp_sent: the access unit already went to RTSP slice by slice
+static void consume_frame(struct APC_Media_HiSi_State *media, unsigned channel,
+                          const uint8_t *data, size_t length, uint64_t pts, bool rtsp_sent = false)
+{
+    const enum ca_video_codec codec = channel_codec(media, channel);
     bool key_frame = video_key_frame(codec, data, length);
     const float hfov_deg = (float)APCAM_LENS1_FOV_H;
     if (!atomic_exchange(&media->encoded_frame_logged[channel], true)) {
@@ -270,16 +295,58 @@ static void consume_frame(struct APC_Media_HiSi_State *media, unsigned channel,
                length, key_frame ? 1U : 0U);
     }
     if (channel <= CA_HISI_SUB_VENC) {
-        unsigned stream = channel == CA_HISI_MAIN_VENC ? 0U : media->sub_rtsp_stream;
         // first: the RTSP push takes ~15 ms on a 4K key frame, and longer
         // while its server thread holds the lock
         ca_frame_socket_publish(media->frames, channel, data, length, pts, key_frame);
-        (void)ca_rtsp_push_video(media->rtsp, stream, data, length, key_frame, hfov_deg);
+        if (!rtsp_sent)
+            (void)ca_rtsp_push_video(media->rtsp, rtsp_stream(media, channel), data, length, key_frame, hfov_deg);
         (void)ca_live_video_server_publish(media->live_video, channel, data,
                                             length, pts, key_frame, hfov_deg);
     }
     if (channel == record_venc(media) && atomic_load(&media->recording)) {
         write_recording(media, codec, data, length, pts, key_frame);
+    }
+}
+
+// Slices to RTSP as the encoder outputs them, whole access units to the rest.
+struct SliceSink {
+    struct APC_Media_HiSi_State *media;
+    unsigned channel;
+    void part(const uint8_t *data, size_t length, bool first, bool last)
+    {
+        const bool key_frame = first && video_key_frame(channel_codec(media, channel), data, length);
+        (void)ca_rtsp_push_video_part(media->rtsp, rtsp_stream(media, channel), data, length, key_frame,
+                                      last, (float)APCAM_LENS1_FOV_H);
+    }
+    void frame(const uint8_t *data, size_t length, uint64_t pts)
+    {
+        consume_frame(media, channel, data, length, pts, true);
+    }
+};
+
+struct PackEnd {
+    size_t offset;
+    uint64_t pts;
+    bool frame_end;
+};
+
+static void consume_slices(struct APC_Media_HiSi_State *media, unsigned channel, const uint8_t *data,
+                           const PackEnd *ends, unsigned count)
+{
+    ca_hisi_ll::Assembler &slices = *media->slices[channel];
+    SliceSink sink = {media, channel};
+    size_t start = 0;
+    for (unsigned i = 0; i < count; i++) {
+        slices.add(data + start, ends[i].offset - start, ends[i].pts, ends[i].frame_end, sink);
+        start = ends[i].offset;
+    }
+    slices.flush(sink);
+    const unsigned long unterminated = slices.unterminated();
+    if (unterminated != media->unterminated_logged[channel] &&
+        (media->unterminated_logged[channel] == 0U || unterminated % 1000U == 0U)) {
+        media->unterminated_logged[channel] = unterminated;
+        ca_log("VENC channel %u: %lu frames without an end-of-frame pack; their last RTP packet has no marker",
+               channel, unterminated);
     }
 }
 
@@ -310,6 +377,8 @@ static void *capture_thread(void *opaque)
             uint8_t *frame = NULL;
             size_t frame_length = 0;
             uint64_t pts = 0;
+            PackEnd ends[128];
+            unsigned pack_ends = 0;
             pthread_mutex_lock(&media->venc_lock);
             td_s32 ret = ss_mpi_venc_query_status(channel, &status);
             if (ret != TD_SUCCESS || status.cur_packs == 0U) {
@@ -346,6 +415,7 @@ static void *capture_thread(void *opaque)
                         size_t bytes = pack->len - pack->offset;
                         memcpy(frame + offset, pack->addr + pack->offset, bytes);
                         offset += bytes;
+                        ends[pack_ends++] = {offset, pack->pts, pack->is_frame_end == TD_TRUE};
                     }
                     frame_length = offset;
                 }
@@ -355,7 +425,10 @@ static void *capture_thread(void *opaque)
             free(stream.pack);
             pthread_mutex_unlock(&media->venc_lock);
             if (frame != NULL) {
-                consume_frame(media, channel, frame, frame_length, pts);
+                if (channel <= CA_HISI_SUB_VENC && media->slices[channel])
+                    consume_slices(media, channel, frame, ends, pack_ends);
+                else
+                    consume_frame(media, channel, frame, frame_length, pts);
                 free(frame);
             }
         }
@@ -489,6 +562,96 @@ static td_s32 apply_iframe_ratio(const struct APC_Media_HiSi_State *media, unsig
     return result;
 }
 
+static unsigned super_frame_kbits(const struct ca_config *settings, unsigned channel)
+{
+    return channel == CA_HISI_MAIN_VENC ? settings->main_super_frame_i_kbits
+                                        : settings->sub_super_frame_i_kbits;
+}
+
+static unsigned slice_rows(const struct ca_config *settings, unsigned channel)
+{
+    return channel == CA_HISI_MAIN_VENC ? settings->main_slice_rows : settings->sub_slice_rows;
+}
+
+static bool low_delay(const struct ca_config *settings, unsigned channel)
+{
+    return channel == CA_HISI_MAIN_VENC ? settings->main_low_delay : settings->sub_low_delay;
+}
+
+// kbits 0 restores the strategy the channel was created with
+static td_s32 apply_super_frame(const struct APC_Media_HiSi_State *media, unsigned channel, unsigned kbits)
+{
+    if (!media->super_frame_read[channel]) return TD_FAILURE;
+    ot_venc_super_frame_mode mode = OT_VENC_SUPER_FRAME_NONE;
+    const td_s32 result = ca_hisi_set_super_frame(channel, kbits, &media->super_frame[channel], &mode);
+    const ca_hisi_rc::SuperFrame thresholds = ca_hisi_rc::super_frame(kbits);
+    if (result != TD_SUCCESS)
+        ca_log("%s stream super frame strategy failed: 0x%x", stream_name(channel), (unsigned)result);
+    else if (kbits == 0U)
+        ca_log("%s stream super frame strategy: the encoder default", stream_name(channel));
+    else
+        ca_log("%s stream %s key frames over %u kbit, P-frames over %u kbit", stream_name(channel),
+               mode == OT_VENC_SUPER_FRAME_REENCODE ? "re-encodes" : "drops (no re-encoding)",
+               thresholds.i_bits / 1000U, thresholds.p_bits / 1000U);
+    return result;
+}
+
+static void set_vpss_low_delay(struct APC_Media_HiSi_State *media, unsigned channel, bool enable)
+{
+    if (!media->vpss_low_delay[channel] || media->vpss_low_delay_on[channel] == enable) return;
+    const td_u32 lines = ca_hisi_ll::low_delay_lines(CA_HISI_VPSS_LOW_DELAY_LINES, media->sizes.height[channel]);
+    const td_s32 result = ca_hisi_set_vpss_low_delay(channel, enable, lines);
+    if (result == TD_SUCCESS) media->vpss_low_delay_on[channel] = enable;
+    if (result != TD_SUCCESS)
+        ca_log("%s stream VPSS low delay %s failed: 0x%x", stream_name(channel), enable ? "on" : "off",
+               (unsigned)result);
+    else
+        ca_log("%s stream VPSS low delay %s (%u lines)", stream_name(channel), enable ? "on" : "off", lines);
+}
+
+// Each stage passes a frame on after its first lines; a refusal leaves that stage whole-frame.
+static void start_low_delay(struct APC_Media_HiSi_State *media, const struct ca_config *settings)
+{
+    if (!low_delay(settings, CA_HISI_MAIN_VENC) && !low_delay(settings, CA_HISI_SUB_VENC)) return;
+    const td_u32 lines = ca_hisi_ll::low_delay_lines(CA_HISI_VI_LOW_DELAY_LINES, CA_HISI_SENSOR_HEIGHT);
+    td_s32 result = ca_hisi_set_vi_pipe_low_delay(lines);
+    if (result != TD_SUCCESS) ca_log("VI pipe low delay failed: 0x%x", (unsigned)result);
+    else ca_log("VI pipe low delay on (%u lines)", lines);
+    result = ca_hisi_set_vi_chn_low_delay(lines);
+    if (result != TD_SUCCESS) ca_log("VI channel low delay failed: 0x%x", (unsigned)result);
+    else ca_log("VI channel low delay on (%u lines)", lines);
+    for (unsigned channel = CA_HISI_MAIN_VENC; channel <= CA_HISI_SUB_VENC; channel++) {
+        media->vpss_low_delay[channel] = low_delay(settings, channel);
+        set_vpss_low_delay(media, channel, true);
+    }
+}
+
+/* Creates a main or sub channel. Slice output needs a channel that returns
+ * streams by pack; if the encoder refuses the slices, the channel is created
+ * again whole-frame. */
+static td_s32 create_venc(struct APC_Media_HiSi_State *media, unsigned channel)
+{
+    ot_venc_chn_attr *attr = &media->venc_attr[channel];
+    const unsigned rows = ca_hisi_ll::slice_rows(slice_rows(&media->config.settings, channel),
+                                                 media->sizes.height[channel]);
+    attr->venc_attr.is_by_frame = rows == 0U ? TD_TRUE : TD_FALSE;
+    td_s32 result = ss_mpi_venc_create_chn(channel, attr);
+    if (result != TD_SUCCESS || rows == 0U) return result;
+    result = ca_hisi_set_slice_output(channel, rows);
+    if (result == TD_SUCCESS) {
+        media->slices[channel].reset(new (std::nothrow) ca_hisi_ll::Assembler(
+            channel_codec(media, channel) == CA_VIDEO_H265));
+        if (media->slices[channel]) {
+            ca_log("%s stream: slices of %u rows, each sent as soon as it is encoded", stream_name(channel), rows);
+            return TD_SUCCESS;
+        }
+    }
+    ca_log("%s stream slice output failed: 0x%x; sending whole frames", stream_name(channel), (unsigned)result);
+    (void)ss_mpi_venc_destroy_chn(channel);
+    attr->venc_attr.is_by_frame = TD_TRUE;
+    return ss_mpi_venc_create_chn(channel, attr);
+}
+
 static void apply_rtp_pacing(struct APC_Media_HiSi_State *media, const struct ca_config *settings)
 {
     const uint64_t main_bps = ca::RtpPacer::StreamRate(settings->main_rtp_pacing_mbps,
@@ -552,6 +715,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     stage = "VI-to-VPSS binding";
     if (sample_comm_vi_bind_vpss(CA_HISI_PIPE, 0, CA_HISI_GROUP, 0) != TD_SUCCESS) goto fail;
     media->vi_vpss_bound = TD_TRUE;
+    start_low_delay(media, settings);
     stage = "ISP configuration";
     if (ca_hisi_apply_isp_config(settings, true) != TD_SUCCESS) goto fail;
     if (dc_iris) {
@@ -582,7 +746,10 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
                              APCAM_FRAME_RATE);
     stage = "VENC creation";
     for (unsigned channel = 0; channel < media->venc_count; channel++) {
-        if (ss_mpi_venc_create_chn(channel, &media->venc_attr[channel]) != TD_SUCCESS) goto fail;
+        const td_s32 created = channel <= CA_HISI_SUB_VENC
+                                   ? create_venc(media, channel)
+                                   : ss_mpi_venc_create_chn(channel, &media->venc_attr[channel]);
+        if (created != TD_SUCCESS) goto fail;
         media->venc_created[channel] = TD_TRUE;
         const td_s32 vui = ca_hisi_set_low_delay_vui(channel, &media->venc_attr[channel]);
         if (vui != TD_SUCCESS) ca_log("VENC %u VUI failed: 0x%x", channel, (unsigned)vui);
@@ -594,6 +761,12 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
         } else if (max_iframe_ratio(settings, channel) != 0U) {
             (void)apply_iframe_ratio(media, channel, max_iframe_ratio(settings, channel));
         }
+        const td_s32 super = ss_mpi_venc_get_super_frame_strategy(channel, &media->super_frame[channel]);
+        media->super_frame_read[channel] = super == TD_SUCCESS;
+        if (super != TD_SUCCESS)
+            ca_log("VENC %u super frame strategy unreadable: 0x%x", channel, (unsigned)super);
+        else if (super_frame_kbits(settings, channel) != 0U)
+            (void)apply_super_frame(media, channel, super_frame_kbits(settings, channel));
     }
     stage = "VPSS-to-VENC binding";
     for (unsigned channel = 0; channel < media->venc_count; channel++) {
@@ -885,8 +1058,13 @@ int APC_Media_HiSi::set_inverted(bool inverted)
     }
     if (atomic_load(&media->inverted) == inverted) return 0;
     pthread_mutex_lock(&media->lock);
+    for (unsigned channel = CA_HISI_MAIN_VENC; inverted && channel <= CA_HISI_SUB_VENC; channel++)
+        set_vpss_low_delay(media, channel, false);
     result = ca_hisi_set_inverted(inverted ? TD_TRUE : TD_FALSE,
                                   media->record_path_active, &media->sizes);
+    const bool flipped = result == TD_SUCCESS ? inverted : atomic_load(&media->inverted);
+    for (unsigned channel = CA_HISI_MAIN_VENC; !flipped && channel <= CA_HISI_SUB_VENC; channel++)
+        set_vpss_low_delay(media, channel, true);
     pthread_mutex_unlock(&media->lock);
     if (result != TD_SUCCESS) {
         ca_log("output orientation change failed: 0x%x", (unsigned)result);
@@ -948,6 +1126,13 @@ int APC_Media_HiSi::apply_image(const struct ca_config *settings)
         ca_log("main stream keyframe interval rollback failed");
     if (bit_rate_set && result != 0 && ca_hisi_set_bitrate(CA_HISI_MAIN_VENC, old_bit_rate) != TD_SUCCESS)
         ca_log("main stream bitrate rollback failed");
+    // a refused strategy is logged and the stream goes on without it
+    for (unsigned channel = CA_HISI_MAIN_VENC; result == 0 && channel <= CA_HISI_SUB_VENC; channel++) {
+        const unsigned kbits = super_frame_kbits(settings, channel);
+        const bool attr_set = channel == CA_HISI_MAIN_VENC ? bit_rate_set || main_gop_set : sub_gop_set;
+        if (kbits == super_frame_kbits(applied, channel) && (kbits == 0U || !attr_set)) continue;
+        (void)apply_super_frame(media, channel, kbits);
+    }
     if (result == 0 && (bit_rate != old_bit_rate ||
                         settings->main_rtp_pacing_mbps != applied->main_rtp_pacing_mbps ||
                         settings->sub_rtp_pacing_mbps != applied->sub_rtp_pacing_mbps))

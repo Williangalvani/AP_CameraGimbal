@@ -1068,6 +1068,52 @@ echo ok
             assert status == 400 and ini.read_text() == before, (name, value, status, page)
         status, page = save({name: default for name, _, _, _, default, _ in rows})
         assert status == 200 and saved_stream('main', 'rtp_pacing_mbps') == '60', ini.read_text()
+
+        # Low latency: super frame thresholds apply live; slice output and low delay rebuild the
+        # pipeline inside camera-app, which acknowledges that as applied too.
+        def saved_flag(stream, key):
+            match = re.search(rf'^\[stream\.{stream}\][^\[]*?^{key} = (\w+)$', ini.read_text(), re.M)
+            return match.group(1) if match else None
+
+        rows = (('main_super_frame', 'main', 'super_frame_i_kbits', 100000,
+                 'Main RTSP key frame re-encode threshold (kbit)'),
+                ('sub_super_frame', 'sub', 'super_frame_i_kbits', 100000,
+                 'Sub RTSP key frame re-encode threshold (kbit)'),
+                ('main_slice_rows', 'main', 'slice_rows', 135, 'Main RTSP slice height (rows)'),
+                ('sub_slice_rows', 'sub', 'slice_rows', 135, 'Sub RTSP slice height (rows)'))
+        for name, stream, key, maximum, label in rows:
+            field = keyint_field(name)
+            assert f'>{label}</label><input required name="{name}" id="{name}" type=number min="0" ' \
+                   f'max="{maximum}" step="1" value="0">' in field, field
+            assert saved_stream(stream, key) == '0', ini.read_text()
+        flags = (('main_low_delay', 'main', 'Main RTSP low delay'), ('sub_low_delay', 'sub', 'Sub RTSP low delay'))
+        for name, stream, label in flags:
+            field = keyint_field(name)
+            assert f'>{label}</label><select required name="{name}"' in field, field
+            assert '<option value="false" selected>' in field, field
+            assert 'Restarts the video pipeline' in field, field
+            assert saved_flag(stream, 'low_delay') == 'false', ini.read_text()
+        assert 'Restarts the video pipeline' in keyint_field('main_slice_rows')
+        assert 'Restarts the video pipeline' not in keyint_field('main_super_frame')
+        old = ready.read_text()
+        changes = {'main_super_frame': '4000', 'sub_super_frame': '100000', 'main_slice_rows': '17',
+                   'sub_slice_rows': '135', 'main_low_delay': 'true', 'sub_low_delay': 'false'}
+        status, page = save(changes)
+        assert status == 200 and b'Parameters saved' in page, page
+        saved = {name: saved_stream(stream, key) for name, stream, key, *_ in rows}
+        saved.update({name: saved_flag(stream, 'low_delay') for name, stream, _ in flags})
+        assert saved == changes, ini.read_text()
+        assert '<option value="true" selected>' in keyint_field('main_low_delay')
+        assert ready.read_text() == old, 'a low-latency setting applied in camera-app restarted it'
+        before = ini.read_text()
+        for name, value in (('main_super_frame', '100001'), ('sub_super_frame', '-1'), ('main_slice_rows', '136'),
+                            ('sub_slice_rows', '2.5'), ('main_low_delay', 'maybe')):
+            status, page = save({name: value})
+            assert status == 400 and ini.read_text() == before, (name, value, status, page)
+        status, page = save({'main_super_frame': '0', 'sub_super_frame': '0', 'main_slice_rows': '0',
+                             'sub_slice_rows': '0', 'main_low_delay': 'false', 'sub_low_delay': 'false'})
+        assert status == 200 and saved_stream('main', 'slice_rows') == '0', ini.read_text()
+        assert saved_flag('main', 'low_delay') == 'false', ini.read_text()
         (root / 'live-apply').unlink()
         iris_file.unlink()
         update_type.unlink()
@@ -1081,7 +1127,7 @@ echo ok
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
               'microSD benchmark, restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
               'repeated SIGTERM, live and restarting codec change, '
-              'web respawn, iris mode row and save, keyframe interval rows and save, noise reduction rows and save, key-frame burst rows and save, MCM start after ready, restart backoff, mcm.disable, '
+              'web respawn, iris mode row and save, keyframe interval rows and save, noise reduction rows and save, key-frame burst rows and save, low-latency rows and save, MCM start after ready, restart backoff, mcm.disable, '
               'missing bundle, log pruning and stop')
     finally:
         try:

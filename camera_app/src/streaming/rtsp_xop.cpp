@@ -170,8 +170,13 @@ std::string ca_rtsp_sdp(xop::MediaSession *session, const std::string &ip)
     return sdp;
 }
 
-/* xop's codec sources packetize one NAL and mark its final packet. Feed a
- * complete access unit here so only its final NAL carries the RTP marker. */
+/* Set in AVFrame::type, whose layout the vendor xop archive fixes, when more
+ * parts of the access unit follow: its last NAL is then not the unit's last. */
+static const uint8_t more_parts = 0x80;
+
+/* xop's codec sources packetize one NAL and mark its final packet. Feed an
+ * access unit, or its parts in order, so only its final NAL carries the RTP
+ * marker. */
 class AccessUnitSource : public xop::MediaSource {
 public:
     AccessUnitSource(enum ca_video_codec codec, unsigned frame_rate,
@@ -206,6 +211,7 @@ public:
     bool HandleFrame(xop::MediaChannelId channel, xop::AVFrame frame) override
     {
         timestamp_ = frame.timestamp;
+        const bool unit_ends = (frame.type & more_parts) == 0;
         size_t offset = 0, nal, length;
         bool sent = false;
         while (ca_annexb_next(frame.buffer.get(), frame.size, &offset, &nal, &length)) {
@@ -213,9 +219,9 @@ public:
             xop::AVFrame part;
             part.buffer = std::shared_ptr<uint8_t>(frame.buffer, frame.buffer.get() + nal);
             part.size = static_cast<uint32_t>(length);
-            part.type = frame.type;
+            part.type = static_cast<uint8_t>(frame.type & ~more_parts);
             part.timestamp = frame.timestamp;
-            last_nal_ = offset == frame.size;
+            last_nal_ = offset == frame.size && unit_ends;
             if (!source_->HandleFrame(channel, part)) return false;
             sent = true;
         }
@@ -263,6 +269,11 @@ struct ca_rtsp {
         unsigned frame_rate;
         uint32_t next_timestamp;
         uint32_t timestamp_step;
+        // an access unit pushed in parts, until its last
+        bool in_unit = false;
+        bool unit_key = false;
+        bool unit_has_slice = false;
+        std::vector<uint8_t> support_unit;
     };
     std::shared_ptr<xop::EventLoop> loop;
     std::shared_ptr<xop::RtspServer> server;
@@ -504,22 +515,44 @@ extern "C" void ca_rtsp_add_config_aliases(struct ca_rtsp *rtsp,
     }
 }
 
+// The stream clock must advance even without a local RTSP viewer; an
+// independent SupportProxy publisher still consumes these access units.
+static void end_unit(ca_rtsp::stream &stream)
+{
+    if (!stream.support_unit.empty()) {
+        ca_support_video_push(stream.publisher, stream.support_unit.data(), stream.support_unit.size(),
+                              stream.next_timestamp, stream.unit_key);
+        stream.support_unit.clear();
+    }
+    if (stream.unit_has_slice) stream.next_timestamp += stream.timestamp_step;
+    stream.in_unit = false;
+    stream.unit_has_slice = false;
+}
+
 static int push_video(struct ca_rtsp *rtsp, unsigned stream_id,
                       const uint8_t *data, size_t length, bool key_frame,
-                      float hfov_deg, bool timed, uint32_t timestamp)
+                      float hfov_deg, bool timed, uint32_t timestamp, bool frame_end = true)
 {
-    if (rtsp == nullptr || data == nullptr || length == 0) return -1;
+    if (rtsp == nullptr || (data == nullptr && length != 0)) return -1;
     std::lock_guard<std::mutex> lock(rtsp->mutex);
     if (stream_id >= rtsp->streams.size()) return -1;
     ca_rtsp::stream &stream = rtsp->streams[stream_id];
+    const bool first = !stream.in_unit;
+    if (length == 0) {
+        if (first || !frame_end) return -1;
+        end_unit(stream);
+        return 0;
+    }
     stream.parameters->update(data, length);
-    if (timed) stream.next_timestamp = timestamp;
+    if (timed && first) stream.next_timestamp = timestamp;
     uint8_t *annotated = nullptr;
     size_t annotated_length = 0;
-    int inserted = ca_video_metadata_insert(stream.codec, data, length,
-                                             stream.next_timestamp, hfov_deg,
-                                             &annotated, &annotated_length);
-    if (inserted < 0) return -1;
+    int inserted = 0;
+    if (!stream.unit_has_slice) {
+        inserted = ca_video_metadata_insert(stream.codec, data, length, stream.next_timestamp, hfov_deg,
+                                            &annotated, &annotated_length);
+        if (inserted < 0) return -1;
+    }
     if (inserted == 0) {
         annotated = static_cast<uint8_t *>(std::malloc(length));
         if (annotated == nullptr) return -1;
@@ -530,16 +563,22 @@ static int push_video(struct ca_rtsp *rtsp, unsigned stream_id,
     frame.buffer = std::shared_ptr<uint8_t>(annotated, std::free);
     if (annotated_length > std::numeric_limits<uint32_t>::max()) return -1;
     frame.size = static_cast<uint32_t>(annotated_length);
-    frame.type = key_frame ? xop::VIDEO_FRAME_I : xop::VIDEO_FRAME_P;
+    // later parts never start a new viewer, who would miss the first slices
+    frame.type = first && key_frame ? xop::VIDEO_FRAME_I : xop::VIDEO_FRAME_P;
+    if (!frame_end) frame.type |= more_parts;
     frame.timestamp = stream.next_timestamp;
-    ca_support_video_push(stream.publisher, annotated, annotated_length,
-                           frame.timestamp, key_frame);
+    if (first) stream.unit_key = key_frame;
+    stream.in_unit = true;
+    stream.unit_has_slice = stream.unit_has_slice || inserted != 0;
+    if (stream.publisher != nullptr) {
+        if (first && frame_end) ca_support_video_push(stream.publisher, annotated, annotated_length,
+                                                      frame.timestamp, key_frame);
+        else stream.support_unit.insert(stream.support_unit.end(), annotated, annotated + annotated_length);
+    }
     bool sent = rtsp->server->PushFrame(stream.session_id, xop::channel_0, frame);
     for (xop::MediaSessionId alias : stream.aliases)
         sent = rtsp->server->PushFrame(alias, xop::channel_0, frame) || sent;
-    // The stream clock must advance even without a local RTSP viewer; an
-    // independent SupportProxy publisher still consumes these access units.
-    if (inserted != 0) stream.next_timestamp += stream.timestamp_step;
+    if (frame_end) end_unit(stream);
     return sent ? 0 : -1;
 }
 
@@ -564,6 +603,13 @@ extern "C" int ca_rtsp_push_video(struct ca_rtsp *rtsp, unsigned stream_id,
                                     bool key_frame, float hfov_deg)
 {
     return ca_rtsp_push_h264_stream(rtsp, stream_id, data, length, key_frame, hfov_deg);
+}
+
+extern "C" int ca_rtsp_push_video_part(struct ca_rtsp *rtsp, unsigned stream_id,
+                                         const uint8_t *data, size_t length,
+                                         bool key_frame, bool frame_end, float hfov_deg)
+{
+    return push_video(rtsp, stream_id, data, length, key_frame, hfov_deg, false, 0, frame_end);
 }
 
 extern "C" int ca_rtsp_push_h264(struct ca_rtsp *rtsp,

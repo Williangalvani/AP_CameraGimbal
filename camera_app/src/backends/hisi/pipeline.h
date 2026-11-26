@@ -44,5 +44,20 @@ td_s32 ca_hisi_get_i_proportion(ot_venc_chn channel, ca_hisi_rc::IProportion *li
 td_s32 ca_hisi_set_i_proportion(ot_venc_chn channel, ca_hisi_rc::IProportion limits);
 td_s32 ca_hisi_set_inverted(td_bool inverted, bool record_enabled,
                             const struct ca_hisi_output_sizes *sizes);
+/* Slices of rows macroblock (H.264) or LCU (H.265) rows, each returned by
+ * ss_mpi_venc_get_stream as soon as it is encoded. Call between create and
+ * start, on a channel created with venc_attr.is_by_frame false. */
+td_s32 ca_hisi_set_slice_output(ot_venc_chn channel, td_u32 rows);
+/* The super frame strategy for a key-frame threshold of i_kbits (0 restores
+ * defaults): re-encode, or discard where the encoder cannot re-encode. *mode
+ * is the one applied. */
+td_s32 ca_hisi_set_super_frame(ot_venc_chn channel, unsigned i_kbits,
+                               const ot_venc_super_frame_strategy *defaults,
+                               ot_venc_super_frame_mode *mode);
+/* Low delay: a stage passes a frame on after its first lines, not whole.
+ * The VI pipe and its channel, which feed VPSS, or one VPSS channel. */
+td_s32 ca_hisi_set_vi_pipe_low_delay(td_u32 lines);
+td_s32 ca_hisi_set_vi_chn_low_delay(td_u32 lines);
+td_s32 ca_hisi_set_vpss_low_delay(ot_vpss_chn channel, bool enable, td_u32 lines);
 
 #endif

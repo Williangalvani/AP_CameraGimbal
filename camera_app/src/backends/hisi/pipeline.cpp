@@ -245,6 +245,67 @@ td_s32 ca_hisi_set_i_proportion(ot_venc_chn channel, ca_hisi_rc::IProportion lim
     return with_rc_param(channel, true, [limits](auto &p) { ca_hisi_rc::write(p, limits); });
 }
 
+td_s32 ca_hisi_set_slice_output(ot_venc_chn channel, td_u32 rows)
+{
+    ot_venc_slice_split split;
+    td_s32 result = ss_mpi_venc_get_slice_split(channel, &split);
+    if (result != TD_SUCCESS) return result;
+    split.enable = TD_TRUE;
+    // by rows, the only mode the encoder outputs slice by slice
+    split.split_mode = 1U;
+    split.split_size = rows;
+    split.slice_output_en = TD_TRUE;
+    return ss_mpi_venc_set_slice_split(channel, &split);
+}
+
+td_s32 ca_hisi_set_super_frame(ot_venc_chn channel, unsigned i_kbits,
+                               const ot_venc_super_frame_strategy *defaults,
+                               ot_venc_super_frame_mode *mode)
+{
+    ot_venc_super_frame_strategy strategy = *defaults;
+    if (i_kbits != 0U) {
+        const ca_hisi_rc::SuperFrame thresholds = ca_hisi_rc::super_frame(i_kbits);
+        strategy.super_frame_mode = OT_VENC_SUPER_FRAME_REENCODE;
+        strategy.i_frame_bits_threshold = thresholds.i_bits;
+        strategy.p_frame_bits_threshold = thresholds.p_bits;
+        strategy.reencode_priority = OT_VENC_REENCODE_BIT_RATE_FIRST;
+    }
+    td_s32 result = ss_mpi_venc_set_super_frame_strategy(channel, &strategy);
+    if (result != TD_SUCCESS && i_kbits != 0U) {
+        strategy.super_frame_mode = OT_VENC_SUPER_FRAME_DISCARD;
+        result = ss_mpi_venc_set_super_frame_strategy(channel, &strategy);
+    }
+    if (result == TD_SUCCESS) *mode = strategy.super_frame_mode;
+    return result;
+}
+
+static ot_low_delay_info low_delay(bool enable, td_u32 lines)
+{
+    ot_low_delay_info info = {};
+    info.enable = enable ? TD_TRUE : TD_FALSE;
+    info.line_cnt = lines;
+    info.one_buf_en = TD_FALSE;
+    return info;
+}
+
+td_s32 ca_hisi_set_vi_pipe_low_delay(td_u32 lines)
+{
+    const ot_low_delay_info info = low_delay(true, lines);
+    return ss_mpi_vi_set_pipe_low_delay(CA_HISI_PIPE, &info);
+}
+
+td_s32 ca_hisi_set_vi_chn_low_delay(td_u32 lines)
+{
+    const ot_low_delay_info info = low_delay(true, lines);
+    return ss_mpi_vi_set_chn_low_delay(CA_HISI_PIPE, 0, &info);
+}
+
+td_s32 ca_hisi_set_vpss_low_delay(ot_vpss_chn channel, bool enable, td_u32 lines)
+{
+    const ot_low_delay_info info = low_delay(enable, lines);
+    return ss_mpi_vpss_set_chn_low_delay(CA_HISI_GROUP, channel, &info);
+}
+
 td_s32 ca_hisi_set_inverted(td_bool inverted, bool record_enabled,
                             const struct ca_hisi_output_sizes *sizes)
 {

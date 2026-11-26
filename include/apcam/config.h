@@ -298,6 +298,16 @@ struct ca_config {
     unsigned sub_max_iframe_ratio;
     unsigned main_rtp_pacing_mbps;
     unsigned sub_rtp_pacing_mbps;
+    /* the same: the VENC super frame strategy's key-frame threshold in kbit
+     * (0 off), applied live; and, applied by rebuilding the media pipeline,
+     * VENC slices of this many macroblock (H.264) or LCU (H.265) rows, each
+     * sent as soon as it is encoded (0 whole frames), and VI/VPSS low delay */
+    unsigned main_super_frame_i_kbits;
+    unsigned sub_super_frame_i_kbits;
+    unsigned main_slice_rows;
+    unsigned sub_slice_rows;
+    bool main_low_delay;
+    bool sub_low_delay;
     /* not a 4K Cam Manager control: IMG_IRIS_MODE */
     enum ca_iris_mode iris_mode;
 #endif
@@ -312,6 +322,10 @@ struct ca_config {
 
 bool ca_config_image_equal(const struct ca_config *a, const struct ca_config *b);
 void ca_config_copy_image(struct ca_config *destination, const struct ca_config *source);
+/* The settings applied only by rebuilding the media pipeline: resolutions,
+ * codecs and, on the 4K camera, VENC slices and low delay. */
+bool ca_config_pipeline_equal(const struct ca_config *a, const struct ca_config *b);
+void ca_config_copy_pipeline(struct ca_config *destination, const struct ca_config *source);
 /* The 4K Cam Manager's image settings, which have no MAVLink parameter. */
 void ca_config_copy_4kcam(struct ca_config *destination, const struct ca_config *source);
 /* Validate and update a copy of the configuration without writing the INI. */

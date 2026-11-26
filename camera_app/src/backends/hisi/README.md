@@ -132,6 +132,50 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
     long `keyframe_interval_ms`) and its effect is not yet checked on
     hardware; 3-4 is a starting point if pacing alone is not enough. camera-app
     logs "main/sub stream key frames at most N times a P-frame".
+
+  Pacing alone did not flatten the peak on the camera: with 10 ms jiffies
+  the paced sends still come in 10 ms clumps. Vendor firmware V18 instead
+  lets the encoder emit a frame slice by slice. Three more settings per
+  stream do the same (all off by default, none yet checked on hardware):
+  - `super_frame_i_kbits` (0-100000, 0 off; applied live) sets the VENC super
+    frame strategy (`ss_mpi_venc_set_super_frame_strategy`): a key frame
+    above that many kbit (1 kbit = 1000 bits) is re-encoded at a higher QP,
+    and a P-frame above half of it, with `OT_VENC_REENCODE_BIT_RATE_FIRST` as
+    V18 uses. If the encoder refuses re-encoding, the strategy falls back to
+    discarding such frames, logged as "drops (no re-encoding)"; a dropped
+    key frame leaves viewers waiting for the next one, so set the threshold
+    well above the usual key frame (a 4K key frame at 30 Mbit/s is ~4800
+    kbit). 0 restores the encoder's own strategy. A refusal is logged and
+    the stream carries on without it.
+  - `slice_rows` (0-135, 0 whole frames) splits each frame into slices of that
+    many macroblock rows (H.264, 16 px) or LCU rows (H.265; the encoder module
+    names the bound `lcu_height`, and the LCU size on this chip is not
+    checked) with `split_mode` 1 and `slice_output_en`, which the encoder
+    allows only on a channel created with `is_by_frame` false; values above
+    the picture's 16-px rows are capped. Each `ss_mpi_venc_get_stream` then
+    returns the slices encoded so far and `is_frame_end` marks the frame's last
+    pack (`low_latency.h`). Each batch of slices goes to RTSP at once
+    (`ca_rtsp_push_video_part`): all share the frame's RTP timestamp, every
+    slice is its own NAL unit (single NAL or FU-A/FU), parameter sets and SEI
+    are sent with the first slice, and only the frame's last packet has the
+    marker. A viewer that starts mid-frame waits for the next key frame. The
+    frame socket, live view, recordings and SupportProxy still get whole
+    access units. A frame whose end is never flagged is closed when the next
+    frame's pts arrives, without a marker on its last packet, and logged. If
+    the encoder refuses the slices, the channel is created again whole-frame
+    and the refusal logged. About 8 slices per 2160p frame would be 17 rows
+    in H.264, and 9 or 4 in H.265 with 32 or 64 px LCUs.
+  - `low_delay` (default false) turns on VI pipe and VI channel low delay
+    (`line_cnt` 300) and VPSS channel low delay for that stream (`line_cnt`
+    200), the values V18 uses, so the encoder bound to VPSS starts on a frame
+    before it is whole (VENC has no separate low-delay call). VI refuses it
+    with frame compression or WDR, and VPSS cannot flip a low-delay channel,
+    so an inverted mount turns VPSS low delay off while flipped. Each refusal
+    is logged and that stage stays whole-frame.
+
+  `slice_rows` and `low_delay` are set when the channels are created, so a
+  change rebuilds the media pipeline in camera-app, as a resolution or codec
+  change does (and, like those, waits while recording).
   The 4K Cam Manager `gop` maps to it; see `docs/4kcam-manager-compat.md`.
   The `gop` it reports is computed from the saved `frame_rate`, which applies
   only when camera-app restarts, so after a frame rate change it can differ

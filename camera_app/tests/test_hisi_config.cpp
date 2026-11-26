@@ -2,6 +2,7 @@
 #include "apcam/APC_Config.h"
 
 #include <assert.h>
+#include <initializer_list>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -257,6 +258,63 @@ int main()
         assert(ca_config_image_equal(&running, &assigned));
     }
 
+    // [stream.*] super_frame_i_kbits applies live; slice_rows and low_delay rebuild the pipeline
+    ca_config_defaults(&config);
+    assert(config.main_super_frame_i_kbits == 0U && config.sub_super_frame_i_kbits == 0U);
+    assert(config.main_slice_rows == 0U && config.sub_slice_rows == 0U);
+    assert(!config.main_low_delay && !config.sub_low_delay);
+    static const struct { const char *section, *key; int maximum; } low_latency_keys[] = {
+        {"stream.main", "super_frame_i_kbits", 100000}, {"stream.sub", "super_frame_i_kbits", 100000},
+        {"stream.main", "slice_rows", 135}, {"stream.sub", "slice_rows", 135},
+    };
+    for (const auto &key : low_latency_keys) {
+        const APC_Config::Field *field = APC_Config::find(key.section, key.key);
+        assert(field != NULL && field->param_name == NULL && field->kind == APC_Config::Kind::Uint);
+        assert(field->minimum == 0 && field->maximum == key.maximum);
+    }
+    for (const char *section : {"stream.main", "stream.sub"}) {
+        const APC_Config::Field *field = APC_Config::find(section, "low_delay");
+        assert(field != NULL && field->param_name == NULL && field->kind == APC_Config::Kind::Bool);
+    }
+    write_file(path, "[stream.main]\nsuper_frame_i_kbits = 4000\nslice_rows = 17\nlow_delay = true\n"
+                     "[stream.sub]\nsuper_frame_i_kbits = 100000\nslice_rows = 135\nlow_delay = false\n");
+    assert(ca_config_load(&config, path, error, sizeof(error)) == 0);
+    assert(config.main_super_frame_i_kbits == 4000U && config.sub_super_frame_i_kbits == 100000U);
+    assert(config.main_slice_rows == 17U && config.sub_slice_rows == 135U);
+    assert(config.main_low_delay && !config.sub_low_delay);
+    static void (*const live_changes[])(struct ca_config *) = {
+        [](struct ca_config *c) { c->main_super_frame_i_kbits = 0U; },
+        [](struct ca_config *c) { c->sub_super_frame_i_kbits = 2000U; },
+    };
+    for (auto change : live_changes) {
+        assigned = config;
+        change(&assigned);
+        assert(!ca_config_image_equal(&config, &assigned) && ca_config_pipeline_equal(&config, &assigned));
+        ca_config_defaults(&running);
+        ca_config_copy_4kcam(&running, &assigned);
+        assert(ca_config_image_equal(&running, &assigned));
+    }
+    static void (*const pipeline_changes[])(struct ca_config *) = {
+        [](struct ca_config *c) { c->main_slice_rows = 9U; },
+        [](struct ca_config *c) { c->sub_slice_rows = 0U; },
+        [](struct ca_config *c) { c->main_low_delay = false; },
+        [](struct ca_config *c) { c->sub_low_delay = true; },
+        [](struct ca_config *c) { c->main_codec = CA_VIDEO_H265; },
+        [](struct ca_config *c) { c->sub_resolution = CA_VIDEO_1080P; },
+    };
+    for (auto change : pipeline_changes) {
+        assigned = config;
+        change(&assigned);
+        // not an image change, so apply_image never sees it as applied
+        assert(ca_config_image_equal(&config, &assigned) && !ca_config_pipeline_equal(&config, &assigned));
+        // hot reload keeps the running values until the pipeline is rebuilt
+        running = config;
+        ca_config_copy_4kcam(&running, &assigned);
+        assert(ca_config_pipeline_equal(&running, &config));
+        ca_config_copy_pipeline(&running, &assigned);
+        assert(ca_config_pipeline_equal(&running, &assigned));
+    }
+
     const APC_Config::Field *hue = APC_Config::find("image", "hue");
     assert(hue != NULL && hue->param_name == NULL);
 
@@ -273,6 +331,9 @@ int main()
         "[stream.main]\nmax_iframe_ratio = 101\n", "[stream.sub]\nmax_iframe_ratio = -1\n",
         "[stream.main]\nmax_iframe_ratio = 4x\n", "[stream.main]\nrtp_pacing_mbps = 1001\n",
         "[stream.sub]\nrtp_pacing_mbps = -1\n", "[stream.sub]\nrtp_pacing_mbps = 1.5\n",
+        "[stream.main]\nsuper_frame_i_kbits = 100001\n", "[stream.sub]\nsuper_frame_i_kbits = -1\n",
+        "[stream.main]\nslice_rows = 136\n", "[stream.sub]\nslice_rows = 8.5\n",
+        "[stream.main]\nlow_delay = 1\n", "[stream.sub]\nlow_delay = on\n",
     };
     for (const char *text : invalid) {
         write_file(path, text);

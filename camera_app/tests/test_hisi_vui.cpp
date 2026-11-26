@@ -61,6 +61,17 @@ static void check_rate_control()
     assert(limits.max == 100U && limits.min == 1U);
     ca_hisi_rc::write(param, ca_hisi_rc::i_proportion(6U, limits));
     assert(param.max_i_proportion == 6U && param.min_i_proportion == 1U && param.max_reencode_times == 3);
+
+    // super frame thresholds in bits, P-frames at half the key frame's
+    ca_hisi_rc::SuperFrame thresholds = ca_hisi_rc::super_frame(4000U);
+    assert(thresholds.i_bits == 4000000U && thresholds.p_bits == 2000000U);
+    thresholds = ca_hisi_rc::super_frame(1U);
+    assert(thresholds.i_bits == 1000U && thresholds.p_bits == 500U);
+    thresholds = ca_hisi_rc::super_frame(100000U);
+    assert(thresholds.i_bits == 100000000U && thresholds.p_bits == 50000000U);
+    // no 32-bit overflow past the configurable range
+    thresholds = ca_hisi_rc::super_frame(5000000U);
+    assert(thresholds.i_bits == 1000000000U && thresholds.p_bits == 500000000U);
 }
 
 int main()
@@ -88,6 +99,6 @@ int main()
         assert(h265.vui_time_info.num_ticks_poc_diff_one_minus1 == 0U);
         assert(h265.vui_bitstream_restric.bitstream_restriction_flag == 1);
     }
-    puts("PASS hisi VUI timing and bitstream restriction, key-frame size cap");
+    puts("PASS hisi VUI timing and bitstream restriction, key-frame size cap, super frame thresholds");
     return 0;
 }

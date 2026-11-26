@@ -36,4 +36,21 @@ template <typename Param> void write(Param &param, IProportion limits)
     param.min_i_proportion = limits.min;
 }
 
+/* The super frame strategy re-encodes a frame above its threshold at a higher
+ * QP. Vendor V18 keeps P-frames at half the key-frame threshold. */
+struct SuperFrame {
+    unsigned i_bits;
+    unsigned p_bits;
+};
+
+// i_kbits 0 turns the strategy off, which the caller maps to the encoder's own
+inline SuperFrame super_frame(unsigned i_kbits)
+{
+    SuperFrame thresholds;
+    if (i_kbits > 1000000U) i_kbits = 1000000U;
+    thresholds.i_bits = i_kbits * 1000U;
+    thresholds.p_bits = thresholds.i_bits / 2U;
+    return thresholds;
+}
+
 }  // namespace ca_hisi_rc

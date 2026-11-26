@@ -2433,10 +2433,7 @@ static int apply_runtime_config(struct ca_mavlink_server *server, const struct c
 {
     struct ca_config previous = server->settings;
     bool was_recording = ca_media_recording(server->media);
-    bool pipeline = next->main_resolution != previous.main_resolution ||
-        next->sub_resolution != previous.sub_resolution ||
-        next->recording_resolution != previous.recording_resolution ||
-        next->main_codec != previous.main_codec || next->sub_codec != previous.sub_codec;
+    bool pipeline = !ca_config_pipeline_equal(next, &previous);
     /* A media reopen can take seconds. Do not leave a moving rate command
      * running while the event loop cannot service tracking or feedback. */
     if (pipeline && !was_recording) stop_tracking_rate(server);
@@ -2755,21 +2752,13 @@ static void reload_config(struct ca_mavlink_server *server, uint64_t now)
     memcpy(next.timezone, desired.timezone, sizeof(next.timezone));
     next.network_capture = desired.network_capture;
     memcpy(next.video1_uri, desired.video1_uri, sizeof(next.video1_uri));
-    next.main_resolution = server->settings.main_resolution;
-    next.sub_resolution = server->settings.sub_resolution;
-    next.recording_resolution = server->settings.recording_resolution;
-    next.main_codec = server->settings.main_codec;
-    next.sub_codec = server->settings.sub_codec;
+    ca_config_copy_pipeline(&next, &server->settings);
     if (apply_runtime_config(server, &next) < 0) {
         snprintf(error, sizeof(error), "Could not apply saved live settings: %s", strerror(errno));
         config_status(server, hash, "error", error);
         return;
     }
-    next.main_resolution = desired.main_resolution;
-    next.sub_resolution = desired.sub_resolution;
-    next.recording_resolution = desired.recording_resolution;
-    next.main_codec = desired.main_codec;
-    next.sub_codec = desired.sub_codec;
+    ca_config_copy_pipeline(&next, &desired);
     if (apply_runtime_config(server, &next) < 0) {
         if (errno == EBUSY) {
             server->config_pending = true;

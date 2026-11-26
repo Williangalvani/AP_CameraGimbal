@@ -179,6 +179,12 @@ enum string_id {
     S_P_SUB_MAX_IFRAME_RATIO,
     S_P_MAIN_RTP_PACING,
     S_P_SUB_RTP_PACING,
+    S_P_MAIN_SUPER_FRAME,
+    S_P_SUB_SUPER_FRAME,
+    S_P_MAIN_SLICE_ROWS,
+    S_P_SUB_SLICE_ROWS,
+    S_P_MAIN_LOW_DELAY,
+    S_P_SUB_LOW_DELAY,
     S_P_IRIS_MODE,
     S_P_FOURKCAM,
     S_P_ONVIF_PASSWORD,
@@ -329,6 +335,9 @@ enum string_id {
     S_H_VI_3DNR_STRENGTH,
     S_H_MAX_IFRAME_RATIO,
     S_H_RTP_PACING,
+    S_H_SUPER_FRAME,
+    S_H_SLICE_ROWS,
+    S_H_LOW_DELAY,
     S_H_IRIS_MODE,
     S_IRIS_UNAVAILABLE,
     S_IRIS_APPLIED_SHUTTER,
@@ -970,6 +979,16 @@ static constexpr Translations translations = [] {
                                    "メイン RTSP 送信ペーシング (Mbit/s)"};
     result[S_P_SUB_RTP_PACING] = {"Sub RTSP send pacing (Mbit/s)", "子 RTSP 流发送限速 (Mbit/s)",
                                   "サブ RTSP 送信ペーシング (Mbit/s)"};
+    result[S_P_MAIN_SUPER_FRAME] = {"Main RTSP key frame re-encode threshold (kbit)", "主 RTSP 流关键帧重编码阈值 (kbit)",
+                                    "メイン RTSP キーフレーム再エンコード閾値 (kbit)"};
+    result[S_P_SUB_SUPER_FRAME] = {"Sub RTSP key frame re-encode threshold (kbit)", "子 RTSP 流关键帧重编码阈值 (kbit)",
+                                   "サブ RTSP キーフレーム再エンコード閾値 (kbit)"};
+    result[S_P_MAIN_SLICE_ROWS] = {"Main RTSP slice height (rows)", "主 RTSP 流分片高度 (行)",
+                                   "メイン RTSP スライス高さ (行)"};
+    result[S_P_SUB_SLICE_ROWS] = {"Sub RTSP slice height (rows)", "子 RTSP 流分片高度 (行)",
+                                  "サブ RTSP スライス高さ (行)"};
+    result[S_P_MAIN_LOW_DELAY] = {"Main RTSP low delay", "主 RTSP 流低延时", "メイン RTSP 低遅延"};
+    result[S_P_SUB_LOW_DELAY] = {"Sub RTSP low delay", "子 RTSP 流低延时", "サブ RTSP 低遅延"};
     result[S_P_IRIS_MODE] = {"Iris mode", "光圈模式", "絞りモード"};
     result[S_P_FOURKCAM] = {"Allow 4K Cam Manager", "允许 4K Cam Manager", "4K Cam Manager を許可"};
     result[S_P_ONVIF_PASSWORD] = {"ONVIF password", "ONVIF 密码", "ONVIF パスワード"};
@@ -1233,6 +1252,33 @@ static constexpr Translations translations = [] {
                               "各 RTSP クライアントへこの速度以下で送信し、キーフレームを回線速度の一度のバーストではなく"
                               "数フレーム時間に分散させます（UDP と TCP）。実際の速度はストリームのビットレートの 2 倍を"
                               "下回りません。0 は即時送信です。既定はメインが 60、サブが 0。即時反映されます。"};
+    result[S_H_SUPER_FRAME] = {"A key frame larger than this many kbit is encoded again at a lower quality, so key "
+                               "frames stay near this size; other frames over half of it are too. 0, the default, "
+                               "leaves the encoder's own behaviour. Applies immediately.",
+                               "大于此 kbit 数的关键帧会以较低画质重新编码，使关键帧保持在此大小附近；超过其一半的"
+                               "其他帧也一样。默认 0 保留编码器自身的行为。立即生效。",
+                               "この kbit 数を超えるキーフレームは低い画質で再エンコードされ、キーフレームはこの"
+                               "サイズ付近に収まります。その半分を超える他のフレームも同様です。既定の 0 は"
+                               "エンコーダー自身の動作のままです。即時反映されます。"};
+    result[S_H_SLICE_ROWS] = {"Split each frame into slices of this many rows (16 pixels each in H.264, one coding "
+                              "unit row in H.265) and send each slice as soon as it is encoded, so a key frame "
+                              "leaves over the frame time instead of in one burst. 0, the default, sends whole "
+                              "frames. Restarts the video pipeline, which briefly interrupts the video.",
+                              "将每帧分成此行数的分片（H.264 每行 16 像素，H.265 为一行编码单元），每个分片编码完成"
+                              "即发送，使关键帧在一帧时间内分散发出，而不是一次突发。默认 0 发送整帧。会重启视频"
+                              "管线，视频会短暂中断。",
+                              "各フレームをこの行数のスライスに分け（H.264 は 1 行 16 ピクセル、H.265 は符号化"
+                              "単位 1 行）、各スライスをエンコード完了次第送信して、キーフレームを一度のバーストでは"
+                              "なくフレーム時間に分散させます。既定の 0 はフレーム全体を送ります。映像パイプラインを"
+                              "再起動するため、映像が一時的に途切れます。"};
+    result[S_H_LOW_DELAY] = {"Let the capture and scaling stages pass each frame on to the encoder before it is "
+                             "complete, which lowers latency. Turned off while the picture is flipped. Restarts "
+                             "the video pipeline, which briefly interrupts the video.",
+                             "让采集和缩放阶段在帧完成前就将其交给编码器，以降低延时。画面翻转时关闭。会重启视频"
+                             "管线，视频会短暂中断。",
+                             "取り込みとスケーリングの段階で、フレームが完成する前にエンコーダーへ渡し、遅延を"
+                             "減らします。映像を反転している間はオフになります。映像パイプラインを再起動"
+                             "するため、映像が一時的に途切れます。"};
     result[S_H_IRIS_MODE] = {"Auto: automatic exposure sets the shutter and gain, and the lens iris also works "
                              "automatically. Iris priority: the shutter speed and ISO (or the manual gains) stay "
                              "fixed and the iris alone holds the brightness at the exposure target (exposure and "

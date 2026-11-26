@@ -800,6 +800,18 @@ static const struct parameter replacement_parameters[] = {
      PARAM_INTEGER, 0, 1000, 1, NULL, 0},
     {"sub_rtp_pacing", "stream.sub", "rtp_pacing_mbps", S_P_SUB_RTP_PACING, S_H_RTP_PACING,
      PARAM_INTEGER, 0, 1000, 1, NULL, 0},
+    {"main_super_frame", "stream.main", "super_frame_i_kbits", S_P_MAIN_SUPER_FRAME, S_H_SUPER_FRAME,
+     PARAM_INTEGER, 0, 100000, 1, NULL, 0},
+    {"sub_super_frame", "stream.sub", "super_frame_i_kbits", S_P_SUB_SUPER_FRAME, S_H_SUPER_FRAME,
+     PARAM_INTEGER, 0, 100000, 1, NULL, 0},
+    {"main_slice_rows", "stream.main", "slice_rows", S_P_MAIN_SLICE_ROWS, S_H_SLICE_ROWS,
+     PARAM_INTEGER, 0, 135, 1, NULL, 0},
+    {"sub_slice_rows", "stream.sub", "slice_rows", S_P_SUB_SLICE_ROWS, S_H_SLICE_ROWS,
+     PARAM_INTEGER, 0, 135, 1, NULL, 0},
+    {"main_low_delay", "stream.main", "low_delay", S_P_MAIN_LOW_DELAY, S_H_LOW_DELAY,
+     PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
+    {"sub_low_delay", "stream.sub", "low_delay", S_P_SUB_LOW_DELAY, S_H_LOW_DELAY,
+     PARAM_ENUM, 0, 0, 0, replacement_boolean_options, 2},
 #endif
     {"main_alias", "stream.main", "alias", S_P_MAIN_ALIAS, S_H_MAIN_ALIAS,
      PARAM_TEXT, 0, 63, 1, NULL, 0},
@@ -1000,7 +1012,7 @@ static const char *replacement_defaults[] = {
     APCAM_STRING_VALUE(APCAM_DEFAULT_KEYINT_MS),
 #endif
 #if APCAM_HAVE_4KCAM_COMPAT
-    "0", "0", "60", "0",
+    "0", "0", "60", "0", "0", "0", "0", "0", "false", "false",
 #endif
     APCAM_DEFAULT_MAIN_ALIAS, APCAM_DEFAULT_SUB_ALIAS,
     APCAM_RESOLUTION_NAME(APCAM_DEFAULT_RECORDING_RESOLUTION), "false",
@@ -9461,7 +9473,7 @@ static void handle_request(int fd, const char *peer)
                 send_page(fd, error, true);
             }
         } else if (strcmp(request.path, "/parameters") == 0) {
-            struct ini_update updates[80] = {};
+            struct ini_update updates[sizeof(replacement_parameters) / sizeof(replacement_parameters[0])] = {};
             enum camera_kind kind = configuration_camera_kind();
             size_t update_count = 0;
             size_t old_length = 0;

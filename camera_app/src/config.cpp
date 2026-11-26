@@ -577,12 +577,17 @@ int ca_config_param_save(struct ca_config *config, const char *path,
     X(wb_style_blue) X(wb_water) X(max_gain) X(gain_mode) X(max_again) X(max_dgain) X(manual_again) \
     X(again) X(manual_dgain) X(dgain) X(ae_strategy) X(max_exposure) X(slow_shutter) \
     X(tnr) X(tnr_strength) X(vi_3dnr) X(vi_3dnr_strength) \
-    X(main_max_iframe_ratio) X(sub_max_iframe_ratio) X(main_rtp_pacing_mbps) X(sub_rtp_pacing_mbps)
+    X(main_max_iframe_ratio) X(sub_max_iframe_ratio) X(main_rtp_pacing_mbps) X(sub_rtp_pacing_mbps) \
+    X(main_super_frame_i_kbits) X(sub_super_frame_i_kbits)
 #define IRIS_FIELDS(X) X(iris_mode)
+#define LOW_LATENCY_FIELDS(X) X(main_slice_rows) X(sub_slice_rows) X(main_low_delay) X(sub_low_delay)
 #else
 #define FOURKCAM_FIELDS(X)
 #define IRIS_FIELDS(X)
+#define LOW_LATENCY_FIELDS(X)
 #endif
+#define PIPELINE_FIELDS(X) X(main_resolution) X(sub_resolution) X(recording_resolution) \
+    X(main_codec) X(sub_codec) LOW_LATENCY_FIELDS(X)
 #define IMAGE_FIELDS(X) X(brightness) X(saturation) X(contrast) X(exposure_compensation) \
     X(iso) X(shutter) X(metering) X(white_balance) X(wb_red) X(wb_green) X(wb_blue) \
     X(wb_temp) PHOTO_FIELDS(X) ENCODER_FIELDS(X) FOURKCAM_FIELDS(X) IRIS_FIELDS(X)
@@ -599,6 +604,21 @@ void ca_config_copy_image(struct ca_config *destination, const struct ca_config 
 {
 #define COPY(field) destination->field = source->field;
     IMAGE_FIELDS(COPY)
+#undef COPY
+}
+
+bool ca_config_pipeline_equal(const struct ca_config *a, const struct ca_config *b)
+{
+#define SAME(field) if (a->field != b->field) return false;
+    PIPELINE_FIELDS(SAME)
+#undef SAME
+    return true;
+}
+
+void ca_config_copy_pipeline(struct ca_config *destination, const struct ca_config *source)
+{
+#define COPY(field) destination->field = source->field;
+    PIPELINE_FIELDS(COPY)
 #undef COPY
 }
 

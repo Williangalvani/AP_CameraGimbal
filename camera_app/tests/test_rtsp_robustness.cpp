@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -350,6 +351,10 @@ struct InterleavedReader {
         long at_us;
         uint16_t seq;
         bool marker;
+        uint32_t timestamp;
+        // the payload's first bytes: the NAL or FU header
+        uint8_t head[3];
+        size_t size;
     };
     std::mutex mutex;
     std::vector<Packet> packets;
@@ -375,7 +380,17 @@ struct InterleavedReader {
                     if (data.size() < 4 + length) break;
                     if (data[1] == 0 && length >= 12) {
                         const uint8_t *rtp = (const uint8_t *)data.data() + 4;
-                        packets.push_back({at, (uint16_t)(rtp[2] << 8 | rtp[3]), (rtp[1] & 0x80) != 0});
+                        Packet packet = {at, (uint16_t)(rtp[2] << 8 | rtp[3]), (rtp[1] & 0x80) != 0,
+                                         (uint32_t)rtp[4] << 24 | (uint32_t)rtp[5] << 16 | rtp[6] << 8 | rtp[7],
+                                         {0, 0, 0}, 0};
+                        size_t header = 12U + 4U * (rtp[0] & 0x0fU);
+                        if ((rtp[0] & 0x10U) && length >= header + 4U)
+                            header += 4U + 4U * (size_t)(rtp[header + 2U] << 8 | rtp[header + 3U]);
+                        if (length > header) {
+                            packet.size = length - header;
+                            memcpy(packet.head, rtp + header, std::min<size_t>(3U, packet.size));
+                        }
+                        packets.push_back(packet);
                     }
                     data.erase(0, 4 + length);
                 } else if (data.compare(0, 8, "RTSP/1.0") == 0 || (data.size() < 8 && data[0] == 'R')) {
@@ -497,6 +512,180 @@ static void check_pacing(struct ca_rtsp *rtsp)
     puts("pacing: a client paced below the bitrate is dropped to the next key frame");
 }
 
+// H.265 NAL units as received: single NAL packets and reassembled FUs
+struct ReceivedNal {
+    unsigned type;
+    size_t size;
+};
+
+static std::vector<ReceivedNal> received_nals(const std::vector<InterleavedReader::Packet> &packets,
+                                              size_t begin, size_t end)
+{
+    std::vector<ReceivedNal> nals;
+    bool in_fu = false;
+    for (size_t i = begin; i < end; i++) {
+        const InterleavedReader::Packet &packet = packets[i];
+        CHECK(packet.size >= 3);
+        const unsigned type = (packet.head[0] >> 1) & 0x3fU;
+        CHECK(type != 48); // no aggregation packets
+        if (type != 49) {
+            CHECK(!in_fu);
+            nals.push_back({type, packet.size});
+            continue;
+        }
+        const bool start = (packet.head[2] & 0x80) != 0, stop = (packet.head[2] & 0x40) != 0;
+        CHECK(start == !in_fu);
+        if (start) nals.push_back({packet.head[2] & 0x3fU, 2});
+        CHECK(nals.back().type == (packet.head[2] & 0x3fU));
+        nals.back().size += packet.size - 3;
+        in_fu = !stop;
+    }
+    CHECK(!in_fu); // an FU never spans parts or access units
+    return nals;
+}
+
+// VENC slice output: each slice is pushed as soon as it is encoded. A player
+// sees one RTP timestamp per access unit, the marker on its last packet only,
+// every slice its own NAL unit or FU, the parameter sets before the first
+// slice of a key frame, and does not start in the middle of an access unit.
+static void check_slices(struct ca_rtsp *rtsp)
+{
+    struct Unit {
+        std::vector<std::vector<uint8_t>> parts;
+        bool key, empty_end;
+    };
+    std::vector<Unit> units;
+    for (int frame = 0; frame < 12; frame++) {
+        Unit unit = {{}, frame % 5 == 0, frame == 7};
+        std::vector<uint8_t> part;
+        if (unit.key) {
+            append_nal(part, {0x40, 0x01}, 20); // VPS
+            append_nal(part, {0x42, 0x01}, 30); // SPS
+            append_nal(part, {0x44, 0x01}, 8);  // PPS
+            append_nal(part, {19 << 1, 0x01}, 3000);
+            unit.parts.push_back(part);
+            part.clear();
+            append_nal(part, {19 << 1, 0x01}, 2500);
+            append_nal(part, {19 << 1, 0x01}, 4000);
+            unit.parts.push_back(part);
+            part.clear();
+            append_nal(part, {19 << 1, 0x01}, 1000);
+            unit.parts.push_back(part);
+        } else {
+            append_nal(part, {1 << 1, 0x01}, 800 + 100 * frame);
+            unit.parts.push_back(part);
+            part.clear();
+            append_nal(part, {1 << 1, 0x01}, 1200);
+            unit.parts.push_back(part);
+        }
+        units.push_back(unit);
+    }
+    // the NAL units a player must get for each unit, start codes removed
+    auto expected = [](const Unit &unit) {
+        std::vector<ReceivedNal> nals;
+        for (const auto &part : unit.parts) {
+            size_t at = 4;
+            while (at < part.size()) {
+                size_t next = at;
+                while (next + 4 <= part.size() && !(part[next] == 0 && part[next + 1] == 0 && part[next + 2] == 0 &&
+                                                     part[next + 3] == 1))
+                    next++;
+                if (next + 4 > part.size()) next = part.size();
+                nals.push_back({(part[at] >> 1) & 0x3fU, next - at});
+                at = next + 4;
+            }
+        }
+        return nals;
+    };
+
+    CHECK(ca_rtsp_set_pacing(rtsp, 0, 0) == 0);
+    // no unit open: an empty part is refused
+    CHECK(ca_rtsp_push_video_part(rtsp, 0, nullptr, 0, false, true, 70.0f) < 0);
+    int fd = play_tcp("video1");
+    InterleavedReader reader;
+    std::thread read([&reader, fd] { reader.run(fd); });
+    int joiner = -1;
+    InterleavedReader late;
+    std::thread read_late;
+    for (size_t frame = 0; frame < units.size(); frame++) {
+        const Unit &unit = units[frame];
+        for (size_t i = 0; i < unit.parts.size(); i++) {
+            const bool end = i + 1 == unit.parts.size() && !unit.empty_end;
+            const auto &part = unit.parts[i];
+            CHECK(ca_rtsp_push_video_part(rtsp, 0, part.data(), part.size(), unit.key, end, 70.0f) == 0);
+            // a player joining after the first slice of a key frame
+            if (frame == 5 && i == 0) {
+                joiner = play_tcp("video1");
+                read_late = std::thread([&late, joiner] { late.run(joiner); });
+                sleep_ms(20);
+            }
+            sleep_ms(2);
+        }
+        if (unit.empty_end) CHECK(ca_rtsp_push_video_part(rtsp, 0, nullptr, 0, unit.key, true, 70.0f) == 0);
+        sleep_ms(20);
+    }
+    sleep_ms(300);
+    reader.stop = true;
+    late.stop = true;
+    read.join();
+    read_late.join();
+    close(fd);
+    close(joiner);
+
+    // split at RTP timestamp changes
+    auto split = [](const std::vector<InterleavedReader::Packet> &packets) {
+        std::vector<std::pair<size_t, size_t>> groups;
+        for (size_t i = 0; i < packets.size(); i++) {
+            if (i == 0 || packets[i].timestamp != packets[i - 1].timestamp) groups.push_back({i, i});
+            groups.back().second = i + 1;
+        }
+        return groups;
+    };
+    auto check_unit = [&](const std::vector<InterleavedReader::Packet> &packets, std::pair<size_t, size_t> group,
+                          const Unit &unit) {
+        for (size_t i = group.first; i < group.second; i++) {
+            const bool last = i + 1 == group.second;
+            CHECK(packets[i].marker == (last && !unit.empty_end));
+        }
+        std::vector<ReceivedNal> got = received_nals(packets, group.first, group.second);
+        // the metadata SEI goes before the first slice
+        unsigned sei = 0;
+        for (size_t i = 0; i < got.size(); i++) {
+            if (got[i].type != 39) continue;
+            sei++;
+            CHECK(i + 1 < got.size() && got[i + 1].type < 32);
+            CHECK(i == 0 || got[i - 1].type >= 32);
+            got.erase(got.begin() + (long)i--);
+        }
+        CHECK(sei == 1);
+        const std::vector<ReceivedNal> want = expected(unit);
+        CHECK(got.size() == want.size());
+        for (size_t i = 0; i < want.size(); i++) CHECK(got[i].type == want[i].type && got[i].size == want[i].size);
+    };
+
+    CHECK(!reader.garbage && !late.garbage);
+    unsigned gaps = 0;
+    for (size_t i = 1; i < reader.packets.size(); i++)
+        gaps += reader.packets[i].seq != (uint16_t)(reader.packets[i - 1].seq + 1);
+    const auto groups = split(reader.packets);
+    printf("slices: %zu packets, %zu access units, %u sequence gaps; late player %zu packets, %zu access units\n",
+           reader.packets.size(), groups.size(), gaps, late.packets.size(), split(late.packets).size());
+    CHECK(gaps == 0 && groups.size() == units.size());
+    for (size_t i = 0; i < groups.size(); i++) {
+        check_unit(reader.packets, groups[i], units[i]);
+        if (i > 0) CHECK(reader.packets[groups[i].first].timestamp -
+                         reader.packets[groups[i - 1].first].timestamp == 90000U / 25U);
+    }
+    // the late player starts at the next key frame's first packet
+    const auto late_groups = split(late.packets);
+    CHECK(late_groups.size() == 2);
+    CHECK(late.packets[0].timestamp == reader.packets[groups[10].first].timestamp);
+    CHECK(((late.packets[0].head[0] >> 1) & 0x3fU) == 32);
+    for (size_t i = 0; i < late_groups.size(); i++) check_unit(late.packets, late_groups[i], units[10 + i]);
+    puts("slices: one timestamp and one marker per access unit, slices as NAL units or FUs, "
+         "parameter sets first, a late player starts at a key frame");
+}
+
 int main()
 {
     signal(SIGPIPE, SIG_IGN);
@@ -518,6 +707,7 @@ int main()
     CHECK(describe("video2").find("a=rtpmap:96 H264/90000\r\na=framerate:30\r\n") != std::string::npos);
 
     check_pacing(rtsp);
+    check_slices(rtsp);
 
     std::thread produce(producer, rtsp);
     std::thread probe(prober);

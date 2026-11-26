@@ -352,10 +352,7 @@ int APC_Media::configure(const struct ca_config *settings)
 #else
     if (!settings) { errno = EINVAL; return -1; }
     const struct ca_config *old = &_config.settings;
-    bool pipeline = !_backend || old->main_resolution != settings->main_resolution ||
-        old->sub_resolution != settings->sub_resolution ||
-        old->recording_resolution != settings->recording_resolution ||
-        old->main_codec != settings->main_codec || old->sub_codec != settings->sub_codec;
+    bool pipeline = !_backend || !ca_config_pipeline_equal(old, settings);
     if (pipeline) {
         if (_backend && _backend->recording()) { errno = EBUSY; return -1; }
         _stop_survey();

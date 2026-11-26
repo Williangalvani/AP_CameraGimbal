@@ -29,6 +29,18 @@ int ca_rtsp_push_h264_stream(struct ca_rtsp *server, unsigned stream_id,
                              bool key_frame, float hfov_deg);
 int ca_rtsp_push_video(struct ca_rtsp *server, unsigned stream_id,
                        const uint8_t *data, size_t length, bool key_frame, float hfov_deg);
+/* Part of an access unit, such as the slices an encoder has finished, sent at
+ * once. All parts of an access unit share its RTP timestamp and only the last
+ * packet of the part with frame_end carries the RTP marker; each NAL unit is
+ * its own RTP payload (single NAL or fragments). The first part must hold the
+ * parameter sets and the first slice, and its key_frame marks the unit; a
+ * client that starts playing mid-unit waits for the next key frame. The
+ * metadata SEI goes before the first slice, SupportProxy gets the whole unit
+ * at its end, and an empty part with frame_end only closes an open unit
+ * (without a marker). ca_rtsp_push_video is a whole unit. */
+int ca_rtsp_push_video_part(struct ca_rtsp *server, unsigned stream_id,
+                            const uint8_t *data, size_t length, bool key_frame, bool frame_end,
+                            float hfov_deg);
 /* For sources with variable cadence (for example thermal throttling), preserve
  * their presentation clock instead of stepping the nominal frame rate. */
 int ca_rtsp_push_video_timed(struct ca_rtsp *server, unsigned stream_id,
