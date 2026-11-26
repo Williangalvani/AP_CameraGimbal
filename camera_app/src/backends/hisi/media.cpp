@@ -23,6 +23,7 @@
 #include "camera_app/log.h"
 #include "camera_app/mp4.h"
 #include "camera_app/overlay.h"
+#include "camera_app/rtp_pacer.h"
 #include "camera_app/rtsp.h"
 #include "camera_app/still.h"
 #include "camera_app/video_metadata.h"
@@ -80,6 +81,8 @@ struct APC_Media_HiSi_State {
     atomic_bool recording;
     atomic_bool inverted;
     bool recording_wait_keyframe;
+    // the main and sub channels' key-frame limits at creation; max 0 if unread
+    ca_hisi_rc::IProportion i_proportion[CA_HISI_SUB_VENC + 1U];
     struct ca_rtsp *rtsp;
     unsigned sub_rtsp_stream;
     struct ca_live_video_server *live_video;
@@ -454,6 +457,49 @@ static unsigned sub_gop(const struct ca_config *settings)
     return apcam_gop_frames(settings->sub_keyint_ms, APCAM_FRAME_RATE);
 }
 
+static unsigned sub_bitrate(const struct APC_Media_HiSi_State *media)
+{
+    return apcam_hisi_auto_bitrate_kbps(media->sizes.width[CA_HISI_SUB_CHN],
+                                        media->sizes.height[CA_HISI_SUB_CHN]);
+}
+
+static const char *stream_name(unsigned channel)
+{
+    return channel == CA_HISI_MAIN_VENC ? "main" : "sub";
+}
+
+static unsigned max_iframe_ratio(const struct ca_config *settings, unsigned channel)
+{
+    return channel == CA_HISI_MAIN_VENC ? settings->main_max_iframe_ratio
+                                        : settings->sub_max_iframe_ratio;
+}
+
+// ratio 0 restores the limits the channel was created with
+static td_s32 apply_iframe_ratio(const struct APC_Media_HiSi_State *media, unsigned channel,
+                                 unsigned ratio)
+{
+    if (media->i_proportion[channel].max == 0U) return TD_FAILURE;
+    const ca_hisi_rc::IProportion limits = ca_hisi_rc::i_proportion(ratio, media->i_proportion[channel]);
+    const td_s32 result = ca_hisi_set_i_proportion(channel, limits);
+    if (result == TD_SUCCESS)
+        ca_log("%s stream key frames at most %u times a P-frame (min %u)%s", stream_name(channel),
+               limits.max, limits.min, ratio == 0U ? ", the encoder default" : "");
+    else
+        ca_log("%s stream key-frame size cap failed: 0x%x", stream_name(channel), (unsigned)result);
+    return result;
+}
+
+static void apply_rtp_pacing(struct APC_Media_HiSi_State *media, const struct ca_config *settings)
+{
+    const uint64_t main_bps = ca::RtpPacer::StreamRate(settings->main_rtp_pacing_mbps,
+                                                       main_bitrate(media, settings));
+    const uint64_t sub_bps = ca::RtpPacer::StreamRate(settings->sub_rtp_pacing_mbps, sub_bitrate(media));
+    (void)ca_rtsp_set_pacing(media->rtsp, 0U, main_bps);
+    (void)ca_rtsp_set_pacing(media->rtsp, media->sub_rtsp_stream, sub_bps);
+    ca_log("RTSP clients paced at %u kbit/s on the main stream, %u kbit/s on the sub (0 unpaced)",
+           (unsigned)(main_bps / 1000U), (unsigned)(sub_bps / 1000U));
+}
+
 int APC_Media_HiSi::init(const struct ca_media_config *config)
 {
     struct APC_Media_HiSi_State *media;
@@ -540,6 +586,14 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
         media->venc_created[channel] = TD_TRUE;
         const td_s32 vui = ca_hisi_set_low_delay_vui(channel, &media->venc_attr[channel]);
         if (vui != TD_SUCCESS) ca_log("VENC %u VUI failed: 0x%x", channel, (unsigned)vui);
+        if (channel > CA_HISI_SUB_VENC) continue;
+        const td_s32 rc = ca_hisi_get_i_proportion(channel, &media->i_proportion[channel]);
+        if (rc != TD_SUCCESS) {
+            media->i_proportion[channel].max = 0U;
+            ca_log("VENC %u key-frame limits unreadable: 0x%x", channel, (unsigned)rc);
+        } else if (max_iframe_ratio(settings, channel) != 0U) {
+            (void)apply_iframe_ratio(media, channel, max_iframe_ratio(settings, channel));
+        }
     }
     stage = "VPSS-to-VENC binding";
     for (unsigned channel = 0; channel < media->venc_count; channel++) {
@@ -567,6 +621,7 @@ int APC_Media_HiSi::init(const struct ca_media_config *config)
     (void)ca_rtsp_add_alias(media->rtsp, 0, "stream_0");
     (void)ca_rtsp_add_alias(media->rtsp, 1, "stream_1");
 #endif
+    apply_rtp_pacing(media, settings);
     ca_rtsp_set_keyframe_callback(media->rtsp, request_rtsp_keyframe, media);
     if (ca_rtsp_support_proxy(media->rtsp, &settings->support) < 0)
         ca_log("SupportProxy video startup failed: %s", strerror(errno));
@@ -854,7 +909,8 @@ int APC_Media_HiSi::apply_image(const struct ca_config *settings)
     const unsigned bit_rate = main_bitrate(media, settings), old_bit_rate = main_bitrate(media, applied);
     const unsigned main_frames = main_gop(media, settings), old_main_frames = main_gop(media, applied);
     const unsigned sub_frames = sub_gop(settings);
-    bool bit_rate_set = false, main_gop_set = false;
+    bool bit_rate_set = false, main_gop_set = false, sub_gop_set = false;
+    bool ratio_set[CA_HISI_SUB_VENC + 1U] = {};
     if (result == 0 && bit_rate != old_bit_rate) {
         result = ca_hisi_set_bitrate(CA_HISI_MAIN_VENC, bit_rate);
         bit_rate_set = result == 0;
@@ -869,15 +925,33 @@ int APC_Media_HiSi::apply_image(const struct ca_config *settings)
     }
     if (result == 0 && sub_frames != sub_gop(applied)) {
         result = ca_hisi_set_gop(CA_HISI_SUB_VENC, sub_frames);
+        sub_gop_set = result == 0;
         if (result == 0) ca_log("sub stream keyframe every %u frames (%u ms)", sub_frames, settings->sub_keyint_ms);
         else ca_log("sub stream keyframe interval change failed: 0x%x", (unsigned)result);
     }
+    // a new bitrate or GOP may reset the rate control parameters, so a cap goes back on
+    for (unsigned channel = CA_HISI_MAIN_VENC; result == 0 && channel <= CA_HISI_SUB_VENC; channel++) {
+        const unsigned ratio = max_iframe_ratio(settings, channel);
+        const bool attr_set = channel == CA_HISI_MAIN_VENC ? bit_rate_set || main_gop_set : sub_gop_set;
+        if (ratio == max_iframe_ratio(applied, channel) && (ratio == 0U || !attr_set)) continue;
+        result = apply_iframe_ratio(media, channel, ratio);
+        ratio_set[channel] = result == 0;
+    }
     // the caller's rollback compares with the applied settings, which still
     // hold the old values, so it would leave these encoder changes in place
+    for (unsigned channel = CA_HISI_MAIN_VENC; result != 0 && channel <= CA_HISI_SUB_VENC; channel++)
+        if (ratio_set[channel] && apply_iframe_ratio(media, channel, max_iframe_ratio(applied, channel)) != TD_SUCCESS)
+            ca_log("%s stream key-frame size cap rollback failed", stream_name(channel));
+    if (sub_gop_set && result != 0 && ca_hisi_set_gop(CA_HISI_SUB_VENC, sub_gop(applied)) != TD_SUCCESS)
+        ca_log("sub stream keyframe interval rollback failed");
     if (main_gop_set && result != 0 && ca_hisi_set_gop(CA_HISI_MAIN_VENC, old_main_frames) != TD_SUCCESS)
         ca_log("main stream keyframe interval rollback failed");
     if (bit_rate_set && result != 0 && ca_hisi_set_bitrate(CA_HISI_MAIN_VENC, old_bit_rate) != TD_SUCCESS)
         ca_log("main stream bitrate rollback failed");
+    if (result == 0 && (bit_rate != old_bit_rate ||
+                        settings->main_rtp_pacing_mbps != applied->main_rtp_pacing_mbps ||
+                        settings->sub_rtp_pacing_mbps != applied->sub_rtp_pacing_mbps))
+        apply_rtp_pacing(media, settings);
     if (result == 0) ca_config_copy_image(&media->config.settings, settings);
     pthread_mutex_unlock(&media->lock);
     if (result != 0) { errno = EIO; return -1; }

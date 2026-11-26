@@ -1040,6 +1040,34 @@ echo ok
             assert status == 400 and ini.read_text() == before, (name, value, status, page)
         status, page = save({'tnr': 'true', 'tnr_strength': '255', 'vi_3dnr': 'true', 'vi_3dnr_strength': '100'})
         assert status == 200 and saved_image('tnr_strength') == '255', ini.read_text()
+
+        # Key-frame bursts: per-stream rows saved to [stream.main] / [stream.sub], applied live.
+        def saved_stream(stream, key):
+            match = re.search(rf'^\[stream\.{stream}\][^\[]*?^{key} = (\d+)$', ini.read_text(), re.M)
+            return match.group(1) if match else None
+
+        rows = (('main_max_iframe_ratio', 'main', 'max_iframe_ratio', 100, '0', 'Main RTSP key frame size limit'),
+                ('sub_max_iframe_ratio', 'sub', 'max_iframe_ratio', 100, '0', 'Sub RTSP key frame size limit'),
+                ('main_rtp_pacing', 'main', 'rtp_pacing_mbps', 1000, '60', 'Main RTSP send pacing (Mbit/s)'),
+                ('sub_rtp_pacing', 'sub', 'rtp_pacing_mbps', 1000, '0', 'Sub RTSP send pacing (Mbit/s)'))
+        for name, stream, key, maximum, default, label in rows:
+            field = keyint_field(name)
+            assert f'>{label}</label><input required name="{name}" id="{name}" type=number min="0" ' \
+                   f'max="{maximum}" step="1" value="{default}">' in field, field
+            assert saved_stream(stream, key) == default, ini.read_text()
+        old = ready.read_text()
+        changes = {'main_max_iframe_ratio': '4', 'sub_max_iframe_ratio': '100',
+                   'main_rtp_pacing': '0', 'sub_rtp_pacing': '1000'}
+        status, page = save(changes)
+        assert status == 200 and b'Parameters saved' in page, page
+        assert {name: saved_stream(stream, key) for name, stream, key, *_ in rows} == changes, ini.read_text()
+        assert ready.read_text() == old, 'a key-frame burst setting applied live restarted camera-app'
+        before = ini.read_text()
+        for name, value in (('main_max_iframe_ratio', '101'), ('sub_rtp_pacing', '1001'), ('main_rtp_pacing', '-1')):
+            status, page = save({name: value})
+            assert status == 400 and ini.read_text() == before, (name, value, status, page)
+        status, page = save({name: default for name, _, _, _, default, _ in rows})
+        assert status == 200 and saved_stream('main', 'rtp_pacing_mbps') == '60', ini.read_text()
         (root / 'live-apply').unlink()
         iris_file.unlink()
         update_type.unlink()
@@ -1053,7 +1081,7 @@ echo ok
         print('PASS hisi: xipc driver set and MMZ, broken mpp.conf, seeding, driver retry, SD folders, '
               'microSD benchmark, restart, DHCP switch, crash restart, retry limit, stale-ISP reboot, SIGTERM-proof stop, '
               'repeated SIGTERM, live and restarting codec change, '
-              'web respawn, iris mode row and save, keyframe interval rows and save, noise reduction rows and save, MCM start after ready, restart backoff, mcm.disable, '
+              'web respawn, iris mode row and save, keyframe interval rows and save, noise reduction rows and save, key-frame burst rows and save, MCM start after ready, restart backoff, mcm.disable, '
               'missing bundle, log pruning and stop')
     finally:
         try:

@@ -258,6 +258,7 @@ struct ca_rtsp {
         std::shared_ptr<CodecParameters> parameters;
         xop::MediaSessionId session_id;
         std::vector<xop::MediaSessionId> aliases;
+        uint64_t pacing_bps = 0;
         enum ca_video_codec codec;
         unsigned frame_rate;
         uint32_t next_timestamp;
@@ -336,6 +337,37 @@ static void request_keyframe(xop::MediaSessionId session_id)
 void ca_rtsp_client_playing(xop::MediaSessionId session_id)
 {
     request_keyframe(session_id);
+}
+
+// RTP pacing by xop session id, aliases included. Each client's drain task
+// on the RTSP event thread reads it, so a change applies within a packet.
+static std::mutex pacing_mutex;
+static std::map<xop::MediaSessionId, uint64_t> pacing_rates;
+
+static void set_session_pacing(xop::MediaSessionId session_id, uint64_t bits_per_second)
+{
+    std::lock_guard<std::mutex> lock(pacing_mutex);
+    if (bits_per_second) pacing_rates[session_id] = bits_per_second;
+    else pacing_rates.erase(session_id);
+}
+
+uint64_t ca_rtsp_pacing_bps(xop::MediaSessionId session_id)
+{
+    std::lock_guard<std::mutex> lock(pacing_mutex);
+    auto rate = pacing_rates.find(session_id);
+    return rate == pacing_rates.end() ? 0 : rate->second;
+}
+
+extern "C" int ca_rtsp_set_pacing(struct ca_rtsp *rtsp, unsigned stream_id, uint64_t bits_per_second)
+{
+    if (rtsp == nullptr) return -1;
+    std::lock_guard<std::mutex> lock(rtsp->mutex);
+    if (stream_id >= rtsp->streams.size()) return -1;
+    ca_rtsp::stream &stream = rtsp->streams[stream_id];
+    stream.pacing_bps = bits_per_second;
+    set_session_pacing(stream.session_id, bits_per_second);
+    for (xop::MediaSessionId alias : stream.aliases) set_session_pacing(alias, bits_per_second);
+    return 0;
 }
 
 // RFC 4585 PLI and RFC 5104 FIR: payload-specific feedback, PT 206, FMT 1 or 4.
@@ -457,6 +489,7 @@ extern "C" int ca_rtsp_add_alias(struct ca_rtsp *rtsp, unsigned stream_id,
     if (session_id == 0) return -1;
     stream.aliases.push_back(session_id);
     add_keyframe_target(rtsp, session_id, stream_id);
+    set_session_pacing(session_id, stream.pacing_bps);
     return 0;
 }
 
@@ -586,6 +619,10 @@ extern "C" void ca_rtsp_close(struct ca_rtsp *rtsp)
             if (target->second.rtsp == rtsp) target = keyframe_targets.erase(target);
             else ++target;
         }
+    }
+    for (const auto &stream : rtsp->streams) {
+        set_session_pacing(stream.session_id, 0);
+        for (xop::MediaSessionId alias : stream.aliases) set_session_pacing(alias, 0);
     }
     for (const auto &stream : rtsp->streams) ca_support_video_close(stream.publisher);
     {

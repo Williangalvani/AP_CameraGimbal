@@ -9,6 +9,11 @@
 // Plain loopback never refuses a UDP send. tests/paced_loopback.sh reruns
 // this with RTP over UDP limited to 40 Mbit/s, the condition that used to
 // wedge the server.
+//
+// RTP pacing: first a healthy RTP-over-TCP player of a realistic 4K stream
+// must get every packet with key frames spread out, and its own OPTIONS
+// answered while a key frame is still being paced. The main stream then stays
+// paced while the clients above misbehave.
 #include "camera_app/rtsp.h"
 
 #include <arpa/inet.h>
@@ -27,6 +32,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -48,6 +54,12 @@ static std::atomic<unsigned> watchdog_fired{0};
 static long now_ms()
 {
     return (long)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static long now_us()
+{
+    return (long)std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
@@ -331,6 +343,160 @@ static void count_watchdog(void *)
     watchdog_fired++;
 }
 
+// What an RTP-over-TCP player receives: RTP packets on channel 0 and the
+// arrival of each RTSP reply, timed on arrival.
+struct InterleavedReader {
+    struct Packet {
+        long at_us;
+        uint16_t seq;
+        bool marker;
+    };
+    std::mutex mutex;
+    std::vector<Packet> packets;
+    std::vector<long> replies;
+    std::atomic<bool> stop{false};
+    bool garbage = false;
+
+    void run(int fd)
+    {
+        std::string data;
+        while (!stop) {
+            pollfd wait{fd, POLLIN, 0};
+            if (poll(&wait, 1, 50) <= 0) continue;
+            char buffer[65536];
+            const ssize_t got = recv(fd, buffer, sizeof(buffer), 0);
+            if (got <= 0) return;
+            const long at = now_us();
+            data.append(buffer, (size_t)got);
+            std::lock_guard<std::mutex> lock(mutex);
+            for (;;) {
+                if (data.size() >= 4 && data[0] == '$') {
+                    const size_t length = (uint8_t)data[2] << 8 | (uint8_t)data[3];
+                    if (data.size() < 4 + length) break;
+                    if (data[1] == 0 && length >= 12) {
+                        const uint8_t *rtp = (const uint8_t *)data.data() + 4;
+                        packets.push_back({at, (uint16_t)(rtp[2] << 8 | rtp[3]), (rtp[1] & 0x80) != 0});
+                    }
+                    data.erase(0, 4 + length);
+                } else if (data.compare(0, 8, "RTSP/1.0") == 0 || (data.size() < 8 && data[0] == 'R')) {
+                    const size_t end = data.find("\r\n\r\n");
+                    if (end == std::string::npos) break;
+                    replies.push_back(at);
+                    data.erase(0, end + 4);
+                } else {
+                    if (!data.empty()) garbage = true;
+                    break;
+                }
+            }
+        }
+    }
+};
+
+// A healthy RTP-over-TCP player of a realistic 4K H.265 stream (685 KB key
+// frames, 117 KB P frames, 30 fps) paced at the default 60 Mbit/s: no packet
+// may be dropped, a key frame takes about 90 ms instead of a line-rate burst,
+// and an OPTIONS on the same connection is answered while the key frame is
+// still going out. With pacing turned off live, the next key frame bursts.
+static int play_tcp(const char *path)
+{
+    int fd = connect_server();
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, "DESCRIBE", url(path), 1, "Accept: application/sdp\r\n").find("200 OK") != std::string::npos);
+    const std::string setup = exchange(fd, "SETUP", url(path) + "/track0", 2,
+                                       "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n");
+    CHECK(setup.find("200 OK") != std::string::npos);
+    CHECK(exchange(fd, "PLAY", url(path), 3, "Session: " + session_of(setup) + "\r\n").find("200 OK") !=
+          std::string::npos);
+    return fd;
+}
+
+// Frames end at the RTP marker; key frames are the ones of 400+ packets.
+static size_t count_frames(const std::vector<InterleavedReader::Packet> &packets,
+                           std::vector<long> *key_spread_us = nullptr, std::vector<long> *key_end_us = nullptr)
+{
+    size_t first = 0, frames = 0;
+    for (size_t i = 0; i < packets.size(); i++) {
+        if (!packets[i].marker) continue;
+        frames++;
+        if (i + 1 - first > 400) {
+            if (key_spread_us) key_spread_us->push_back(packets[i].at_us - packets[first].at_us);
+            if (key_end_us) key_end_us->push_back(packets[i].at_us);
+        }
+        first = i + 1;
+    }
+    return frames;
+}
+
+static void check_pacing(struct ca_rtsp *rtsp)
+{
+    const std::vector<uint8_t> key = access_unit(true, true, 685000), delta = access_unit(true, false, 117000);
+    CHECK(ca_rtsp_set_pacing(rtsp, 0, 60000000U) == 0);
+    int fd = play_tcp("video1");
+    InterleavedReader reader;
+    std::thread read([&reader, fd] { reader.run(fd); });
+    long options_sent = 0;
+    for (int frame = 0; frame < 75; frame++) {
+        const bool is_key = frame % 30 == 0;
+        if (frame == 60) CHECK(ca_rtsp_set_pacing(rtsp, 0, 0) == 0);
+        const std::vector<uint8_t> &unit = is_key ? key : delta;
+        CHECK(ca_rtsp_push_video(rtsp, 0, unit.data(), unit.size(), is_key, 70.0f) == 0);
+        if (frame == 30) {
+            sleep_ms(10);
+            options_sent = now_us();
+            CHECK(send_text(fd, "OPTIONS " + url("video1") + " RTSP/1.0\r\nCSeq: 4\r\n\r\n"));
+            sleep_ms(23);
+        } else {
+            sleep_ms(33);
+        }
+    }
+    sleep_ms(500);
+    reader.stop = true;
+    read.join();
+    close(fd);
+
+    CHECK(!reader.garbage);
+    unsigned gaps = 0;
+    for (size_t i = 1; i < reader.packets.size(); i++)
+        gaps += reader.packets[i].seq != (uint16_t)(reader.packets[i - 1].seq + 1);
+    std::vector<long> key_spread_us, key_end_us;
+    const size_t frames = count_frames(reader.packets, &key_spread_us, &key_end_us);
+    printf("pacing: %zu packets, %zu frames, %u sequence gaps; key frames over",
+           reader.packets.size(), frames, gaps);
+    for (long spread : key_spread_us) printf(" %ld", spread / 1000);
+    printf(" ms; OPTIONS answered in %ld ms\n",
+           reader.replies.empty() ? -1L : (reader.replies[0] - options_sent) / 1000);
+    CHECK(frames == 75 && gaps == 0);
+    CHECK(key_spread_us.size() == 3);
+    CHECK(key_spread_us[0] >= 70000 && key_spread_us[1] >= 70000);
+    CHECK(key_spread_us[2] < 45000);
+    CHECK(reader.replies.size() == 1);
+    CHECK(reader.replies[0] - options_sent < 50000 && reader.replies[0] < key_end_us[1]);
+    puts("pacing: key frames spread at 60 Mbit/s without drops, OPTIONS not held back, off bursts again");
+
+    // Paced below the stream's bitrate, a client falls behind and is dropped
+    // to the next key frame, as an unpaced slow client is.
+    CHECK(ca_rtsp_set_pacing(rtsp, 0, 8000000U) == 0);
+    fd = play_tcp("video1");
+    InterleavedReader slow;
+    std::thread read_slow([&slow, fd] { slow.run(fd); });
+    for (int frame = 0; frame < 90; frame++) {
+        const bool is_key = frame % 30 == 0;
+        const std::vector<uint8_t> &unit = is_key ? key : delta;
+        CHECK(ca_rtsp_push_video(rtsp, 0, unit.data(), unit.size(), is_key, 70.0f) == 0);
+        sleep_ms(33);
+    }
+    sleep_ms(1000);
+    slow.stop = true;
+    read_slow.join();
+    close(fd);
+    std::vector<long> slow_keys;
+    const size_t slow_frames = count_frames(slow.packets, &slow_keys);
+    printf("paced below the bitrate: %zu of 90 frames, %zu key frames\n", slow_frames, slow_keys.size());
+    CHECK(!slow.garbage && slow_frames < 85 && slow_keys.size() >= 2);
+    CHECK(ca_rtsp_set_pacing(rtsp, 0, 0) == 0);
+    puts("pacing: a client paced below the bitrate is dropped to the next key frame");
+}
+
 int main()
 {
     signal(SIGPIPE, SIG_IGN);
@@ -351,6 +517,8 @@ int main()
     CHECK(describe("video1").find("a=rtpmap:96 H265/90000\r\na=framerate:25\r\n") != std::string::npos);
     CHECK(describe("video2").find("a=rtpmap:96 H264/90000\r\na=framerate:30\r\n") != std::string::npos);
 
+    check_pacing(rtsp);
+
     std::thread produce(producer, rtsp);
     std::thread probe(prober);
     sleep_ms(500);
@@ -368,6 +536,10 @@ int main()
         CHECK(ca_rtsp_set_frame_rate(rtsp, sub, 30) == 0);
         puts("SDP: a=framerate per stream, aliases included");
     }
+
+    // The main stream (and its alias) stays paced for the clients below.
+    CHECK(ca_rtsp_set_pacing(rtsp, 0, 60000000U) == 0);
+    CHECK(ca_rtsp_set_pacing(rtsp, 2, 1) < 0);
 
     // (a) UDP players on both streams, RTP to ports nobody reads.
     const int udp_main = play_udp("video1");
@@ -401,7 +573,7 @@ int main()
     CHECK(closed_by_server(stalled_inode, 8000));
     printf("stalled reader closed after %ld ms\n", now_ms() - stalled_since);
     close(stalled);
-    puts("stalled RTP-over-TCP reader: disconnected by the server");
+    puts("stalled, paced RTP-over-TCP reader: disconnected by the server");
 
     // More idle connections than the server admits: the oldest idle ones go.
     std::vector<int> idle;

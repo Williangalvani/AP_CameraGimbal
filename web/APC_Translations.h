@@ -175,6 +175,10 @@ enum string_id {
     S_P_TNR_STRENGTH,
     S_P_VI_3DNR,
     S_P_VI_3DNR_STRENGTH,
+    S_P_MAIN_MAX_IFRAME_RATIO,
+    S_P_SUB_MAX_IFRAME_RATIO,
+    S_P_MAIN_RTP_PACING,
+    S_P_SUB_RTP_PACING,
     S_P_IRIS_MODE,
     S_P_FOURKCAM,
     S_P_ONVIF_PASSWORD,
@@ -323,6 +327,8 @@ enum string_id {
     S_H_TNR_STRENGTH,
     S_H_VI_3DNR,
     S_H_VI_3DNR_STRENGTH,
+    S_H_MAX_IFRAME_RATIO,
+    S_H_RTP_PACING,
     S_H_IRIS_MODE,
     S_IRIS_UNAVAILABLE,
     S_IRIS_APPLIED_SHUTTER,
@@ -956,6 +962,14 @@ static constexpr Translations translations = [] {
     result[S_P_VI_3DNR] = {"Video 3D noise reduction", "视频 3D 降噪", "映像 3D ノイズリダクション"};
     result[S_P_VI_3DNR_STRENGTH] = {"Video 3D noise reduction strength", "视频 3D 降噪强度",
                                     "映像 3D ノイズリダクション強度"};
+    result[S_P_MAIN_MAX_IFRAME_RATIO] = {"Main RTSP key frame size limit", "主 RTSP 流关键帧大小上限",
+                                         "メイン RTSP キーフレームサイズ上限"};
+    result[S_P_SUB_MAX_IFRAME_RATIO] = {"Sub RTSP key frame size limit", "子 RTSP 流关键帧大小上限",
+                                        "サブ RTSP キーフレームサイズ上限"};
+    result[S_P_MAIN_RTP_PACING] = {"Main RTSP send pacing (Mbit/s)", "主 RTSP 流发送限速 (Mbit/s)",
+                                   "メイン RTSP 送信ペーシング (Mbit/s)"};
+    result[S_P_SUB_RTP_PACING] = {"Sub RTSP send pacing (Mbit/s)", "子 RTSP 流发送限速 (Mbit/s)",
+                                  "サブ RTSP 送信ペーシング (Mbit/s)"};
     result[S_P_IRIS_MODE] = {"Iris mode", "光圈模式", "絞りモード"};
     result[S_P_FOURKCAM] = {"Allow 4K Cam Manager", "允许 4K Cam Manager", "4K Cam Manager を許可"};
     result[S_P_ONVIF_PASSWORD] = {"ONVIF password", "ONVIF 密码", "ONVIF パスワード"};
@@ -1201,6 +1215,24 @@ static constexpr Translations translations = [] {
                                     "视频 3D 降噪的时域强度，为相机默认值的百分比（0–100）。越低拖影越少。",
                                     "映像 3D ノイズリダクションの時間方向の強さ。カメラ既定値に対する割合（0–100）。低いほど"
                                     "残像が減ります。"};
+    result[S_H_MAX_IFRAME_RATIO] = {"The largest key frame the encoder makes, in times the size of another frame "
+                                    "(1–100); 0, the default, leaves the encoder's own limit. A lower limit makes "
+                                    "smaller bursts at each key frame but a blurrier key frame. Applies immediately.",
+                                    "编码器生成的关键帧最大为其他帧大小的多少倍（1–100）；默认 0 保留编码器自身的上限。"
+                                    "上限越低，每个关键帧的突发数据越少，但关键帧越模糊。立即生效。",
+                                    "エンコーダーが作るキーフレームの最大サイズ。他のフレームの何倍か（1–100）で指定します。"
+                                    "既定の 0 はエンコーダー自身の上限のままです。低いほど各キーフレームのバーストは小さく"
+                                    "なりますが、キーフレームはぼやけます。即時反映されます。"};
+    result[S_H_RTP_PACING] = {"Send each RTSP client the stream at no more than this rate, so a key frame goes out "
+                              "over several frame times instead of one burst at the link's full speed (UDP and TCP). "
+                              "The camera never paces below twice the stream's bitrate. 0 sends at once; the default "
+                              "is 60 for the main stream and 0 for the sub. Applies immediately.",
+                              "以不超过此速率向每个 RTSP 客户端发送码流，使关键帧分散在几个帧时间内发出，而不是以链路全速"
+                              "一次突发（UDP 和 TCP）。实际速率不低于码流码率的两倍。0 表示立即发送；主码流默认 60，"
+                              "子码流默认 0。立即生效。",
+                              "各 RTSP クライアントへこの速度以下で送信し、キーフレームを回線速度の一度のバーストではなく"
+                              "数フレーム時間に分散させます（UDP と TCP）。実際の速度はストリームのビットレートの 2 倍を"
+                              "下回りません。0 は即時送信です。既定はメインが 60、サブが 0。即時反映されます。"};
     result[S_H_IRIS_MODE] = {"Auto: automatic exposure sets the shutter and gain, and the lens iris also works "
                              "automatically. Iris priority: the shutter speed and ISO (or the manual gains) stay "
                              "fixed and the iris alone holds the brightness at the exposure target (exposure and "

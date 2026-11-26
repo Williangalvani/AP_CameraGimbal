@@ -312,6 +312,16 @@ private:
          sizeof(((struct ca_config *)0)->main_alias), NULL, 0U, 0, 63, NULL},
         {"stream.sub", "alias", Kind::String, offsetof(struct ca_config, sub_alias),
          sizeof(((struct ca_config *)0)->sub_alias), NULL, 0U, 0, 63, NULL},
+#if APCAM_HAVE_4KCAM_COMPAT
+        {"stream.main", "max_iframe_ratio", Kind::Uint, offsetof(struct ca_config, main_max_iframe_ratio),
+         sizeof(((struct ca_config *)0)->main_max_iframe_ratio), NULL, 0U, 0, 100, NULL},
+        {"stream.sub", "max_iframe_ratio", Kind::Uint, offsetof(struct ca_config, sub_max_iframe_ratio),
+         sizeof(((struct ca_config *)0)->sub_max_iframe_ratio), NULL, 0U, 0, 100, NULL},
+        {"stream.main", "rtp_pacing_mbps", Kind::Uint, offsetof(struct ca_config, main_rtp_pacing_mbps),
+         sizeof(((struct ca_config *)0)->main_rtp_pacing_mbps), NULL, 0U, 0, 1000, NULL},
+        {"stream.sub", "rtp_pacing_mbps", Kind::Uint, offsetof(struct ca_config, sub_rtp_pacing_mbps),
+         sizeof(((struct ca_config *)0)->sub_rtp_pacing_mbps), NULL, 0U, 0, 1000, NULL},
+#endif
         {"overlay", "cross", Kind::Bool, offsetof(struct ca_config, osd_cross),
          sizeof(((struct ca_config *)0)->osd_cross), NULL, 0U, 0, 0, "OSD_CROSS"},
 #if APCAM_HAVE_OVERLAY_RECORDING_SELECT

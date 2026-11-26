@@ -791,6 +791,16 @@ static const struct parameter replacement_parameters[] = {
     {"sub_keyframe_interval", "stream.sub", "keyframe_interval_ms", S_P_SUB_KEYINT, S_H_KEYINT,
      PARAM_INTEGER, APCAM_KEYINT_MIN_MS, APCAM_KEYINT_MAX_MS, 1, NULL, 0},
 #endif
+#if APCAM_HAVE_4KCAM_COMPAT
+    {"main_max_iframe_ratio", "stream.main", "max_iframe_ratio", S_P_MAIN_MAX_IFRAME_RATIO, S_H_MAX_IFRAME_RATIO,
+     PARAM_INTEGER, 0, 100, 1, NULL, 0},
+    {"sub_max_iframe_ratio", "stream.sub", "max_iframe_ratio", S_P_SUB_MAX_IFRAME_RATIO, S_H_MAX_IFRAME_RATIO,
+     PARAM_INTEGER, 0, 100, 1, NULL, 0},
+    {"main_rtp_pacing", "stream.main", "rtp_pacing_mbps", S_P_MAIN_RTP_PACING, S_H_RTP_PACING,
+     PARAM_INTEGER, 0, 1000, 1, NULL, 0},
+    {"sub_rtp_pacing", "stream.sub", "rtp_pacing_mbps", S_P_SUB_RTP_PACING, S_H_RTP_PACING,
+     PARAM_INTEGER, 0, 1000, 1, NULL, 0},
+#endif
     {"main_alias", "stream.main", "alias", S_P_MAIN_ALIAS, S_H_MAIN_ALIAS,
      PARAM_TEXT, 0, 63, 1, NULL, 0},
     {"sub_alias", "stream.sub", "alias", S_P_SUB_ALIAS, S_H_SUB_ALIAS,
@@ -988,6 +998,9 @@ static const char *replacement_defaults[] = {
     APCAM_RESOLUTION_NAME(APCAM_DEFAULT_SUB_RESOLUTION), "h264",
 #if APCAM_HAVE_VIDEO_GOP
     APCAM_STRING_VALUE(APCAM_DEFAULT_KEYINT_MS),
+#endif
+#if APCAM_HAVE_4KCAM_COMPAT
+    "0", "0", "60", "0",
 #endif
     APCAM_DEFAULT_MAIN_ALIAS, APCAM_DEFAULT_SUB_ALIAS,
     APCAM_RESOLUTION_NAME(APCAM_DEFAULT_RECORDING_RESOLUTION), "false",

@@ -512,7 +512,7 @@ hisi-image-test: tests/test_hisi_tuning tests/test_hisi_one_push tests/test_hisi
 	./tests/test_hisi_iris
 	./tests/test_hisi_vui
 
-tests/test_hisi_vui: tests/test_hisi_vui.cpp src/backends/hisi/vui.h
+tests/test_hisi_vui: tests/test_hisi_vui.cpp src/backends/hisi/vui.h src/backends/hisi/rate_control.h
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $<
 
@@ -1203,21 +1203,29 @@ build/tests/test_xop_buffer: tests/test_xop_buffer.cpp $(RTSP_ROOT)/net/BufferWr
 
 # The whole RTSP server (patched xop and rtsp_xop.cpp) under a fast producer
 # and misbehaving clients, with ASan watching the cross-thread packet queues.
-.PHONY: rtsp-robustness-test
+.PHONY: rtsp-robustness-test rtp-pacer-test
 xop-test test: rtsp-robustness-test
-rtsp-robustness-test: build/tests/test_rtsp_robustness
+rtsp-robustness-test: rtp-pacer-test build/tests/test_rtsp_robustness
 	ASAN_OPTIONS=detect_leaks=0 ./build/tests/test_rtsp_robustness
 	ASAN_OPTIONS=detect_leaks=0 tests/paced_loopback.sh ./build/tests/test_rtsp_robustness
 
 build/tests/test_rtsp_robustness: tests/test_rtsp_robustness.cpp src/streaming/rtsp_xop.cpp \
 		$(XOP_HOST_SOURCES) build/xop_rtsp_connection.cpp build/xop_rtp_connection.cpp \
 		src/streaming/support_video.cpp src/recording/video_metadata.cpp src/recording/metadata.cpp \
-		src/log.cpp include/camera_app/rtsp.h $(filter %.h,$(XOP_PREPARED_FILES))
+		src/log.cpp include/camera_app/rtsp.h include/camera_app/rtp_pacer.h $(filter %.h,$(XOP_PREPARED_FILES))
 	mkdir -p $(dir $@)
 	$(call progress,Linking $@)
 	$(HOST_CXX) $(CPPFLAGS) -I$(RTSP_ROOT) -I$(RTSP_ROOT)/net -I$(RTSP_ROOT)/xop -I$(RTSP_ROOT)/3rdpart \
 		-include cstdint -O1 -g -fsanitize=address -fno-omit-frame-pointer -std=c++11 -Wall \
 		-Wno-unused-parameter -Wno-missing-field-initializers $(filter %.cpp,$^) -o $@ -lpthread -lm
+
+rtp-pacer-test: build/tests/test_rtp_pacer
+	./build/tests/test_rtp_pacer
+
+build/tests/test_rtp_pacer: tests/test_rtp_pacer.cpp include/camera_app/rtp_pacer.h
+	mkdir -p $(dir $@)
+	$(call progress,Linking $@)
+	$(HOST_CXX) -Iinclude -O1 -g -fsanitize=address,undefined -std=c++11 -Wall -Wextra -Werror $< -o $@
 
 # Isolate dlib exceptions from the rest of the firmware. Compile only its
 # correlation tracker and FFT, without optional GUI/BLAS/CUDA dependencies.

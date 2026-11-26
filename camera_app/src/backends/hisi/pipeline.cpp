@@ -215,6 +215,36 @@ td_s32 ca_hisi_set_gop(ot_venc_chn channel, td_u32 gop_frames)
     return ss_mpi_venc_set_chn_attr(channel, &attr);
 }
 
+// applies f to the parameters of the channel's rate control mode
+template <typename F> static td_s32 with_rc_param(ot_venc_chn channel, bool write, F f)
+{
+    ot_venc_chn_attr attr;
+    ot_venc_rc_param param;
+    td_s32 result = ss_mpi_venc_get_chn_attr(channel, &attr);
+    if (result == TD_SUCCESS) result = ss_mpi_venc_get_rc_param(channel, &param);
+    if (result != TD_SUCCESS) return result;
+    switch (attr.rc_attr.rc_mode) {
+    case OT_VENC_RC_MODE_H264_CBR: f(param.h264_cbr_param); break;
+    case OT_VENC_RC_MODE_H265_CBR: f(param.h265_cbr_param); break;
+    case OT_VENC_RC_MODE_H264_VBR: f(param.h264_vbr_param); break;
+    case OT_VENC_RC_MODE_H265_VBR: f(param.h265_vbr_param); break;
+    case OT_VENC_RC_MODE_H264_AVBR: f(param.h264_avbr_param); break;
+    case OT_VENC_RC_MODE_H265_AVBR: f(param.h265_avbr_param); break;
+    default: return TD_FAILURE;
+    }
+    return write ? ss_mpi_venc_set_rc_param(channel, &param) : TD_SUCCESS;
+}
+
+td_s32 ca_hisi_get_i_proportion(ot_venc_chn channel, ca_hisi_rc::IProportion *limits)
+{
+    return with_rc_param(channel, false, [limits](const auto &p) { *limits = ca_hisi_rc::read(p); });
+}
+
+td_s32 ca_hisi_set_i_proportion(ot_venc_chn channel, ca_hisi_rc::IProportion limits)
+{
+    return with_rc_param(channel, true, [limits](auto &p) { ca_hisi_rc::write(p, limits); });
+}
+
 td_s32 ca_hisi_set_inverted(td_bool inverted, bool record_enabled,
                             const struct ca_hisi_output_sizes *sizes)
 {

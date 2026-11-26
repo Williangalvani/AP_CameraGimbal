@@ -110,7 +110,18 @@
  #include <vector>
  #include <string>
  #include <memory>
-@@ -107,6 +109,32 @@
+@@ -14,6 +16,10 @@
+ #include "net/Socket.h"
+ #include "net/TcpConnection.h"
+ 
++namespace ca {
++class RtpPacer;
++}
++
+ namespace xop
+ {
+ 
+@@ -107,6 +113,37 @@
      struct sockaddr_in peer_rtp_addr_[MAX_MEDIA_CHANNEL];
      struct sockaddr_in peer_rtcp_sddr_[MAX_MEDIA_CHANNEL];
      MediaChannelInfo media_channel_info_[MAX_MEDIA_CHANNEL];
@@ -123,9 +134,11 @@
 +        MediaChannelId channel_id = channel_0;
 +        RtpPacket pkt;
 +    };
++    // done: sent or dropped; blocked: the socket is full; paced: not yet due.
++    enum class Send { done, blocked, paced };
 +    void DrainQueue(std::shared_ptr<TcpConnection> conn);
 +    void ScheduleDrain(std::shared_ptr<TcpConnection> conn, uint32_t delay_ms);
-+    bool SendPending(std::shared_ptr<TcpConnection>& conn);
++    Send SendPending(std::shared_ptr<TcpConnection>& conn, int64_t *wait_us);
 +
 +    std::mutex queue_mutex_;
 +    std::deque<QueuedPacket> queue_;
@@ -140,6 +153,9 @@
 +    bool pending_ready_ = false;   // RTP header written
 +    bool pending_private_ = false; // copied out of the buffer shared by all clients
 +    int64_t stalled_since_ms_ = 0;
++    // Event loop only: spaces this client's packets out (camera_app/rtp_pacer.h).
++    std::unique_ptr<ca::RtpPacer> pacer_;
++    bool pending_paced_ = false;   // pending_'s tokens spent
  };
  
  }

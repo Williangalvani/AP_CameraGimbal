@@ -97,6 +97,37 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   `stats_time` stays 1 s (`pipeline.cpp`) whatever the GOP; whether a GOP
   longer than 1 s needs `stats_time` of at least GOP/fps to avoid quality
   pumping is still to be checked on hardware.
+- **Key-frame bursts**: a 4K H.265 key frame at 28 Mbit/s is about 685 KB,
+  six P-frames, and leaves the 100 Mbit link as one ~55 ms line-rate burst
+  (~10k packets/s) that stalls some RTSP-over-TCP players (Cockpit). Two
+  settings per stream, without a MAVLink name, set in the web Parameters
+  and applied live like the bitrate:
+  - `rtp_pacing_mbps` (default **60** for `[stream.main]`, **0** for
+    `[stream.sub]`; 0-1000, 0 off) paces each RTSP client, UDP and
+    RTP-over-TCP alike, with a token bucket: a burst of 16 packets (or 2 ms
+    at the rate) goes at once, the rest at the rate, never below twice the
+    stream's bitrate (main: `bitrate_kbps`, or its automatic value; sub: its
+    automatic rate). At 28 Mbit/s the default is 60 Mbit/s, which sends a
+    685 KB key frame in about 90 ms (three frame times); at 40 and 50 Mbit/s
+    the floor makes it 80 and 100 Mbit/s. The XOP event loop waits on its
+    millisecond timers, never blocking, and RTSP replies and RTCP go out
+    unpaced. Paced packets wait in the client's queue and count towards its
+    2048-packet limit, which a paced key frame and the P-frames behind it
+    (~750 packets) do not reach: a client
+    that cannot keep up is still dropped to the next key frame (with an IDR
+    request) and one that takes nothing for 3 s disconnected. The web live
+    view (`127.0.0.1:8555`) is not paced. camera-app logs "RTSP clients paced
+    at N kbit/s ...".
+  - `max_iframe_ratio` (default **0**; 0-100) caps a key frame at that many
+    times a P-frame: the CBR/VBR/AVBR `max_i_proportion` of the main and sub
+    encoders (`ss_mpi_venc_set_rc_param`), with `min_i_proportion` lowered
+    to 1 if it would exceed it. 0 keeps, or restores, the limits the encoder
+    started with. Recordings that share the main encoder get the cap too.
+    It is off by default because pacing removes the burst without costing
+    picture quality, while a cap blurs every key frame (most visibly at a
+    long `keyframe_interval_ms`) and its effect is not yet checked on
+    hardware; 3-4 is a starting point if pacing alone is not enough. camera-app
+    logs "main/sub stream key frames at most N times a P-frame".
   The 4K Cam Manager `gop` maps to it; see `docs/4kcam-manager-compat.md`.
   The `gop` it reports is computed from the saved `frame_rate`, which applies
   only when camera-app restarts, so after a frame rate change it can differ

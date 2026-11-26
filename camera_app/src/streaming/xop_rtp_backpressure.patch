@@ -1,21 +1,32 @@
 --- RtpConnection.cpp
 +++ RtpConnection.cpp
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,8 @@
  #include "RtpConnection.h"
  #include "RtspConnection.h"
  #include "net/SocketUtil.h"
++#include "camera_app/rtp_pacer.h"
 +#include <cerrno>
  #include <chrono>
  
  using namespace std;
-@@ -12,6 +13,28 @@
+@@ -12,6 +14,38 @@
  extern "C" bool ca_rtsp_is_satip_client(const void *client);
  extern "C" void ca_rtsp_unmark_satip_client(const void *client);
  extern "C" size_t ca_rtsp_sender_report(uint8_t *, uint32_t, uint64_t, uint32_t, uint32_t, uint32_t);
 +extern "C" void ca_rtsp_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 +extern void ca_rtsp_client_playing(xop::MediaSessionId session_id);
++extern uint64_t ca_rtsp_pacing_bps(xop::MediaSessionId session_id);
 +
 +namespace {
++int64_t NowUs()
++{
++    return std::chrono::duration_cast<std::chrono::microseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++// A paced wait longer than this rechecks the rate, which may have changed.
++const int64_t kMaxPaceWaitMs = 100;
++
 +// About 3 MB, several of the largest 4K key frames. Queues hold the newest
 +// packets, which all clients of a stream share, so this bounds the total.
 +const size_t kMaxQueuedPackets = 2048;
@@ -37,7 +48,7 @@
  
  RtpConnection::RtpConnection(std::weak_ptr<TcpConnection> rtsp_connection)
      : rtsp_connection_(rtsp_connection)
-@@ -114,7 +137,7 @@
+@@ -114,7 +148,7 @@
          break;
      }
  
@@ -46,7 +57,7 @@
  
      peer_rtp_addr_[channel_id].sin_family = AF_INET;
      peer_rtp_addr_[channel_id].sin_addr.s_addr = peer_addr_.sin_addr.s_addr;
-@@ -290,44 +313,186 @@
+@@ -290,44 +324,211 @@
          pkt = annex_b;
      }
  
@@ -152,6 +163,10 @@
 +
 +void RtpConnection::DrainQueue(std::shared_ptr<TcpConnection> conn)
 +{
++    if (!pacer_) {
++        pacer_.reset(new ca::RtpPacer);
++    }
++    pacer_->SetRate(ca_rtsp_pacing_bps(((RtspConnection *)conn.get())->session_id_), NowUs());
 +    for (int budget = kDrainBudget; budget > 0; budget--) {
 +        if (!has_pending_) {
 +            std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -168,8 +183,17 @@
 +            has_pending_ = true;
 +            pending_ready_ = false;
 +            pending_private_ = false;
++            pending_paced_ = false;
 +        }
-+        if (!SendPending(conn)) {
++        int64_t wait_us = 0;
++        const Send sent = SendPending(conn, &wait_us);
++        if (sent == Send::paced) {
++            // Not a stall: the client is taking packets as fast as allowed.
++            const int64_t wait_ms = (wait_us + 999) / 1000;
++            ScheduleDrain(conn, uint32_t(wait_ms < kMaxPaceWaitMs ? wait_ms : kMaxPaceWaitMs));
++            return;
++        }
++        if (sent == Send::blocked) {
 +            const int64_t now = RtspConnection::NowMs();
 +            if (stalled_since_ms_ == 0) {
 +                stalled_since_ms_ = now;
@@ -199,29 +223,16 @@
 +}
  
 -    return ret ? 0 : -1;
-+// Sends pending_ without blocking. Returns false if the socket is full and
-+// pending_ must be retried; true once it is sent or dropped.
-+bool RtpConnection::SendPending(std::shared_ptr<TcpConnection>& conn)
++// Sends pending_ without blocking. blocked: the socket is full; paced: its
++// tokens are due in *wait_us. Either way pending_ must be retried.
++RtpConnection::Send RtpConnection::SendPending(std::shared_ptr<TcpConnection>& conn, int64_t *wait_us)
 +{
 +    const MediaChannelId channel_id = pending_.channel_id;
 +    RtpPacket& pkt = pending_.pkt;
 +    auto &info = media_channel_info_[channel_id];
-+    if (!pending_ready_) {
-+        if (transport_mode_ == RTP_OVER_TCP && conn->QueuedPackets() >= kMaxTcpQueuedPackets) {
-+            return false;
-+        }
-+        this->SetFrameType(pkt.type);
-+        this->SetRtpHeader(channel_id, pkt);
-+        if (!(info.is_play || info.is_record) || !has_key_frame_) {
-+            return true;
-+        }
-+        pending_ready_ = true;
-+    }
-+
-+    const int sent = transport_mode_ == RTP_OVER_TCP
-+        ? SendRtpOverTcp(channel_id, pkt) : SendRtpOverUdp(channel_id, pkt);
-+    if (sent == 0) {
-+        // Every client writes its own header into the one shared buffer.
++    // Every client writes its own header into the one shared buffer, so a
++    // packet that has to wait keeps a copy.
++    auto keep_private = [this, &pkt] {
 +        if (!pending_private_) {
 +            RtpPacket copy;
 +            memcpy(copy.data.get(), pkt.data.get(), pkt.size);
@@ -232,10 +243,35 @@
 +            pkt = copy;
 +            pending_private_ = true;
 +        }
-+        return false;
++    };
++    if (!pending_ready_) {
++        if (transport_mode_ == RTP_OVER_TCP && conn->QueuedPackets() >= kMaxTcpQueuedPackets) {
++            return Send::blocked;
++        }
++        this->SetFrameType(pkt.type);
++        this->SetRtpHeader(channel_id, pkt);
++        if (!(info.is_play || info.is_record) || !has_key_frame_) {
++            return Send::done;
++        }
++        pending_ready_ = true;
++    }
++    if (!pending_paced_) {
++        *wait_us = pacer_->Take(pkt.size, NowUs());
++        if (*wait_us > 0) {
++            keep_private();
++            return Send::paced;
++        }
++        pending_paced_ = true;
++    }
++
++    const int sent = transport_mode_ == RTP_OVER_TCP
++        ? SendRtpOverTcp(channel_id, pkt) : SendRtpOverUdp(channel_id, pkt);
++    if (sent == 0) {
++        keep_private();
++        return Send::blocked;
 +    }
 +    if (sent < 0) {
-+        return true;
++        return Send::done;
 +    }
 +
 +    info.packet_count++;
@@ -261,11 +297,11 @@
 +        }
 +        info.last_rtcp_ntp_time = ntp;
 +    }
-+    return true;
++    return Send::done;
  }
  
  int RtpConnection::SendRtpOverTcp(MediaChannelId channel_id, RtpPacket pkt)
-@@ -349,10 +514,13 @@
+@@ -349,10 +550,13 @@
  
  int RtpConnection::SendRtpOverUdp(MediaChannelId channel_id, RtpPacket pkt)
  {

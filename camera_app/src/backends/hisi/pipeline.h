@@ -5,6 +5,7 @@
 #include "ss_mpi_venc.h"
 #include "camera_app/config.h"
 #include "apcam/target.h"
+#include "rate_control.h"
 
 #define CA_HISI_SENSOR_WIDTH APCAM_LENS1_WIDTH
 #define CA_HISI_SENSOR_HEIGHT APCAM_LENS1_HEIGHT
@@ -38,6 +39,9 @@ void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
 td_s32 ca_hisi_set_low_delay_vui(ot_venc_chn channel, const ot_venc_chn_attr *attr);
 td_s32 ca_hisi_set_bitrate(ot_venc_chn channel, td_u32 bit_rate_kbps);
 td_s32 ca_hisi_set_gop(ot_venc_chn channel, td_u32 gop_frames);
+// the channel's key-frame size limits, max_i_proportion and min_i_proportion
+td_s32 ca_hisi_get_i_proportion(ot_venc_chn channel, ca_hisi_rc::IProportion *limits);
+td_s32 ca_hisi_set_i_proportion(ot_venc_chn channel, ca_hisi_rc::IProportion limits);
 td_s32 ca_hisi_set_inverted(td_bool inverted, bool record_enabled,
                             const struct ca_hisi_output_sizes *sizes);
 

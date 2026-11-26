@@ -291,6 +291,13 @@ struct ca_config {
     unsigned tnr_strength;
     bool vi_3dnr;
     unsigned vi_3dnr_strength;
+    /* not 4K Cam Manager controls, and no MAVLink parameter: the largest key
+     * frame in P-frames (VENC max_i_proportion, 0 the encoder's default) and
+     * each RTSP client's send rate in Mbit/s (0 unpaced) */
+    unsigned main_max_iframe_ratio;
+    unsigned sub_max_iframe_ratio;
+    unsigned main_rtp_pacing_mbps;
+    unsigned sub_rtp_pacing_mbps;
     /* not a 4K Cam Manager control: IMG_IRIS_MODE */
     enum ca_iris_mode iris_mode;
 #endif
