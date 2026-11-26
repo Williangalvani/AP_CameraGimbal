@@ -107,7 +107,10 @@ static std::string base64(const std::vector<uint8_t> &data)
 // Aliases share the same parameters. DESCRIBE runs on the RTSP event thread.
 class CodecParameters {
 public:
-    explicit CodecParameters(ca_video_codec codec) : codec_(codec) {}
+    CodecParameters(ca_video_codec codec, unsigned frame_rate)
+        : codec_(codec), frame_rate_(frame_rate) {}
+    void set_frame_rate(unsigned frame_rate) { frame_rate_ = frame_rate; }
+    unsigned frame_rate() const { return frame_rate_; }
     void update(const uint8_t *data, size_t size)
     {
         size_t offset = 0, nal, length;
@@ -144,6 +147,7 @@ public:
     }
 private:
     ca_video_codec codec_;
+    std::atomic<unsigned> frame_rate_;
     std::mutex mutex_;
     std::vector<uint8_t> vps_, sps_, pps_;
 };
@@ -196,7 +200,8 @@ public:
         // A client can DESCRIBE before the first encoded key frame. Keep
         // that session usable with the codec's basic SDP and in-band headers;
         // later DESCRIBEs include parameter sets once the encoder supplies them.
-        return attribute.empty() ? source_->GetAttribute() : attribute;
+        return (attribute.empty() ? source_->GetAttribute() : attribute) +
+            "\r\na=framerate:" + std::to_string(parameters_->frame_rate());
     }
     bool HandleFrame(xop::MediaChannelId channel, xop::AVFrame frame) override
     {
@@ -391,7 +396,7 @@ extern "C" int ca_rtsp_open(struct ca_rtsp **result, unsigned port,
     if (!rtsp->server || !rtsp->server->Start("0.0.0.0", port)) return -1;
     xop::MediaSession *session = xop::MediaSession::CreateNew(path);
     if (session == nullptr) return -1;
-    auto parameters = std::make_shared<CodecParameters>(codec);
+    auto parameters = std::make_shared<CodecParameters>(codec, frame_rate);
     session->AddSource(xop::channel_0, new AccessUnitSource(codec, frame_rate, parameters));
     xop::MediaSessionId session_id = rtsp->server->AddSession(session);
     if (session_id == 0) return -1;
@@ -427,7 +432,7 @@ extern "C" int ca_rtsp_add_video(struct ca_rtsp *rtsp, const char *path,
     std::lock_guard<std::mutex> lock(rtsp->mutex);
     xop::MediaSession *session = xop::MediaSession::CreateNew(path);
     if (session == nullptr) return -1;
-    auto parameters = std::make_shared<CodecParameters>(codec);
+    auto parameters = std::make_shared<CodecParameters>(codec, frame_rate);
     session->AddSource(xop::channel_0, new AccessUnitSource(codec, frame_rate, parameters));
     xop::MediaSessionId session_id = rtsp->server->AddSession(session);
     if (session_id == 0) return -1;
@@ -543,6 +548,7 @@ extern "C" int ca_rtsp_set_frame_rate(struct ca_rtsp *rtsp,
     std::lock_guard<std::mutex> lock(rtsp->mutex);
     if (stream_id >= rtsp->streams.size()) return -1;
     rtsp->streams[stream_id].timestamp_step = 90000U / frame_rate;
+    rtsp->streams[stream_id].parameters->set_frame_rate(frame_rate);
     return 0;
 }
 

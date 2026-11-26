@@ -157,6 +157,16 @@ static unsigned unused_udp_port()
     return ntohs(address.sin_port) & ~1U;
 }
 
+static std::string describe(const char *path)
+{
+    int fd = connect_server();
+    CHECK(fd >= 0);
+    const std::string reply = exchange(fd, "DESCRIBE", url(path), 1, "Accept: application/sdp\r\n");
+    close(fd);
+    CHECK(reply.find("200 OK") != std::string::npos);
+    return reply;
+}
+
 // A playing client whose RTP goes to a UDP port where nobody reads.
 static int play_udp(const char *path, bool expect_success = true)
 {
@@ -328,17 +338,36 @@ int main()
 
     port = unused_udp_port() | 1U;
     struct ca_rtsp *rtsp = nullptr;
-    CHECK(ca_rtsp_open(&rtsp, port, "video1", CA_VIDEO_H265, 30) == 0);
+    CHECK(ca_rtsp_open(&rtsp, port, "video1", CA_VIDEO_H265, 25) == 0);
     unsigned sub = 0;
     CHECK(ca_rtsp_add_video(rtsp, "video2", CA_VIDEO_H264, 30, &sub) == 0 && sub == 1);
+    CHECK(ca_rtsp_add_alias(rtsp, 0, "stream_0") == 0);
     ca_rtsp_set_watchdog(rtsp, 1500, count_watchdog, nullptr);
     sleep_ms(300);
     const int baseline = count_fds();
     CHECK(baseline > 0);
 
+    // Each stream's SDP carries its frame rate, before the first key frame too.
+    CHECK(describe("video1").find("a=rtpmap:96 H265/90000\r\na=framerate:25\r\n") != std::string::npos);
+    CHECK(describe("video2").find("a=rtpmap:96 H264/90000\r\na=framerate:30\r\n") != std::string::npos);
+
     std::thread produce(producer, rtsp);
     std::thread probe(prober);
     sleep_ms(500);
+
+    {
+        const std::string main_sdp = describe("video1"), alias_sdp = describe("stream_0");
+        const std::string sub_sdp = describe("video2");
+        CHECK(main_sdp.find("sprop-vps=") != std::string::npos);
+        CHECK(main_sdp.find("\r\na=framerate:25\r\na=control:track0\r\n") != std::string::npos);
+        CHECK(alias_sdp.find("\r\na=framerate:25\r\n") != std::string::npos);
+        CHECK(sub_sdp.find("sprop-parameter-sets=") != std::string::npos);
+        CHECK(sub_sdp.find("\r\na=framerate:30\r\na=control:track0\r\n") != std::string::npos);
+        CHECK(ca_rtsp_set_frame_rate(rtsp, sub, 15) == 0);
+        CHECK(describe("video2").find("\r\na=framerate:15\r\n") != std::string::npos);
+        CHECK(ca_rtsp_set_frame_rate(rtsp, sub, 30) == 0);
+        puts("SDP: a=framerate per stream, aliases included");
+    }
 
     // (a) UDP players on both streams, RTP to ports nobody reads.
     const int udp_main = play_udp("video1");

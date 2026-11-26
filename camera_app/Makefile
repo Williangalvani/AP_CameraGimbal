@@ -504,12 +504,17 @@ test: storage-test
 
 .PHONY: hisi-image-test
 hisi-image-test: tests/test_hisi_tuning tests/test_hisi_one_push tests/test_hisi_config tests/test_hisi_ircut \
-	tests/test_hisi_iris
+	tests/test_hisi_iris tests/test_hisi_vui
 	./tests/test_hisi_tuning
 	./tests/test_hisi_one_push
 	./tests/test_hisi_config
 	./tests/test_hisi_ircut
 	./tests/test_hisi_iris
+	./tests/test_hisi_vui
+
+tests/test_hisi_vui: tests/test_hisi_vui.cpp src/backends/hisi/vui.h
+	$(call progress,Linking $@)
+	$(HOST_CXX) $(APP_CXXFLAGS) -Isrc/backends/hisi -o $@ $<
 
 tests/test_hisi_tuning: tests/test_hisi_tuning.cpp src/backends/hisi/image_tuning.h $(APCAM_HEADERS)
 	$(call progress,Linking $@)

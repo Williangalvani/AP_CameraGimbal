@@ -49,6 +49,7 @@ __pycache__/
 /camera_app/tests/test_hisi_config
 /camera_app/tests/test_hisi_ircut
 /camera_app/tests/test_hisi_iris
+/camera_app/tests/test_hisi_vui
 
 /camera_app/tests/test_survey
 /camera_app/tests/test_metadata_history

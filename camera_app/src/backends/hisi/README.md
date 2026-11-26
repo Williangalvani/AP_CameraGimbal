@@ -101,9 +101,12 @@ glibc), and a static musl `web/hisi-web`. Override the prefix with
   The `gop` it reports is computed from the saved `frame_rate`, which applies
   only when camera-app restarts, so after a frame rate change it can differ
   from the running encoder's until then (the "media ready" line shows that).
-- **VUI**: every channel sets `bitstream_restriction_flag`, so the SPS declares
+- **VUI** (`vui.h`): every channel sets `bitstream_restriction_flag`, so the SPS declares
   `max_num_reorder_frames = 0`. Without it Chrome's decoder holds the level's
-  whole DPB (5 frames at 4K) before showing the first one.
+  whole DPB (5 frames at 4K) before showing the first one. Every channel also
+  sets timing info from its encoded frame rate (`dst_frame_rate`), so
+  `h264parse`/`h265parse` report a framerate: MAVLink Camera Manager's RTSP
+  probe requires one. The SDP repeats it as `a=framerate`.
 - **Frame socket** (`frame_socket.h`): the main and sub encoders' access units
   on the abstract Unix socket `@apcam/video`, for MAVLink Camera Manager's
   `apcamsrc` (`tools/mcm_trial/apcamsrc`). A client names a stream, gets its

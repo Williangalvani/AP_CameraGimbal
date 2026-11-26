@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "pipeline.h"
+#include "vui.h"
 
 #include "camera_app/log.h"
 
@@ -167,22 +168,20 @@ void ca_hisi_video_attributes(ot_venc_chn_attr *attr,
     attr->gop_attr.normal_p.ip_qp_delta = 2;
 }
 
-td_s32 ca_hisi_set_low_delay_vui(ot_venc_chn channel, enum ca_video_codec codec)
+td_s32 ca_hisi_set_low_delay_vui(ot_venc_chn channel, const ot_venc_chn_attr *attr)
 {
-    // Without bitstream_restriction a decoder must assume frames are
-    // reordered and holds the level's whole DPB (5 frames at 4K) before
-    // showing one. These streams have no B-frames, so declare zero.
-    if (codec == CA_VIDEO_H265) {
+    if (attr->rc_attr.rc_mode == OT_VENC_RC_MODE_H265_CBR) {
         ot_venc_h265_vui vui;
         td_s32 result = ss_mpi_venc_get_h265_vui(channel, &vui);
         if (result != TD_SUCCESS) return result;
-        vui.vui_bitstream_restric.bitstream_restriction_flag = 1;
+        ca_hisi_vui::fill_h265(vui, attr->rc_attr.h265_cbr.dst_frame_rate);
         return ss_mpi_venc_set_h265_vui(channel, &vui);
     }
+    if (attr->rc_attr.rc_mode != OT_VENC_RC_MODE_H264_CBR) return TD_FAILURE;
     ot_venc_h264_vui vui;
     td_s32 result = ss_mpi_venc_get_h264_vui(channel, &vui);
     if (result != TD_SUCCESS) return result;
-    vui.vui_bitstream_restric.bitstream_restriction_flag = 1;
+    ca_hisi_vui::fill_h264(vui, attr->rc_attr.h264_cbr.dst_frame_rate);
     return ss_mpi_venc_set_h264_vui(channel, &vui);
 }
 
